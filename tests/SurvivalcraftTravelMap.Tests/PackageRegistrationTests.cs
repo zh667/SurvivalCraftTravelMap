@@ -7,6 +7,52 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class PackageRegistrationTests
 {
     [Fact]
+    public void Startup_checks_only_34gpsfix_and_does_not_partially_register_on_conflict()
+    {
+        var checkedPackages = new List<string>();
+        var registered = new List<byte>();
+        var messages = new List<string>();
+
+        var success = TravelMapStartup.TryInitialize(
+            packageName =>
+            {
+                checkedPackages.Add(packageName);
+                return true;
+            },
+            package => registered.Add(package.ID),
+            _ => throw new InvalidOperationException("unexpected rollback"),
+            messages.Add);
+
+        Assert.False(success);
+        Assert.Equal(["34GPSFix"], checkedPackages);
+        Assert.Empty(registered);
+        var message = Assert.Single(messages);
+        Assert.Contains("34GPSFix", message, StringComparison.Ordinal);
+        Assert.Contains("restart", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Startup_registers_exactly_41_and_61_when_legacy_mod_is_absent()
+    {
+        var checkedPackages = new List<string>();
+        var registered = new List<byte>();
+
+        var success = TravelMapStartup.TryInitialize(
+            packageName =>
+            {
+                checkedPackages.Add(packageName);
+                return false;
+            },
+            package => registered.Add(package.ID),
+            _ => throw new InvalidOperationException("unexpected rollback"),
+            _ => throw new InvalidOperationException("unexpected error"));
+
+        Assert.True(success);
+        Assert.Equal(["34GPSFix"], checkedPackages);
+        Assert.Equal(new byte[] { 41, 61 }, registered);
+    }
+
+    [Fact]
     public void Registration_installs_only_41_and_61()
     {
         var registered = new List<byte>();

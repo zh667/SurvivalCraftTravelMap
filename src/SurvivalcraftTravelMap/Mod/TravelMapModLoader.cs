@@ -8,18 +8,40 @@ public sealed class TravelMapModLoader : ModLoader
 {
     public override void __ModInitialize()
     {
-        if (ModsManager.GetModEntity("34GPSFix", out _))
-        {
-            DialogsManager.Alert(
-                "Mod conflict",
-                "Survivalcraft Travel Map cannot run while 34GPSFix is installed. Remove 34GPSFix and restart the game.");
-            return;
-        }
-
-        TravelMapPackageRegistration.TryRegister(
+        TravelMapStartup.TryInitialize(
+            packageName => ModsManager.GetModEntity(packageName, out _),
             PackageManager.RegisterPackage,
             PackageManager.UnRegisterPackage,
             message => DialogsManager.Alert("Mod conflict", message));
+    }
+}
+
+public static class TravelMapStartup
+{
+    public const string LegacyPackageName = "34GPSFix";
+
+    public static bool HasLegacyConflict(Func<string, bool> isInstalled)
+    {
+        ArgumentNullException.ThrowIfNull(isInstalled);
+        return isInstalled(LegacyPackageName);
+    }
+
+    public static bool TryInitialize(
+        Func<string, bool> isInstalled,
+        Action<IPackage> register,
+        Action<IPackage> unregister,
+        Action<string> reportError)
+    {
+        ArgumentNullException.ThrowIfNull(reportError);
+        if (HasLegacyConflict(isInstalled))
+        {
+            reportError(
+                "Survivalcraft Travel Map cannot run while 34GPSFix is installed. "
+                + "Remove 34GPSFix and restart the game.");
+            return false;
+        }
+
+        return TravelMapPackageRegistration.TryRegister(register, unregister, reportError);
     }
 }
 

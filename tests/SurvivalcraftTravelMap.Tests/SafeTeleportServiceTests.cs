@@ -388,6 +388,25 @@ public sealed class SafeTeleportServiceTests
     }
 
     [Fact]
+    public async Task Synchronous_timeout_clock_failure_disposes_a_chunk_lease_that_completes_late()
+    {
+        var context = new TeleportTestContext();
+        var completion = new TaskCompletionSource<IChunkLoadLease>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateLease = new FakeChunkLoadLease();
+        context.Chunks.Load = _ => completion.Task;
+        context.Clock.Delay = (_, _) => throw new InvalidOperationException("clock creation failed");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            context.Service.TeleportToSurfaceAsync(0, 0, TestContext.Current.CancellationToken));
+        completion.SetResult(lateLease);
+        await lateLease.Disposed.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(context.Chunks.LastToken.IsCancellationRequested);
+        Assert.Equal(1, lateLease.DisposeCount);
+    }
+
+    [Fact]
     public async Task No_safe_position_and_out_of_world_never_capture_or_move_the_player()
     {
         var noSafe = new TeleportTestContext();

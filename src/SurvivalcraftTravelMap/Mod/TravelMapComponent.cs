@@ -115,6 +115,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
     public override void Load(ValuesDictionary valuesDictionary, IdToEntityMap idToEntityMap)
     {
         base.Load(valuesDictionary, idToEntityMap);
+        if (TravelMapStartup.HasLegacyConflict(
+                packageName => ModsManager.GetModEntity(packageName, out _)))
+        {
+            return;
+        }
+
         var player = Entity.FindComponent<ComponentPlayer>(true)
             ?? throw new InvalidOperationException("TravelMapComponent must be attached to a player entity.");
         var playerBody = player.ComponentBody

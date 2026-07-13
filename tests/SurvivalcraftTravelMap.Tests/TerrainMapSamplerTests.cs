@@ -173,6 +173,39 @@ public sealed class TerrainMapSamplerTests
                 .Select(entry => entry.BlockIndex)
                 .Order()
                 .ToArray());
+
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+        Assert.NotEqual("656ECD47A8C01514A3B4F6D90E6EC7AFE2B0590A31758825C7A64B311FC0D55A", hash);
+
+        Assert.Equal(new Rgba32(0, 0, 0, 0), entries[0].Color); // Air.
+        Assert.Equal(new Rgba32(112, 106, 99, 255), entries[1].Color); // Stone.
+        Assert.Equal(new Rgba32(126, 91, 58, 255), entries[2].Color); // Dirt.
+        Assert.Equal(new Rgba32(215, 195, 139, 255), entries[7].Color); // Sand.
+        Assert.Equal(new Rgba32(131, 91, 52, 255), entries[9].Color); // Oak wood.
+        Assert.Equal(new Rgba32(238, 85, 30, 255), entries[92].Color); // Magma.
+        Assert.Equal(new Rgba32(52, 122, 65, 255), entries[127].Color); // Cactus.
+        Assert.Equal(new Rgba32(255, 255, 255, 255), entries[8].Color); // Runtime grass tint.
+        Assert.Equal(new Rgba32(255, 255, 255, 255), entries[18].Color); // Runtime water tint.
+    }
+
+    [Fact]
+    public void Project_palette_generator_reproduces_the_bundled_asset()
+    {
+        using var temporary = new TemporaryDirectory();
+        var generatedPath = Path.Combine(temporary.Path, "BlockPixelColor.json");
+        var generator = Path.Combine(TestPaths.RepositoryRoot, "tools", "Generate-BlockPalette.ps1");
+
+        var result = PowerShellRunner.Run(generator, generatedPath);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            File.ReadAllBytes(Path.Combine(
+                TestPaths.RepositoryRoot,
+                "src",
+                "SurvivalcraftTravelMap",
+                "Assets",
+                "BlockPixelColor.json")),
+            File.ReadAllBytes(generatedPath));
     }
 
     public static TheoryData<int> TransparentTopCases => new(TransparentTopContents);

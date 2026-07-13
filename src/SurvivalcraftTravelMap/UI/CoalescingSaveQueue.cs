@@ -76,6 +76,8 @@ public sealed class CoalescingSaveQueue : IDisposable
 
     private async Task RunAsync()
     {
+        // Ensure RequestSave publishes _worker before a zero-delay, synchronous save can finish.
+        await Task.Yield();
         var completionPublished = false;
         var disposeLifetime = false;
         try

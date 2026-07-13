@@ -6,6 +6,27 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class CoalescingSaveQueueTests
 {
     [Fact]
+    public async Task Zero_debounce_accepts_consecutive_synchronous_save_requests()
+    {
+        var saves = 0;
+        using var queue = new CoalescingSaveQueue(
+            _ =>
+            {
+                saves++;
+                return Task.CompletedTask;
+            },
+            _ => { },
+            TimeSpan.Zero);
+
+        queue.RequestSave();
+        await queue.WhenIdleAsync(TestContext.Current.CancellationToken);
+        queue.RequestSave();
+        await queue.WhenIdleAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, saves);
+    }
+
+    [Fact]
     public async Task Rapid_requests_debounce_to_one_save_of_the_latest_state()
     {
         var value = 0;

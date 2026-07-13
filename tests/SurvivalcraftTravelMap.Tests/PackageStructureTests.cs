@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
+using Game.NetWork;
+using SurvivalcraftTravelMap.Mod;
 using Xunit;
 
 namespace SurvivalcraftTravelMap.Tests;
@@ -102,7 +104,8 @@ public sealed class PackageStructureTests
     {
         var source = File.ReadAllText(TestPaths.Loader);
 
-        Assert.Contains("ModsManager.GetModEntity(\"34GPSFix\"", source, StringComparison.Ordinal);
+        Assert.Contains("ModsManager.GetModEntity", source, StringComparison.Ordinal);
+        Assert.Contains("LegacyPackageName = \"34GPSFix\"", source, StringComparison.Ordinal);
         Assert.Contains("DialogsManager.Alert", source, StringComparison.Ordinal);
         Assert.Contains("TravelMapPackageRegistration.TryRegister", source, StringComparison.Ordinal);
         Assert.Contains("PackageManager.RegisterPackage", source, StringComparison.Ordinal);
@@ -112,12 +115,122 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
-    public void Initial_xdb_has_no_injections()
+    public void Component_stops_before_player_runtime_initialization_when_legacy_mod_is_present()
+    {
+        var source = File.ReadAllText(TestPaths.Component);
+        var conflictGate = source.IndexOf("TravelMapStartup.HasLegacyConflict", StringComparison.Ordinal);
+        var playerInitialization = source.IndexOf("Entity.FindComponent<ComponentPlayer>", StringComparison.Ordinal);
+
+        Assert.True(conflictGate >= 0);
+        Assert.True(playerInitialization > conflictGate);
+    }
+
+    [Fact]
+    public void Assembly_exposes_exactly_network_package_ids_41_and_61()
+    {
+        var packageTypes = typeof(TravelMapModLoader).Assembly.GetTypes()
+            .Where(type => typeof(IPackage).IsAssignableFrom(type) && !type.IsAbstract && !type.IsInterface)
+            .ToArray();
+        var packageIds = packageTypes
+            .Select(type => Assert.IsAssignableFrom<IPackage>(Activator.CreateInstance(type)).ID)
+            .Order()
+            .ToArray();
+
+        Assert.Equal(new byte[] { 41, 61 }, packageIds);
+        Assert.DoesNotContain((byte)60, packageIds);
+    }
+
+    [Fact]
+    public void Product_sources_contain_no_mod_count_reporting_or_obsolete_verification_markers()
+    {
+        var source = string.Join(
+            "\n",
+            Directory.GetFiles(
+                    Path.Combine(TestPaths.RepositoryRoot, "src", "SurvivalcraftTravelMap"),
+                    "*",
+                    SearchOption.AllDirectories)
+                .Where(path => Path.GetExtension(path) is ".cs" or ".json" or ".netxdb")
+                .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                    && !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+                .Select(File.ReadAllText));
+
+        foreach (var marker in new[]
+                 {
+                     "AntiCheatReportPackage",
+                     "ReadOnlyModList",
+                     "ReadOnlyModListAll",
+                     "CheckDataBaseValid",
+                     "181215270",
+                     "Setting.png",
+                 })
+        {
+            Assert.DoesNotContain(marker, source, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Final_xdb_injects_exactly_one_travel_map_component_with_new_guids()
     {
         var document = XDocument.Load(TestPaths.Xdb);
+        var root = Assert.IsType<XElement>(document.Root);
+        var player = Assert.Single(root.Elements("EntityTemplate"));
+        var member = Assert.Single(player.Elements("MemberComponentTemplate"));
+        var gameplay = Assert.Single(root.Elements("Folder"));
+        var component = Assert.Single(gameplay.Elements("ComponentTemplate"));
+        var classParameter = Assert.Single(component.Elements("Parameter"));
 
-        Assert.Equal("SurvivalCraftMap", document.Root?.Name.LocalName);
-        Assert.Empty(document.Root?.Elements() ?? []);
+        Assert.Equal("SurvivalCraftMap", root.Name.LocalName);
+        Assert.Equal("Player", player.Attribute("Name")?.Value);
+        Assert.Equal("4be6c1c5-d65d-4537-8a8b-a391969e6dc2", player.Attribute("Guid")?.Value);
+        Assert.Equal("TravelMap", member.Attribute("Name")?.Value);
+        Assert.Equal("Gameplay", gameplay.Attribute("Name")?.Value);
+        Assert.Equal("d3d4b692-acc9-4128-9b99-a5acf1de1fbb", gameplay.Attribute("Guid")?.Value);
+        Assert.Equal("TravelMap", component.Attribute("Name")?.Value);
+        Assert.Equal("b05700ed-7e4e-4679-98f5-b597f421496b", component.Attribute("InheritanceParent")?.Value);
+        Assert.Equal("Class", classParameter.Attribute("Name")?.Value);
+        Assert.Equal("SurvivalcraftTravelMap.Mod.TravelMapComponent", classParameter.Attribute("Value")?.Value);
+        Assert.Equal("string", classParameter.Attribute("Type")?.Value);
+
+        var newGuids = new[]
+        {
+            member.Attribute("Guid")?.Value,
+            component.Attribute("Guid")?.Value,
+            classParameter.Attribute("Guid")?.Value,
+        };
+        Assert.Equal(component.Attribute("Guid")?.Value, member.Attribute("InheritanceParent")?.Value);
+        Assert.All(newGuids, value => Assert.True(Guid.TryParse(value, out _), $"Invalid GUID '{value}'."));
+        Assert.Equal(newGuids.Length, newGuids.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.DoesNotContain(
+            newGuids,
+            value => string.Equals(value, "736FC2A9-9B0A-2E00-F7C8-95A4A6811FEE", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "387007A5-9269-1362-A0E7-DFEA4AC68E02", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Required_assets_exist_and_are_structurally_loadable()
+    {
+        var assets = Path.Combine(TestPaths.RepositoryRoot, "src", "SurvivalcraftTravelMap", "Assets");
+        var required = new[]
+        {
+            "BlockPixelColor.json",
+            "Point.png",
+            "TeleportButton.png",
+            "TeleportButton_Pressed.png",
+            "TeleportTo.png",
+        };
+
+        Assert.Equal(required, Directory.GetFiles(assets).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+        using var colors = JsonDocument.Parse(File.ReadAllText(Path.Combine(assets, required[0])));
+        Assert.Equal(257, colors.RootElement.EnumerateObject().Count());
+        foreach (var name in required.Skip(1))
+        {
+            var bytes = File.ReadAllBytes(Path.Combine(assets, name));
+            Assert.True(bytes.Length >= 24, $"{name} is truncated.");
+            Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, bytes[..8]);
+            Assert.Equal("IHDR", Encoding.ASCII.GetString(bytes, 12, 4));
+            Assert.True(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(16, 4)) > 0);
+            Assert.True(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(20, 4)) > 0);
+        }
     }
 }
 
@@ -133,6 +246,47 @@ public sealed class PackageVerifierBehaviorTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("PACKAGE_OK", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verifier_rejects_a_package_with_the_wrong_filename()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        var renamed = Path.Combine(temporaryDirectory.Path, "TravelMap.netmod");
+        File.Move(package, renamed);
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, renamed);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("SurvivalcraftTravelMap.netmod", result.AllOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verifier_rejects_a_missing_required_asset()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        PackageFixtures.RemoveEntry(package, "Assets/Point.png");
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, package);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Assets/Point.png", result.AllOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verifier_rejects_setting_png_even_under_assets()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreatePackage(
+            temporaryDirectory.Path,
+            new PackageEntry("Assets/Setting.png", MinimalPng.Bytes));
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, package);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Setting.png", result.AllOutput, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -171,9 +325,8 @@ public sealed class PackageVerifierBehaviorTests
     public void Verifier_rejects_forbidden_content(string content, string expectedMessage)
     {
         using var temporaryDirectory = new TemporaryDirectory();
-        var package = PackageFixtures.CreatePackage(
-            temporaryDirectory.Path,
-            new PackageEntry("Assets/forbidden.txt", content));
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        PackageFixtures.ReplaceEntry(package, "Assets/BlockPixelColor.json", Encoding.UTF8.GetBytes(content));
 
         var result = PowerShellRunner.Run(TestPaths.VerifyScript, package);
 
@@ -223,7 +376,13 @@ public sealed class DeterministicBuildBehaviorTests
     }
 }
 
-internal sealed record PackageEntry(string Name, string Content);
+internal sealed record PackageEntry(string Name, byte[] Content)
+{
+    internal PackageEntry(string name, string content)
+        : this(name, Encoding.UTF8.GetBytes(content))
+    {
+    }
+}
 
 internal sealed record PowerShellResult(int ExitCode, string StandardOutput, string StandardError)
 {
@@ -249,11 +408,20 @@ internal static class PackageFixtures
 
     internal static string CreatePackage(string directory, params PackageEntry[] additionalEntries)
     {
-        var packagePath = Path.Combine(directory, "fixture.netmod");
+        var packagePath = Path.Combine(directory, "SurvivalcraftTravelMap.netmod");
         using var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create);
         AddEntry(archive, new PackageEntry("SurvivalcraftTravelMap.dll", "clean mod assembly"));
-        AddEntry(archive, new PackageEntry("modinfo.json", "{}"));
-        AddEntry(archive, new PackageEntry("mod.netxdb", "<SurvivalCraftMap />"));
+        AddEntry(
+            archive,
+            new PackageEntry(
+                "modinfo.json",
+                "{\"Name\":\"Survivalcraft Travel Map\",\"Version\":\"1.0.0\",\"ApiVersion\":\"1.44\",\"ScVersion\":\"2.4.40.6\",\"PackageName\":\"SurvivalcraftTravelMap\",\"Dependencies\":[]}"));
+        AddEntry(archive, new PackageEntry("mod.netxdb", FinalXdb));
+        AddEntry(archive, new PackageEntry("Assets/BlockPixelColor.json", CreateColorJson()));
+        AddEntry(archive, new PackageEntry("Assets/Point.png", MinimalPng.Bytes));
+        AddEntry(archive, new PackageEntry("Assets/TeleportButton.png", MinimalPng.Bytes));
+        AddEntry(archive, new PackageEntry("Assets/TeleportButton_Pressed.png", MinimalPng.Bytes));
+        AddEntry(archive, new PackageEntry("Assets/TeleportTo.png", MinimalPng.Bytes));
 
         foreach (var entry in additionalEntries)
         {
@@ -263,12 +431,47 @@ internal static class PackageFixtures
         return packagePath;
     }
 
+    internal static void RemoveEntry(string packagePath, string entryName)
+    {
+        using var archive = ZipFile.Open(packagePath, ZipArchiveMode.Update);
+        archive.GetEntry(entryName)?.Delete();
+    }
+
+    internal static void ReplaceEntry(string packagePath, string entryName, byte[] content)
+    {
+        using var archive = ZipFile.Open(packagePath, ZipArchiveMode.Update);
+        archive.GetEntry(entryName)?.Delete();
+        AddEntry(archive, new PackageEntry(entryName, content));
+    }
+
     private static void AddEntry(ZipArchive archive, PackageEntry fixture)
     {
         var entry = archive.CreateEntry(fixture.Name);
-        using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
-        writer.Write(fixture.Content);
+        using var stream = entry.Open();
+        stream.Write(fixture.Content);
     }
+
+    private static string CreateColorJson() =>
+        "{" + string.Join(",", Enumerable.Range(0, 257).Select(index => $"\"{index}\":\"#000000\"")) + "}";
+
+    private const string FinalXdb = """
+        <SurvivalCraftMap>
+          <EntityTemplate Name="Player" Guid="4be6c1c5-d65d-4537-8a8b-a391969e6dc2">
+            <MemberComponentTemplate Name="TravelMap" Guid="32be124c-0f5b-4ca0-ae58-df7fa2b707d3" InheritanceParent="4b67335f-9888-4824-9f0e-cc5f72204b8e" />
+          </EntityTemplate>
+          <Folder Name="Gameplay" Guid="d3d4b692-acc9-4128-9b99-a5acf1de1fbb">
+            <ComponentTemplate Name="TravelMap" Guid="4b67335f-9888-4824-9f0e-cc5f72204b8e" InheritanceParent="b05700ed-7e4e-4679-98f5-b597f421496b">
+              <Parameter Name="Class" Guid="e14340ef-ab75-4dbe-aad2-9b08f7b7b61a" Value="SurvivalcraftTravelMap.Mod.TravelMapComponent" Type="string" />
+            </ComponentTemplate>
+          </Folder>
+        </SurvivalCraftMap>
+        """;
+}
+
+internal static class MinimalPng
+{
+    internal static byte[] Bytes { get; } = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
 }
 
 internal static class PowerShellRunner
@@ -351,6 +554,13 @@ internal static class TestPaths
         "SurvivalcraftTravelMap",
         "Mod",
         "TravelMapModLoader.cs");
+
+    internal static string Component => Path.Combine(
+        RepositoryRoot,
+        "src",
+        "SurvivalcraftTravelMap",
+        "Mod",
+        "TravelMapComponent.cs");
 
     internal static string Xdb => Path.Combine(
         RepositoryRoot,

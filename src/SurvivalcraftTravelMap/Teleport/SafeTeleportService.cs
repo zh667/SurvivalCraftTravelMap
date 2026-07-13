@@ -164,7 +164,7 @@ public sealed class SafeTeleportService
             static state => ((TaskCompletionSource)state!).TrySetResult(),
             cancellationSignal);
 
-        Task<IChunkLoadLease> loadTask;
+        Task<IChunkLoadLease>? loadTask = null;
         Task timeoutTask;
         try
         {
@@ -179,6 +179,11 @@ public sealed class SafeTeleportService
         {
             loadCancellation.Cancel();
             timeoutCancellation.Cancel();
+            if (loadTask is not null)
+            {
+                DisposeAbandonedLease(loadTask);
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
             throw;
         }
