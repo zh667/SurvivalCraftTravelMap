@@ -9,30 +9,41 @@
 ## 状态规则
 
 - `PASS（自动）`：已执行命令并保存可重复证据。
-- `待人工游戏内验证`：本次没有启动可见游戏 GUI，也没有修改真实 `NetMods`、用户世界或玩家数据；不得视为通过。
+- `待人工游戏内验证`：当前修复包尚未在该场景完成可见游戏 GUI 验证；不得视为通过。
+- `待第二轮实机复测`：旧候选包已复现问题，代码修复和专项测试已完成，但修复包尚未重新进入同一场景确认。
 - `FAIL`：已复现失败，必须记录日志和坐标。
 
-## 自动集成结果
+## 自动集成结果（历史 RC）
+
+下表记录的是首次进入世界前的 RC 验证。实机诊断后的修复已使该包失效为历史候选，不能沿用下表的 414/414 或旧包 SHA-256 作为最终结果；当前修复版的自动验证和哈希记录见后面的“实机诊断记录”。
 
 | 项目 | 状态 | 复现与证据 |
 |---|---|---|
 | Release 单元/集成测试 | PASS（自动） | `dotnet test SurvivalcraftTravelMap.sln --configuration Release --no-restore`：414/414 通过。 |
 | 警告视为错误构建 | PASS（自动） | `dotnet build SurvivalcraftTravelMap.sln --configuration Release --no-restore -warnaserror`：0 warnings / 0 errors。 |
 | XDB 单次注入 | PASS（自动） | `PackageStructureTests.Final_xdb_injects_exactly_one_travel_map_component_with_new_guids` 校验 Player 只有一个 `TravelMap` 成员、一个组件模板和全新 GUID。 |
-| 封包 allowlist/身份/资源 | PASS（自动） | `Build-NetMod.ps1` 后 `Verify-Package.ps1` 输出 `PACKAGE_OK`；包中精确包含 DLL、manifest、XDB 和 5 个指定资源。禁用 SourceLink 提交输入后，干净 HEAD 连续两次构建的包与 DLL 均逐字节一致；最终候选包 SHA-256：`6AF2115B59AA55EE9844551A7E3C4C2DBE04F7858D81D8D5DB3BDC13681F88FB`；包内 DLL SHA-256：`30EC1BA76D8C2AA7E436FA781D3A6D4FEF60B5964A6B5C79FFA474CD944682B2`。DLL informational version 固定为 `1.0.0`，不含当前或父提交 SHA。 |
+| 封包 allowlist/身份/资源 | PASS（自动） | `Build-NetMod.ps1` 后 `Verify-Package.ps1` 输出 `PACKAGE_OK`；包中精确包含 DLL、manifest、XDB 和 5 个指定资源。禁用 SourceLink 提交输入后，干净 HEAD 连续两次构建的包与 DLL 均逐字节一致；历史候选包 SHA-256：`6AF2115B59AA55EE9844551A7E3C4C2DBE04F7858D81D8D5DB3BDC13681F88FB`；包内 DLL SHA-256：`30EC1BA76D8C2AA7E436FA781D3A6D4FEF60B5964A6B5C79FFA474CD944682B2`。DLL informational version 固定为 `1.0.0`，不含当前或父提交 SHA。 |
 | 项目自有地图调色表 | PASS（自动） | `Generate-BlockPalette.ps1` 不读取旧文件，以确定性 HSV 算法和游戏公开 block Index 常用颜色覆盖生成 257 项；字节可复现测试通过。新 SHA-256：`E03B7EC6F4DAE056A1213CD01FED7F4A0CFA845A1FAE63385403BC96077A81C7`，不同于旧文件。 |
 | 协议注册 | PASS（自动） | 测试反射程序集并确认只有 IPackage 41/61，无 60；61 冲突时回滚 41。 |
 | 34GPSFix 冲突门禁 | PASS（自动） | 启动策略测试只查询 `34GPSFix`，冲突时注册调用为 0；组件 Load 在玩家运行时初始化前再次门禁。 |
 | 原始 34GPSFix 字节不变 | PASS（自动） | Build + Verify 前后 SHA-256 均为 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。 |
 | Mod 数量上报禁用 | PASS（自动） | 源码审计测试拒绝 `AntiCheatReportPackage`、`ReadOnlyModList*`、`CheckDataBaseValid`、`181215270` 和 ID 60。 |
-| 隔离副本启动到主菜单 | PASS（自动） | 仅把最终包放入隔离游戏副本，隐藏启动 15 秒；日志记录资源数 8、DLL/XDB 加载及 `Entered screen "MainMenu"`，无 ERROR/EXCEPTION/FATAL。该项不替代下面的游戏内矩阵。 |
+| 隔离副本启动到主菜单 | PASS（自动） | 仅把历史候选包放入隔离游戏副本，隐藏启动 15 秒；日志记录资源数 8、DLL/XDB 加载及 `Entered screen "MainMenu"`，无 ERROR/EXCEPTION/FATAL。该项不替代下面的游戏内矩阵。 |
+
+## 实机诊断记录
+
+- 第一轮隔离世界测试发现玩家组件没有由 `mod.netxdb` 注入，同时联机版单人世界被错误当作 `WorkType.Local`。注入与运行能力判定修复后，日志已出现数据库组件注入和 `workType=Server, main=True, ui=True`，确认该场景是具有本地主玩家 UI 的集成主机。
+- 第二轮隔离世界测试中，`M` 已可打开大地图，但右上角小地图不可见；地图只显示初始不透明区域，当前坐标被保存为探索位为真但 `RGBA=0,0,0,0`；地图和坐标点传送未完成。
+- 针对第二轮现象已实现三组修复：以 `GuiWidget.ActualSize` 逻辑坐标定位右上角控件；仅采样 `TerrainChunkState.Valid` 且非透明的地形，旧透明探索像素自动恢复为未探索并可补采样；集成主机绕开远程 ID 61 的 4 秒期限，并在成功提交后通过 `PositionSet` 同步权威位置。
+- 上述修复已通过 439/439 全量测试、`-warnaserror` 零警告构建和 `PACKAGE_OK` 封包校验。当前修复包 SHA-256 为 `DE63AFAFB98DA7149E858F4ED69A5ADB55C9FFAED460BB73D38E3B6D320BC0CE`，包内 DLL SHA-256 为 `A54CB8576EB6ACB6380CFD452CB0DBE9D28B5CADC8EA136DBC842D42C787BFCB`；隔离副本中的包哈希与构建产物一致。第二轮实机复测仍未完成。
 
 ## 游戏内矩阵
 
-所有项目目前均为 `待人工游戏内验证`。测试前创建世界副本，并把测试包放到隔离的游戏副本 `NetMods`；不要覆盖真实世界或原 `34GPSFix.netmod`。
+下列项目均需使用重新构建的当前修复包复测。测试前创建世界副本，并把测试包放到隔离的游戏副本 `NetMods`；不要覆盖真实世界或原 `34GPSFix.netmod`。
 
 | 场景 | 状态 | 最小复现步骤 | 通过标准 |
 |---|---|---|---|
+| 集成主机运行时修复 | 待第二轮实机复测 | 使用保留旧透明瓦片的隔离 World2 进入世界；确认右上角小地图；走到此前透明的当前区域；分别尝试右键已探索地图位置和坐标点传送。 | 小地图在当前 UI 缩放下可见；有效区块自动补绘且不需删缓存；两种传送安全完成或给出明确安全失败；日志记录权威结果。 |
 | 平坦地面 | 待人工游戏内验证 | 进入复制世界，在草地行走 50 格，按 M，右键已探索平地传送。 | 小/大地图显示一致；落点中心、无伤害、无卡墙。 |
 | 森林 | 待人工游戏内验证 | 穿过密林并在树冠/树干附近选择传送。 | 树叶不作为地面；两格净空；找不到安全位时不移动。 |
 | 山地 | 待人工游戏内验证 | 探索陡坡和山顶，选择坡边传送。 | 半径 8 内选择安全实体地面，不坠落。 |

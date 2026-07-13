@@ -119,6 +119,18 @@ public sealed record BlockPixelData(
                     $"Block pixel color key {key} declares mismatched BlockIndex {value.BlockIndex}.");
             }
 
+            if (key == 0 && value.Color.A != 0)
+            {
+                throw new InvalidDataException(
+                    "Block pixel color key 0 represents air and must be transparent (A=0).");
+            }
+
+            if (key != 0 && value.Color.A == 0)
+            {
+                throw new InvalidDataException(
+                    $"Block pixel color key {key} must not be transparent; A=0 is reserved for unavailable air pixels.");
+            }
+
             copy.Add(key, value);
         }
 

@@ -10,6 +10,35 @@ public sealed class TerrainMapSamplerTests
     private static readonly int[] TransparentTopContents = [28, 99, 19, 174, 25];
     private static readonly int[] WaterVariantContents = [226, 229, 232, 233];
 
+    [Fact]
+    public void Try_sample_rejects_a_transparent_air_pixel()
+    {
+        var source = new FakeTerrainMapSource(topHeight: 0, defaultContent: 0);
+        var sampler = new TerrainMapSampler(source, CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+        {
+            [0] = Pixel(0, 0, 0, 0, alpha: 0),
+        }));
+
+        var sampled = sampler.TrySample(12, -8, out var color);
+
+        Assert.False(sampled);
+        Assert.Equal(default, color);
+    }
+
+    [Fact]
+    public void Try_sample_does_not_read_an_unready_terrain_column()
+    {
+        var source = new FakeTerrainMapSource(defaultContent: 1, isReady: false);
+        var sampler = new TerrainMapSampler(source, CreatePixelData());
+
+        var sampled = sampler.TrySample(12, -8, out var color);
+
+        Assert.False(sampled);
+        Assert.Equal(default, color);
+        Assert.Empty(source.SampledColumns);
+        Assert.Empty(source.ContentCalls);
+    }
+
     [Theory]
     [MemberData(nameof(TransparentTopCases))]
     public void Transparent_top_content_reveals_the_block_one_cell_below(int transparentContent)
@@ -153,6 +182,30 @@ public sealed class TerrainMapSamplerTests
     }
 
     [Fact]
+    public void Json_dictionary_rejects_a_transparent_non_air_color()
+    {
+        using var stream = CreatePixelJsonStream(transparentKey: 42);
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => new TerrainMapSampler(new FakeTerrainMapSource(), stream));
+
+        Assert.Contains("42", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("transparent", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Json_dictionary_rejects_an_opaque_air_color()
+    {
+        using var stream = CreatePixelJsonStream(opaqueAir: true);
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => new TerrainMapSampler(new FakeTerrainMapSource(), stream));
+
+        Assert.Contains("0", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("transparent", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Bundled_color_asset_contains_exactly_257_valid_entries()
     {
         var path = Path.Combine(
@@ -186,6 +239,12 @@ public sealed class TerrainMapSamplerTests
         Assert.Equal(new Rgba32(52, 122, 65, 255), entries[127].Color); // Cactus.
         Assert.Equal(new Rgba32(255, 255, 255, 255), entries[8].Color); // Runtime grass tint.
         Assert.Equal(new Rgba32(255, 255, 255, 255), entries[18].Color); // Runtime water tint.
+        Assert.Equal(
+            [0],
+            entries.Values
+                .Where(entry => entry.Color.A == 0)
+                .Select(entry => entry.BlockIndex)
+                .ToArray());
     }
 
     [Fact]
@@ -216,7 +275,9 @@ public sealed class TerrainMapSamplerTests
         IReadOnlyDictionary<int, BlockPixelData>? overrides = null)
     {
         var result = Enumerable.Range(0, 257)
-            .ToDictionary(index => index, index => Pixel(index, 1, 2, 3));
+            .ToDictionary(
+                index => index,
+                index => Pixel(index, 1, 2, 3, alpha: index == 0 ? (byte)0 : (byte)255));
 
         if (overrides is not null)
         {
@@ -238,7 +299,11 @@ public sealed class TerrainMapSamplerTests
         bool changesWithEnvironment = false) =>
         new(index, new Rgba32(r, g, b, alpha), changesWithEnvironment);
 
-    private static MemoryStream CreatePixelJsonStream(int? excludedKey = null, bool addExtraKey = false)
+    private static MemoryStream CreatePixelJsonStream(
+        int? excludedKey = null,
+        bool addExtraKey = false,
+        int? transparentKey = null,
+        bool opaqueAir = false)
     {
         var data = Enumerable.Range(0, 257)
             .Where(index => index != excludedKey)
@@ -247,7 +312,13 @@ public sealed class TerrainMapSamplerTests
                 index => new
                 {
                     BlockIndex = index,
-                    Color = new { R = index % 256, G = 20, B = 30, A = 255 },
+                    Color = new
+                    {
+                        R = index % 256,
+                        G = 20,
+                        B = 30,
+                        A = index == transparentKey || (index == 0 && !opaqueAir) ? 0 : 255,
+                    },
                     NeedChangeWithEnvironment = false,
                 });
 
@@ -269,7 +340,8 @@ internal sealed class FakeTerrainMapSource(
     int topHeight = 64,
     int defaultContent = 1,
     int seasonalTemperature = 8,
-    int seasonalHumidity = 8) : ITerrainMapSource
+    int seasonalHumidity = 8,
+    bool isReady = true) : ITerrainMapSource
 {
     private readonly Dictionary<(int X, int Y, int Z), int> _contents = [];
 
@@ -282,6 +354,8 @@ internal sealed class FakeTerrainMapSource(
     internal List<(int X, int Z)> HumidityCalls { get; } = [];
 
     internal void SetContent(int x, int y, int z, int content) => _contents[(x, y, z)] = content;
+
+    public bool IsColumnReady(int x, int z) => isReady;
 
     public int GetTopHeight(int x, int z)
     {

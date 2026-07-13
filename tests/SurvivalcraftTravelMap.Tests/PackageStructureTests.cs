@@ -170,6 +170,26 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
+    public void Hud_overlays_are_positioned_in_gui_logical_coordinates()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var miniMapStart = component.IndexOf("private void UpdateMiniMapPosition()", StringComparison.Ordinal);
+        var miniMapEnd = component.IndexOf("private void InitializeInvitationUi()", miniMapStart, StringComparison.Ordinal);
+        var invitationStart = component.IndexOf("private void PositionInvitationButton()", StringComparison.Ordinal);
+        var invitationEnd = component.IndexOf("private ", invitationStart + 8, StringComparison.Ordinal);
+
+        Assert.True(miniMapStart >= 0 && miniMapEnd > miniMapStart);
+        Assert.True(invitationStart >= 0 && invitationEnd > invitationStart);
+        var miniMapPositioning = component[miniMapStart..miniMapEnd];
+        var invitationPositioning = component[invitationStart..invitationEnd];
+
+        Assert.Contains("Player.GuiWidget.ActualSize", miniMapPositioning, StringComparison.Ordinal);
+        Assert.Contains("Player.GuiWidget.ActualSize", invitationPositioning, StringComparison.Ordinal);
+        Assert.DoesNotContain("ActiveCamera.ViewportSize", miniMapPositioning, StringComparison.Ordinal);
+        Assert.DoesNotContain("ActiveCamera.ViewportSize", invitationPositioning, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Assembly_exposes_exactly_network_package_ids_41_and_61()
     {
         var packageTypes = typeof(TravelMapModLoader).Assembly.GetTypes()
@@ -247,7 +267,8 @@ public sealed class PackageStructureTests
         Assert.DoesNotContain(
             newGuids,
             value => string.Equals(value, "736FC2A9-9B0A-2E00-F7C8-95A4A6811FEE", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(value, "387007A5-9269-1362-A0E7-DFEA4AC68E02", StringComparison.OrdinalIgnoreCase));
+                || string.Equals(value, "387007A5-9269-1362-A0E7-DFEA4AC68E02", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "B13D2D65-46A7-D038-8111-DE8FCBA58FBC", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

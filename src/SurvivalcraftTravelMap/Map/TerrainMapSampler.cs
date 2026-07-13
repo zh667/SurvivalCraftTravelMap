@@ -2,6 +2,8 @@ namespace SurvivalcraftTravelMap.Map;
 
 public interface ITerrainMapSource
 {
+    bool IsColumnReady(int x, int z);
+
     int GetTopHeight(int x, int z);
 
     int GetContent(int x, int y, int z);
@@ -60,6 +62,24 @@ public sealed class TerrainMapSampler
         var humidity = _terrain.GetSeasonalHumidity(x, z);
         var environmentColor = EnvironmentPalettes.Lookup(content, temperature, humidity);
         return Multiply(environmentColor, pixel.Color);
+    }
+
+    public bool TrySample(int x, int z, out Rgba32 color)
+    {
+        if (!_terrain.IsColumnReady(x, z))
+        {
+            color = default;
+            return false;
+        }
+
+        color = Sample(x, z);
+        if (color.A != 0)
+        {
+            return true;
+        }
+
+        color = default;
+        return false;
     }
 
     private static int GetTemperatureAdjustmentAtHeight(int y) =>

@@ -11,7 +11,7 @@ public sealed class TravelMapStorageIdentityTests
     {
         var player = Guid.Parse("7b570f99-8a40-40bd-9685-522f5b3ec3fc");
         var input = new TravelMapStorageIdentityInput(
-            TravelMapWorkType.Local,
+            TravelMapStorageScope.LocalWorld,
             "C:/app",
             "C:/Worlds/Survival One",
             null,
@@ -36,7 +36,7 @@ public sealed class TravelMapStorageIdentityTests
     {
         var player = Guid.Parse("6c413954-9438-4747-ad91-e561f76949c1");
         var input = new TravelMapStorageIdentityInput(
-            TravelMapWorkType.Client,
+            TravelMapStorageScope.RemoteServer,
             "C:/app",
             null,
             "play.example.test",
@@ -62,7 +62,7 @@ public sealed class TravelMapStorageIdentityTests
         bool missingPlayer)
     {
         var input = new TravelMapStorageIdentityInput(
-            TravelMapWorkType.Client,
+            TravelMapStorageScope.RemoteServer,
             "C:/app",
             null,
             missingEndpoint ? null : "play.example.test",

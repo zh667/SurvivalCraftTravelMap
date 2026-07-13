@@ -659,6 +659,102 @@ public sealed class CoordinateTeleportClientSessionTests
         Assert.Equal(2u, sequence.Next([1u]));
     }
 
+    [Fact]
+    public async Task Integrated_host_dispatch_honors_server_mode_switches_without_bypassing_the_executor()
+    {
+        var executor = new HostRecordingExecutor();
+        using var host = new AuthoritativeHostTeleportSession(
+            "host-player",
+            executor,
+            new CoordinateTeleportServerOptions
+            {
+                SurfaceTeleportEnabled = false,
+                WaypointTeleportEnabled = true,
+            });
+
+        var result = await host.RequestSurfaceAsync(
+            10,
+            20,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CoordinateTeleportResultCode.Disabled, result);
+        Assert.Equal(0, executor.CallCount);
+    }
+
+    [Fact]
+    public async Task Integrated_host_dispatch_executes_waypoint_through_the_authoritative_executor()
+    {
+        var executor = new HostRecordingExecutor();
+        using var host = new AuthoritativeHostTeleportSession(
+            "host-player",
+            executor,
+            new CoordinateTeleportServerOptions());
+        var target = new Vector3(-12.5f, 42.25f, 88.5f);
+
+        var result = await host.RequestWaypointAsync(
+            target,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CoordinateTeleportResultCode.Success, result);
+        Assert.Equal(target, executor.WaypointTarget);
+    }
+
+    [Fact]
+    public async Task Integrated_host_allows_safe_execution_to_outlast_the_network_deadline()
+    {
+        var executor = new HostRecordingExecutor
+        {
+            Delay = CoordinateTeleportServerSession.ExecutionDeadline
+                + TimeSpan.FromMilliseconds(250),
+        };
+        using var host = new AuthoritativeHostTeleportSession(
+            "host-player",
+            executor,
+            new CoordinateTeleportServerOptions());
+
+        var result = await host.RequestSurfaceAsync(
+            10,
+            20,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CoordinateTeleportResultCode.Success, result);
+        Assert.Equal((10, 20), executor.SurfaceTarget);
+    }
+
+    [Theory]
+    [InlineData(TeleportResult.Success, CoordinateTeleportResultCode.Success)]
+    [InlineData(TeleportResult.NoSafePosition, CoordinateTeleportResultCode.NoSafePosition)]
+    public async Task Integrated_host_reports_each_result_with_request_context(
+        TeleportResult executorResult,
+        CoordinateTeleportResultCode expectedResult)
+    {
+        var executor = new HostRecordingExecutor { Result = executorResult };
+        var reported = new List<(CoordinateTeleportMessage Message, CoordinateTeleportResultCode Result)>();
+        using var host = CreateObservedHost(
+            executor,
+            (message, result) => reported.Add((message, result)));
+        var target = new Vector3(-12.5f, 42.25f, 88.5f);
+
+        var result = await host.RequestWaypointAsync(
+            target,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(expectedResult, result);
+        var observation = Assert.Single(reported);
+        Assert.Equal(CoordinateTeleportMessageKind.WaypointRequest, observation.Message.Kind);
+        Assert.Equal(target, observation.Message.Target);
+        Assert.Equal(expectedResult, observation.Result);
+    }
+
+    private static AuthoritativeHostTeleportSession CreateObservedHost(
+        ICoordinateTeleportExecutor executor,
+        Action<CoordinateTeleportMessage, CoordinateTeleportResultCode> reportResult) =>
+        new(
+            "host-player",
+            executor,
+            new CoordinateTeleportServerOptions(),
+            reportResult);
+
     private static async Task WaitForCountAsync<T>(IReadOnlyCollection<T> values, int count)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
@@ -668,6 +764,40 @@ public sealed class CoordinateTeleportClientSessionTests
         }
 
         Assert.True(values.Count >= count);
+    }
+
+    private sealed class HostRecordingExecutor : ICoordinateTeleportExecutor
+    {
+        internal int CallCount { get; private set; }
+
+        internal TimeSpan Delay { get; init; }
+
+        internal TeleportResult Result { get; init; } = TeleportResult.Success;
+
+        internal (int X, int Z)? SurfaceTarget { get; private set; }
+
+        internal Vector3? WaypointTarget { get; private set; }
+
+        public async Task<TeleportResult> TeleportToSurfaceAsync(
+            int x,
+            int z,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            SurfaceTarget = (x, z);
+            await Task.Delay(Delay, cancellationToken);
+            return Result;
+        }
+
+        public async Task<TeleportResult> TeleportToWaypointAsync(
+            Vector3 xyz,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            WaypointTarget = xyz;
+            await Task.Delay(Delay, cancellationToken);
+            return Result;
+        }
     }
 
     private sealed class ManualProtocolClock : ICoordinateTeleportProtocolClock
@@ -707,12 +837,13 @@ public sealed class NetworkAdapterContractTests
         var directPositionWrites = 0;
         Task<CoordinateTeleportResultCode>? networkOperation = null;
         var router = new TravelMapTeleportRouter(
-            TravelMapWorkType.Client,
+            new TravelMapRuntimeContext(TravelMapWorkType.Client, IsMainPlayer: true, HasUi: true),
             (_, _) =>
             {
                 directPositionWrites++;
                 return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
             },
+            authoritativeHostRequest: null,
             command => networkOperation = session.RequestSurfaceAsync(
                 (int)command.Target.X,
                 (int)command.Target.Z,
@@ -744,12 +875,13 @@ public sealed class NetworkAdapterContractTests
         Task<CoordinateTeleportResultCode>? networkOperation = null;
         var session = new CoordinateTeleportClientSession("server", _ => { }, clock, _ => { });
         var router = new TravelMapTeleportRouter(
-            TravelMapWorkType.Client,
+            new TravelMapRuntimeContext(TravelMapWorkType.Client, IsMainPlayer: true, HasUi: true),
             (_, _) =>
             {
                 directPositionWrites++;
                 return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
             },
+            authoritativeHostRequest: null,
             command => networkOperation = session.RequestWaypointAsync(
                 command.Target,
                 CancellationToken.None));

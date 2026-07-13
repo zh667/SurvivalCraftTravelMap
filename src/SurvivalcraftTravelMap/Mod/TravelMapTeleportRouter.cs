@@ -21,8 +21,9 @@ public sealed record TravelMapClientTravelCommand(
     TravelMapClientTravelMode Mode = TravelMapClientTravelMode.Waypoint);
 
 public sealed class TravelMapTeleportRouter(
-    TravelMapWorkType workType,
+    TravelMapRuntimeContext runtimeContext,
     Func<Vector3, CancellationToken, Task<TravelMapTeleportDispatchResult>> localRequest,
+    Func<TravelMapClientTravelCommand, CancellationToken, Task<TravelMapTeleportDispatchResult>>? authoritativeHostRequest,
     Action<TravelMapClientTravelCommand>? clientCommand)
 {
     private readonly Func<Vector3, CancellationToken, Task<TravelMapTeleportDispatchResult>> _localRequest =
@@ -48,15 +49,22 @@ public sealed class TravelMapTeleportRouter(
         TravelMapClientTravelMode mode,
         CancellationToken cancellationToken)
     {
-        if (workType == TravelMapWorkType.Local)
+        if (runtimeContext.WorkType == TravelMapWorkType.Local)
         {
             return _localRequest(target, cancellationToken);
         }
 
-        if (workType == TravelMapWorkType.Client && clientCommand is not null)
+        var command = new TravelMapClientTravelCommand(target, mode);
+        if (TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(runtimeContext)
+            && authoritativeHostRequest is not null)
+        {
+            return authoritativeHostRequest(command, cancellationToken);
+        }
+
+        if (runtimeContext.WorkType == TravelMapWorkType.Client && clientCommand is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            clientCommand(new TravelMapClientTravelCommand(target, mode));
+            clientCommand(command);
             return Task.FromResult(TravelMapTeleportDispatchResult.CommandQueued);
         }
 

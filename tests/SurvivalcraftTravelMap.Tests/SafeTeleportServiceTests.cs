@@ -227,6 +227,22 @@ public sealed class SafeTeleportServiceTests
     }
 
     [Fact]
+    public async Task Successful_post_validation_notifies_the_authoritative_position_commit_once()
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        var commitCount = 0;
+        var service = CreateObservedService(context, () => commitCount++);
+
+        var result = await service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Success, result);
+        Assert.Equal(1, commitCount);
+    }
+
+    [Fact]
     public async Task Equal_distance_candidates_prefer_the_one_with_safer_surroundings()
     {
         var context = new TeleportTestContext();
@@ -489,6 +505,62 @@ public sealed class SafeTeleportServiceTests
         Assert.Equal(1, context.Mover.RestoreAttempts);
         Assert.Equal(0, context.Mover.ExactRestoreAttempts);
         Assert.Equal(1, context.Chunks.Lease.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Rolled_back_post_validation_never_notifies_an_authoritative_position_commit()
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Clock.WaitForUpdate = cancellationToken =>
+        {
+            context.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Lava);
+            return Task.CompletedTask;
+        };
+        var commitCount = 0;
+        var service = CreateObservedService(context, () => commitCount++);
+
+        var result = await service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.RolledBack, result);
+        Assert.Equal(0, commitCount);
+    }
+
+    [Fact]
+    public async Task No_safe_position_never_notifies_an_authoritative_position_commit()
+    {
+        var context = new TeleportTestContext();
+        var commitCount = 0;
+        var service = CreateObservedService(context, () => commitCount++);
+
+        var result = await service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.NoSafePosition, result);
+        Assert.Equal(0, commitCount);
+    }
+
+    [Fact]
+    public async Task Chunk_timeout_never_notifies_an_authoritative_position_commit()
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Chunks.Load = _ => new TaskCompletionSource<IChunkLoadLease>(
+            TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        context.Clock.Delay = (_, _) => Task.CompletedTask;
+        var commitCount = 0;
+        var service = CreateObservedService(context, () => commitCount++);
+
+        var result = await service.TeleportToSurfaceAsync(
+            0,
+            0,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.ChunkTimeout, result);
+        Assert.Equal(0, commitCount);
     }
 
     [Fact]
@@ -844,6 +916,17 @@ public sealed class SafeTeleportServiceTests
         IsFalling = false,
         HasPendingFallDamage = false,
     };
+
+    private static SafeTeleportService CreateObservedService(
+        TeleportTestContext context,
+        Action onPositionCommitted) =>
+        new(
+            context.Terrain,
+            context.Chunks,
+            context.Mover,
+            context.Collisions,
+            context.Clock,
+            onPositionCommitted);
 }
 
 internal sealed class TeleportTestContext

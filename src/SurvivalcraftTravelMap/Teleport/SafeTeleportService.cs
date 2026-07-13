@@ -12,6 +12,7 @@ public sealed class SafeTeleportService
     private readonly IPlayerMover _playerMover;
     private readonly IEntityCollisionQuery _collisionQuery;
     private readonly ITeleportClock _clock;
+    private readonly Action _onPositionCommitted;
     private int _transactionActive;
 
     public SafeTeleportService(
@@ -20,6 +21,23 @@ public sealed class SafeTeleportService
         IPlayerMover playerMover,
         IEntityCollisionQuery collisionQuery,
         ITeleportClock clock)
+        : this(
+            terrain,
+            chunkLoader,
+            playerMover,
+            collisionQuery,
+            clock,
+            static () => { })
+    {
+    }
+
+    public SafeTeleportService(
+        ITerrainAccess terrain,
+        IChunkLoader chunkLoader,
+        IPlayerMover playerMover,
+        IEntityCollisionQuery collisionQuery,
+        ITeleportClock clock,
+        Action onPositionCommitted)
     {
         ArgumentNullException.ThrowIfNull(terrain);
         ArgumentNullException.ThrowIfNull(chunkLoader);
@@ -31,6 +49,8 @@ public sealed class SafeTeleportService
         _playerMover = playerMover;
         _collisionQuery = collisionQuery;
         _clock = clock;
+        _onPositionCommitted = onPositionCommitted
+            ?? throw new ArgumentNullException(nameof(onPositionCommitted));
     }
 
     public async Task<TeleportResult> TeleportToSurfaceAsync(
@@ -433,6 +453,7 @@ public sealed class SafeTeleportService
                 throw new UnsafePostMoveValidationException();
             }
 
+            _onPositionCommitted();
             return TeleportResult.Success;
         }
         catch (Exception originalFailure)

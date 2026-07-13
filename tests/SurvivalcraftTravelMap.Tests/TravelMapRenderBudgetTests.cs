@@ -147,6 +147,20 @@ public sealed class TravelMapRenderBudgetTests
 public sealed class MapTileSnapshotTests
 {
     [Fact]
+    public void Transparent_pixels_from_an_old_tile_are_treated_as_unexplored()
+    {
+        const int x = 4;
+        const int z = 7;
+        var pixelIndex = (z * MapTile.Size) + x;
+        var explored = new byte[MapTile.ExploredByteCount];
+        explored[pixelIndex >> 3] |= (byte)(1 << (pixelIndex & 7));
+        var tile = new MapTile(0, 0, explored, new byte[MapTile.ColorByteCount]);
+
+        Assert.False(tile.TryGetPixel(x, z, out _));
+        Assert.False(tile.CreateVersionedSnapshot().Snapshot.TryGetPixel(x, z, out _));
+    }
+
+    [Fact]
     public async Task Snapshot_version_and_rgba_are_coherent_under_concurrent_writes()
     {
         var tile = new MapTile(0, 0);

@@ -37,7 +37,16 @@ public sealed class ExplorationRecorder(
             {
                 for (var x = minimumX; ; x++)
                 {
-                    var color = _sampler.Sample(x, z);
+                    if (!_sampler.TrySample(x, z, out var color))
+                    {
+                        if (x == maximumX)
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
                     var coordinate = TileCoordinate.FromWorld(x, z);
                     var key = (X: coordinate.TileX, Z: coordinate.TileZ);
                     if (!leases.TryGetValue(key, out var lease))

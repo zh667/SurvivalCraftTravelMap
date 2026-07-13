@@ -440,18 +440,32 @@ public sealed class AdapterContractTests
     }
 
     [Theory]
-    [InlineData(TravelMapWorkType.Local, true, true, true)]
-    [InlineData(TravelMapWorkType.Server, false, true, false)]
-    [InlineData(TravelMapWorkType.Client, true, false, false)]
-    public void Work_type_policy_keeps_ui_and_direct_position_authority_separate(
+    [InlineData(TravelMapWorkType.Local, true, true, true, true, false, true, false)]
+    [InlineData(TravelMapWorkType.Server, true, true, true, true, true, true, true)]
+    [InlineData(TravelMapWorkType.Server, false, true, false, true, false, false, false)]
+    [InlineData(TravelMapWorkType.Server, true, false, false, true, false, true, false)]
+    [InlineData(TravelMapWorkType.Client, true, true, true, false, false, false, true)]
+    [InlineData(TravelMapWorkType.Client, false, true, false, false, false, false, false)]
+    public void Runtime_context_separates_local_ui_ownership_from_network_authority(
         TravelMapWorkType workType,
+        bool isMainPlayer,
+        bool hasUi,
         bool createsUi,
         bool createsTeleportService,
-        bool allowsDirectPositionWrite)
+        bool usesAuthoritativeHostTeleport,
+        bool usesLocalWorldStorage,
+        bool createsInvitationUi)
     {
-        Assert.Equal(createsUi, TravelMapRuntimePolicy.CreatesUi(workType));
+        var context = new TravelMapRuntimeContext(workType, isMainPlayer, hasUi);
+
+        Assert.Equal(createsUi, TravelMapRuntimePolicy.CreatesUi(context));
         Assert.Equal(createsTeleportService, TravelMapRuntimePolicy.CreatesTeleportService(workType));
-        Assert.Equal(allowsDirectPositionWrite, TravelMapRuntimePolicy.AllowsDirectPositionWrite(workType));
+        Assert.Equal(workType == TravelMapWorkType.Local, TravelMapRuntimePolicy.AllowsDirectPositionWrite(context));
+        Assert.Equal(
+            usesAuthoritativeHostTeleport,
+            TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(context));
+        Assert.Equal(usesLocalWorldStorage, TravelMapRuntimePolicy.UsesLocalWorldStorage(context));
+        Assert.Equal(createsInvitationUi, TravelMapRuntimePolicy.CreatesInvitationUi(context));
     }
 
     [Fact]

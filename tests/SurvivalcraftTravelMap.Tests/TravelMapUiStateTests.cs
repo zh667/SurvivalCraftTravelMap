@@ -13,6 +13,30 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class TravelMapUiStateTests
 {
     [Fact]
+    public void Top_right_overlay_position_uses_the_gui_logical_size()
+    {
+        var position = TravelMapOverlayLayout.PlaceTopRight(
+            new Vector2(1062.5f, 597.65625f),
+            new Vector2(384f),
+            rightMargin: 100f,
+            topMargin: 32f);
+
+        Assert.Equal(new Vector2(578.5f, 32f), position);
+    }
+
+    [Fact]
+    public void Top_right_overlay_position_pins_to_origin_when_overlay_is_larger_than_gui()
+    {
+        var position = TravelMapOverlayLayout.PlaceTopRight(
+            new Vector2(320f, 240f),
+            new Vector2(384f),
+            rightMargin: 100f,
+            topMargin: 32f);
+
+        Assert.Equal(Vector2.Zero, position);
+    }
+
+    [Fact]
     public async Task Minimap_wheel_requires_hover_and_unblocked_input_then_persists_sqrt2_zoom()
     {
         var settings = new TravelMapSettings { MiniMapBlocksPerPixel = 2f };
@@ -538,8 +562,9 @@ public sealed class TravelMapTeleportRouterTests
     public async Task Local_safe_entry_failure_remains_distinct_from_missing_multiplayer_protocol()
     {
         var router = new TravelMapTeleportRouter(
-            TravelMapWorkType.Local,
+            new TravelMapRuntimeContext(TravelMapWorkType.Local, IsMainPlayer: true, HasUi: true),
             (_, _) => Task.FromResult(TravelMapTeleportDispatchResult.LocalFailed),
+            authoritativeHostRequest: null,
             clientCommand: null);
 
         var result = await router.RequestAsync(new Vector3(1f, 2f, 3f), TestContext.Current.CancellationToken);
@@ -552,12 +577,13 @@ public sealed class TravelMapTeleportRouterTests
     {
         var localCalls = 0;
         var router = new TravelMapTeleportRouter(
-            TravelMapWorkType.Client,
+            new TravelMapRuntimeContext(TravelMapWorkType.Client, IsMainPlayer: true, HasUi: true),
             (_, _) =>
             {
                 localCalls++;
                 return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
             },
+            authoritativeHostRequest: null,
             clientCommand: null);
 
         var result = await router.RequestAsync(new Vector3(1f, 2f, 3f), TestContext.Current.CancellationToken);
@@ -572,18 +598,48 @@ public sealed class TravelMapTeleportRouterTests
         var localCalls = 0;
         TravelMapClientTravelCommand? emitted = null;
         var router = new TravelMapTeleportRouter(
-            TravelMapWorkType.Client,
+            new TravelMapRuntimeContext(TravelMapWorkType.Client, IsMainPlayer: true, HasUi: true),
             (_, _) =>
             {
                 localCalls++;
                 return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
             },
+            authoritativeHostRequest: null,
             command => emitted = command);
 
         var result = await router.RequestAsync(new Vector3(1f, 2f, 3f), TestContext.Current.CancellationToken);
 
         Assert.Equal(TravelMapTeleportDispatchResult.CommandQueued, result);
         Assert.Equal(new Vector3(1f, 2f, 3f), emitted!.Target);
+        Assert.Equal(0, localCalls);
+    }
+
+    [Fact]
+    public async Task Integrated_server_host_uses_the_authoritative_server_path_not_the_local_writer()
+    {
+        var localCalls = 0;
+        TravelMapClientTravelCommand? authoritativeCommand = null;
+        var router = new TravelMapTeleportRouter(
+            new TravelMapRuntimeContext(TravelMapWorkType.Server, IsMainPlayer: true, HasUi: true),
+            (_, _) =>
+            {
+                localCalls++;
+                return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
+            },
+            (command, _) =>
+            {
+                authoritativeCommand = command;
+                return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
+            },
+            clientCommand: null);
+
+        var result = await router.RequestSurfaceAsync(
+            new Vector3(12f, 99f, -34f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapTeleportDispatchResult.LocalRequested, result);
+        Assert.Equal(TravelMapClientTravelMode.Surface, authoritativeCommand!.Mode);
+        Assert.Equal(new Vector3(12f, 99f, -34f), authoritativeCommand.Target);
         Assert.Equal(0, localCalls);
     }
 }

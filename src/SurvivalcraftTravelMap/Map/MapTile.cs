@@ -50,7 +50,15 @@ public sealed class MapTile
         var pixelIndex = GetPixelIndex(x, z);
         lock (_sync)
         {
-            _explored[pixelIndex >> 3] |= (byte)(1 << (pixelIndex & 7));
+            var exploredMask = (byte)(1 << (pixelIndex & 7));
+            if (color.A == 0)
+            {
+                _explored[pixelIndex >> 3] &= (byte)~exploredMask;
+            }
+            else
+            {
+                _explored[pixelIndex >> 3] |= exploredMask;
+            }
 
             var colorIndex = pixelIndex * 4;
             _colors[colorIndex] = color.R;
@@ -121,6 +129,12 @@ public sealed class MapTile
         }
 
         var colorIndex = pixelIndex * 4;
+        if (colors[colorIndex + 3] == 0)
+        {
+            color = default;
+            return false;
+        }
+
         color = new Rgba32(
             colors[colorIndex],
             colors[colorIndex + 1],

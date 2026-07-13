@@ -630,6 +630,135 @@ public sealed class CoordinateTeleportServerSession : IDisposable
         unchecked((int)(candidate - previous)) > 0;
 }
 
+public sealed class AuthoritativeHostTeleportSession : IDisposable
+{
+    private readonly object _sync = new();
+    private readonly ICoordinateTeleportExecutor _executor;
+    private readonly CoordinateTeleportServerOptions _options;
+    private readonly Action<CoordinateTeleportMessage, CoordinateTeleportResultCode> _reportResult;
+    private readonly CoordinateTeleportRequestIdSequence _requestIds = new();
+    private readonly CancellationTokenSource _disconnect = new();
+    private bool _disposed;
+
+    public AuthoritativeHostTeleportSession(
+        string hostIdentity,
+        ICoordinateTeleportExecutor executor,
+        CoordinateTeleportServerOptions options)
+        : this(hostIdentity, executor, options, static (_, _) => { })
+    {
+    }
+
+    public AuthoritativeHostTeleportSession(
+        string hostIdentity,
+        ICoordinateTeleportExecutor executor,
+        CoordinateTeleportServerOptions options,
+        Action<CoordinateTeleportMessage, CoordinateTeleportResultCode> reportResult)
+    {
+        if (string.IsNullOrWhiteSpace(hostIdentity))
+        {
+            throw new ArgumentException("Host identity is required.", nameof(hostIdentity));
+        }
+
+        _executor = executor ?? throw new ArgumentNullException(nameof(executor));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _reportResult = reportResult ?? throw new ArgumentNullException(nameof(reportResult));
+    }
+
+    public Task<CoordinateTeleportResultCode> RequestSurfaceAsync(
+        int x,
+        int z,
+        CancellationToken cancellationToken) =>
+        RequestAsync(
+            requestId => CoordinateTeleportMessage.SurfaceRequest(requestId, x, z),
+            cancellationToken);
+
+    public Task<CoordinateTeleportResultCode> RequestWaypointAsync(
+        Vector3 target,
+        CancellationToken cancellationToken) =>
+        RequestAsync(
+            requestId => CoordinateTeleportMessage.WaypointRequest(requestId, target),
+            cancellationToken);
+
+    public void Dispose()
+    {
+        lock (_sync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _disconnect.Cancel();
+        }
+    }
+
+    private async Task<CoordinateTeleportResultCode> RequestAsync(
+        Func<uint, CoordinateTeleportMessage> createMessage,
+        CancellationToken cancellationToken)
+    {
+        uint requestId;
+        lock (_sync)
+        {
+            if (_disposed)
+            {
+                return CoordinateTeleportResultCode.Disconnected;
+            }
+
+            requestId = _requestIds.Next([]);
+        }
+
+        var message = createMessage(requestId);
+        CoordinateTeleportResultCode result;
+        if ((message.Kind == CoordinateTeleportMessageKind.SurfaceRequest
+                && !_options.SurfaceTeleportEnabled)
+            || (message.Kind == CoordinateTeleportMessageKind.WaypointRequest
+                && !_options.WaypointTeleportEnabled))
+        {
+            result = CoordinateTeleportResultCode.Disabled;
+        }
+        else
+        {
+            try
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    _disconnect.Token);
+                var serviceResult = message.Kind == CoordinateTeleportMessageKind.SurfaceRequest
+                    ? await _executor.TeleportToSurfaceAsync(message.X, message.Z, linked.Token).ConfigureAwait(false)
+                    : await _executor.TeleportToWaypointAsync(message.Target, linked.Token).ConfigureAwait(false);
+                result = MapResult(serviceResult);
+            }
+            catch (OperationCanceledException) when (_disconnect.IsCancellationRequested)
+            {
+                result = CoordinateTeleportResultCode.Disconnected;
+            }
+            catch (OperationCanceledException)
+            {
+                result = CoordinateTeleportResultCode.TimedOut;
+            }
+            catch
+            {
+                result = CoordinateTeleportResultCode.InternalError;
+            }
+        }
+
+        _reportResult(message, result);
+        return result;
+    }
+
+    private static CoordinateTeleportResultCode MapResult(TeleportResult result) => result switch
+    {
+        TeleportResult.Success => CoordinateTeleportResultCode.Success,
+        TeleportResult.ChunkTimeout => CoordinateTeleportResultCode.TimedOut,
+        TeleportResult.NoSafePosition => CoordinateTeleportResultCode.NoSafePosition,
+        TeleportResult.OutOfWorld => CoordinateTeleportResultCode.OutOfWorld,
+        TeleportResult.RolledBack => CoordinateTeleportResultCode.RolledBack,
+        TeleportResult.Busy => CoordinateTeleportResultCode.Rejected,
+        _ => CoordinateTeleportResultCode.InternalError,
+    };
+}
+
 public interface ICoordinateTeleportProtocolClock
 {
     Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken);

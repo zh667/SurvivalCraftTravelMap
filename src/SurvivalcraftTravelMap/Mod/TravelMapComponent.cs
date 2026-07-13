@@ -1,6 +1,7 @@
 using System.Numerics;
 using Game;
 using Game.NetWork;
+using Game.NetWork.Packages;
 using GameEntitySystem;
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Network;
@@ -20,13 +21,30 @@ public enum TravelMapWorkType
     Client,
 }
 
+public readonly record struct TravelMapRuntimeContext(
+    TravelMapWorkType WorkType,
+    bool IsMainPlayer,
+    bool HasUi);
+
 public static class TravelMapRuntimePolicy
 {
-    public static bool CreatesUi(TravelMapWorkType workType) => workType is not TravelMapWorkType.Server;
+    public static bool CreatesUi(TravelMapRuntimeContext context) =>
+        context.IsMainPlayer && context.HasUi;
 
     public static bool CreatesTeleportService(TravelMapWorkType workType) => workType is not TravelMapWorkType.Client;
 
-    public static bool AllowsDirectPositionWrite(TravelMapWorkType workType) => workType == TravelMapWorkType.Local;
+    public static bool AllowsDirectPositionWrite(TravelMapRuntimeContext context) =>
+        context.WorkType == TravelMapWorkType.Local;
+
+    public static bool UsesAuthoritativeHostTeleport(TravelMapRuntimeContext context) =>
+        context.WorkType == TravelMapWorkType.Server && CreatesUi(context);
+
+    public static bool UsesLocalWorldStorage(TravelMapRuntimeContext context) =>
+        context.WorkType == TravelMapWorkType.Local
+        || (context.WorkType == TravelMapWorkType.Server && context.IsMainPlayer);
+
+    public static bool CreatesInvitationUi(TravelMapRuntimeContext context) =>
+        context.WorkType != TravelMapWorkType.Local && CreatesUi(context);
 
     public static void CleanupRuntime(
         Action cancelLifetime,
@@ -87,6 +105,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private Task? _flushTask;
     private readonly object _networkSync = new();
     private CoordinateTeleportServerSession? _coordinateServerSession;
+    private AuthoritativeHostTeleportSession? _authoritativeHostTeleport;
     private CoordinateTeleportClientSession? _coordinateClientSession;
     private CoordinateTeleportServerOptions _coordinateServerOptions = new();
     private TrackedUiActionRunner? _networkActions;
@@ -119,6 +138,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     public TravelMapWorkType WorkType { get; private set; }
 
+    public TravelMapRuntimeContext RuntimeContext { get; private set; }
+
     public Action<TravelMapClientTravelCommand>? ClientTravelCommand { get; set; }
 
     public UpdateOrder UpdateOrder => UpdateOrder.Default;
@@ -150,6 +171,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _runtimeCleanup.Run,
             exception => Engine.Log.Warning(
                 $"[TravelMap] Player component activation failed; the component is inert: {exception.Message}"));
+        if (_isActive)
+        {
+            Engine.Log.Information(
+                $"[TravelMap] Player component active: workType={WorkType}, main={RuntimeContext.IsMainPlayer}, ui={_miniMap is not null}.");
+        }
     }
 
     public void Update(float dt)
@@ -209,7 +235,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private SafeTeleportService GetLocalTeleportService()
     {
-        if (!TravelMapRuntimePolicy.AllowsDirectPositionWrite(WorkType) || TeleportService is null)
+        if (!TravelMapRuntimePolicy.AllowsDirectPositionWrite(RuntimeContext) || TeleportService is null)
         {
             throw new InvalidOperationException(
                 "Direct player movement is only available in a local world. Multiplayer travel requires server authorization.");
@@ -258,11 +284,13 @@ public sealed class TravelMapComponent : Component, IUpdateable
             session = _coordinateServerSession;
         }
 
-        return await CoordinateTeleportBoundOperation.ExecuteAsync(
+        var response = await CoordinateTeleportBoundOperation.ExecuteAsync(
             binding,
             session,
             message,
             cancellationToken).ConfigureAwait(false);
+        ReportCoordinateTeleportResult("remote", message, response.ResultCode);
+        return response;
     }
 
     internal bool ReceiveCoordinateServerMessage(Client source, CoordinateTeleportMessage message)
@@ -290,7 +318,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _lifetimeCancellation.Token);
-        return await TeleportService.TeleportToWaypointAsync(target, linked.Token).ConfigureAwait(false);
+        var result = await TeleportService.TeleportToWaypointAsync(target, linked.Token).ConfigureAwait(false);
+        Engine.Log.Information($"[TravelMap] Legacy invitation teleport result={result}.");
+        return result;
     }
 
     internal void HandleLegacyClientResponse(LegacyGpsMessage message)
@@ -404,6 +434,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
         Terrain = Project.FindSubsystem<SubsystemTerrain>(true);
         TimeOfDay = Project.FindSubsystem<SubsystemTimeOfDay>(true);
         WorkType = ToTravelMapWorkType(CommonLib.WorkType);
+        RuntimeContext = new TravelMapRuntimeContext(
+            WorkType,
+            player.PlayerData.IsMainPlayer,
+            player.ComponentGui is not null);
         if (WorkType == TravelMapWorkType.Server)
         {
             try
@@ -421,7 +455,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             }
         }
 
-        Gui = TravelMapRuntimePolicy.CreatesUi(WorkType)
+        Gui = TravelMapRuntimePolicy.CreatesUi(RuntimeContext)
             ? player.ComponentGui
             : null;
         _dispatcher = new GameUpdateDispatcher();
@@ -449,12 +483,45 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _chunkLoader,
             playerMover,
             terrainAccess,
-            clock);
+            clock,
+            WorkType == TravelMapWorkType.Server
+                ? SynchronizeAuthoritativePosition
+                : static () => { });
+        if (TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(RuntimeContext))
+        {
+            _authoritativeHostTeleport = new AuthoritativeHostTeleportSession(
+                $"host:{Player.PlayerGuid:N}",
+                new SafeTeleportExecutor(TeleportService),
+                _coordinateServerOptions,
+                (message, result) => ReportCoordinateTeleportResult("host", message, result));
+        }
+    }
+
+    private void SynchronizeAuthoritativePosition()
+    {
+        var dispatcher = _dispatcher
+            ?? throw new InvalidOperationException("The travel-map update dispatcher is unavailable.");
+        dispatcher.Invoke(() => CommonLib.Net.QueuePackage(
+            new ComponentPlayerPackage(
+                Player,
+                ComponentPlayerPackage.PlayerAction.PositionSet)));
+    }
+
+    private static void ReportCoordinateTeleportResult(
+        string route,
+        CoordinateTeleportMessage request,
+        CoordinateTeleportResultCode? result)
+    {
+        var target = request.Kind == CoordinateTeleportMessageKind.SurfaceRequest
+            ? $"x={request.X},z={request.Z}"
+            : $"x={request.Target.X:0.###},y={request.Target.Y:0.###},z={request.Target.Z:0.###}";
+        Engine.Log.Information(
+            $"[TravelMap] Coordinate teleport route={route}, request={request.RequestId}, kind={request.Kind}, target=({target}), result={result?.ToString() ?? "Missing"}.");
     }
 
     private void InitializeUiSettings(UiInitializationState state)
     {
-        if (!TravelMapRuntimePolicy.CreatesUi(WorkType) || !Player.PlayerData.IsMainPlayer)
+        if (!TravelMapRuntimePolicy.CreatesUi(RuntimeContext))
         {
             return;
         }
@@ -481,9 +548,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void InitializeUiPersistence(UiInitializationState state)
     {
-        if (!TravelMapRuntimePolicy.CreatesUi(WorkType)
-            || !Player.PlayerData.IsMainPlayer
-            || _settings is null)
+        if (!TravelMapRuntimePolicy.CreatesUi(RuntimeContext) || _settings is null)
         {
             return;
         }
@@ -493,8 +558,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
             ?? CommonLib.Net.Server?.IPPoint?.Address.ToString();
         var serverPort = CommonLib.Net.Server?.Peer?.Port
             ?? CommonLib.Net.Server?.IPPoint?.Port;
+        var storageScope = TravelMapRuntimePolicy.UsesLocalWorldStorage(RuntimeContext)
+            ? TravelMapStorageScope.LocalWorld
+            : TravelMapStorageScope.RemoteServer;
         var identity = new TravelMapStorageIdentityInput(
-            WorkType,
+            storageScope,
             state.AppRoot,
             gameInfo.DirectoryName,
             serverHost,
@@ -538,15 +606,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void AttachUiWidgets(UiInitializationState state)
     {
-        if (!TravelMapRuntimePolicy.CreatesUi(WorkType)
-            || !Player.PlayerData.IsMainPlayer
+        if (!TravelMapRuntimePolicy.CreatesUi(RuntimeContext)
             || _settings is null
             || _settingsStore is null)
         {
             return;
         }
 
-        if (WorkType == TravelMapWorkType.Client)
+        if (TravelMapRuntimePolicy.CreatesInvitationUi(RuntimeContext))
         {
             InitializeInvitationUi();
         }
@@ -621,15 +688,19 @@ public sealed class TravelMapComponent : Component, IUpdateable
             return;
         }
 
-        var viewport = Player.GameWidget.ActiveCamera.ViewportSize;
-        var x = MathF.Max(0f, viewport.X - _settings.MiniMapSize - 100f);
+        var guiSize = Player.GuiWidget.ActualSize;
+        var position = TravelMapOverlayLayout.PlaceTopRight(
+            new Vector2(guiSize.X, guiSize.Y),
+            new Vector2(_settings.MiniMapSize),
+            rightMargin: 100f,
+            topMargin: 32f);
         if (Player.GuiWidget is CanvasWidget canvas)
         {
-            canvas.SetWidgetPosition(_miniMap, new Engine.Vector2(x, 32f));
+            canvas.SetWidgetPosition(_miniMap, new Engine.Vector2(position.X, position.Y));
         }
         else
         {
-            _miniMap.LayoutTransform = Engine.Matrix.CreateTranslation(x, 32f, 0f);
+            _miniMap.LayoutTransform = Engine.Matrix.CreateTranslation(position.X, position.Y, 0f);
         }
     }
 
@@ -674,15 +745,24 @@ public sealed class TravelMapComponent : Component, IUpdateable
             return;
         }
 
-        var viewport = Player.GameWidget.ActiveCamera.ViewportSize;
-        var x = MathF.Max(0f, viewport.X - 212f);
+        var guiSize = Player.GuiWidget.ActualSize;
+        var position = TravelMapOverlayLayout.PlaceTopRight(
+            new Vector2(guiSize.X, guiSize.Y),
+            new Vector2(112f, 40f),
+            rightMargin: 100f,
+            topMargin: 4f);
         if (Player.GuiWidget is CanvasWidget canvas)
         {
-            canvas.SetWidgetPosition(_teleportPanelButton, new Engine.Vector2(x, 4f));
+            canvas.SetWidgetPosition(
+                _teleportPanelButton,
+                new Engine.Vector2(position.X, position.Y));
         }
         else
         {
-            _teleportPanelButton.LayoutTransform = Engine.Matrix.CreateTranslation(x, 4f, 0f);
+            _teleportPanelButton.LayoutTransform = Engine.Matrix.CreateTranslation(
+                position.X,
+                position.Y,
+                0f);
         }
     }
 
@@ -696,8 +776,17 @@ public sealed class TravelMapComponent : Component, IUpdateable
             .ToArray();
     }
 
-    private static void QueueLegacyPackage(LegacyGpsMessage message) =>
+    private void QueueLegacyPackage(LegacyGpsMessage message)
+    {
+        if (TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(RuntimeContext)
+            && Project is ProjectNet projectNet)
+        {
+            TravelMapNetworkRuntime.HandleLegacyHost(message, Player, projectNet, CommonLib.Net);
+            return;
+        }
+
         CommonLib.Net.QueuePackage(new LegacyGpsPackage(message));
+    }
 
     private void UpdateExploration(float dt)
     {
@@ -864,14 +953,18 @@ public sealed class TravelMapComponent : Component, IUpdateable
         CancellationToken cancellationToken)
     {
         var router = new TravelMapTeleportRouter(
-            WorkType,
+            RuntimeContext,
             async (position, token) =>
             {
-                var result = await TeleportToSurfaceAsync((int)position.X, (int)position.Z, token).ConfigureAwait(false);
+                var result = await TeleportToSurfaceAsync(
+                    checked((int)MathF.Floor(position.X)),
+                    checked((int)MathF.Floor(position.Z)),
+                    token).ConfigureAwait(false);
                 return result == TeleportResult.Success
                     ? TravelMapTeleportDispatchResult.LocalRequested
                     : TravelMapTeleportDispatchResult.LocalFailed;
             },
+            RequestAuthoritativeHostTravelAsync,
             ClientTravelCommand);
         return ToActionStatus(await router.RequestSurfaceAsync(target, cancellationToken).ConfigureAwait(false));
     }
@@ -881,7 +974,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         CancellationToken cancellationToken)
     {
         var router = new TravelMapTeleportRouter(
-            WorkType,
+            RuntimeContext,
             async (position, token) =>
             {
                 var result = await TeleportToWaypointAsync(position, token).ConfigureAwait(false);
@@ -889,8 +982,34 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     ? TravelMapTeleportDispatchResult.LocalRequested
                     : TravelMapTeleportDispatchResult.LocalFailed;
             },
+            RequestAuthoritativeHostTravelAsync,
             ClientTravelCommand);
         return ToActionStatus(await router.RequestWaypointAsync(target, cancellationToken).ConfigureAwait(false));
+    }
+
+    private async Task<TravelMapTeleportDispatchResult> RequestAuthoritativeHostTravelAsync(
+        TravelMapClientTravelCommand command,
+        CancellationToken cancellationToken)
+    {
+        var host = _authoritativeHostTeleport;
+        if (!TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(RuntimeContext) || host is null)
+        {
+            return TravelMapTeleportDispatchResult.Unavailable;
+        }
+
+        var result = command.Mode == TravelMapClientTravelMode.Surface
+            ? await host.RequestSurfaceAsync(
+                checked((int)MathF.Floor(command.Target.X)),
+                checked((int)MathF.Floor(command.Target.Z)),
+                cancellationToken).ConfigureAwait(false)
+            : await host.RequestWaypointAsync(command.Target, cancellationToken).ConfigureAwait(false);
+        if (result == CoordinateTeleportResultCode.Success)
+        {
+            return TravelMapTeleportDispatchResult.LocalRequested;
+        }
+
+        ShowMessage(CoordinateTeleportResultText.For(result));
+        return TravelMapTeleportDispatchResult.LocalFailed;
     }
 
     private Waypoint? FindWaypoint(Guid? id) => id.HasValue
@@ -977,6 +1096,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             {
                 _coordinateServerSession?.Dispose();
                 _coordinateServerSession = null;
+                _authoritativeHostTeleport?.Dispose();
+                _authoritativeHostTeleport = null;
                 _coordinateClientSession?.Dispose();
                 _coordinateClientSession = null;
             }

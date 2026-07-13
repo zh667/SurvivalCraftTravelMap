@@ -2,8 +2,14 @@ using SurvivalcraftTravelMap.Mod;
 
 namespace SurvivalcraftTravelMap.Persistence;
 
+public enum TravelMapStorageScope
+{
+    LocalWorld,
+    RemoteServer,
+}
+
 public sealed record TravelMapStorageIdentityInput(
-    TravelMapWorkType WorkType,
+    TravelMapStorageScope Scope,
     string ApplicationRoot,
     string? LocalWorldDirectory,
     string? ServerHost,
@@ -31,7 +37,7 @@ public static class TravelMapStorageIdentity
         string worldKey;
         try
         {
-            if (input.WorkType == TravelMapWorkType.Local)
+            if (input.Scope == TravelMapStorageScope.LocalWorld)
             {
                 if (string.IsNullOrWhiteSpace(input.LocalWorldDirectory))
                 {

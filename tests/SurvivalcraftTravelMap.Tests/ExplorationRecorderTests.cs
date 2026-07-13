@@ -7,6 +7,33 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public void Unavailable_or_transparent_column_is_not_explored_and_a_later_valid_sample_fills_it()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new SwitchableTerrainMapSource();
+        var store = new ExplorationTileStore(directory.Path);
+        var recorder = new ExplorationRecorder(
+            new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+            {
+                [0] = new BlockPixelData(0, new Rgba32(0, 0, 0, 0), false),
+                [1] = new BlockPixelData(1, new Rgba32(10, 20, 30, 255), false),
+            })),
+            store);
+
+        recorder.RecordVisibleArea(centerX: 3, centerZ: 5, radius: 0);
+
+        Assert.False(store.ContainsKnownTile(0, 0));
+        Assert.False(store.GetOrLoad(0, 0).TryGetPixel(3, 5, out _));
+
+        source.IsReady = true;
+        source.Content = 1;
+        recorder.RecordVisibleArea(centerX: 3, centerZ: 5, radius: 0);
+
+        Assert.True(store.GetOrLoad(0, 0).TryGetPixel(3, 5, out var color));
+        Assert.Equal(new Rgba32(10, 20, 30, 255), color);
+    }
+
+    [Fact]
     public void Recorder_reports_pressure_instead_of_growing_dirty_cache()
     {
         using var directory = new TemporaryDirectory();
@@ -265,6 +292,23 @@ public sealed class ExplorationRecorderTests
     }
 }
 
+internal sealed class SwitchableTerrainMapSource : ITerrainMapSource
+{
+    internal bool IsReady { get; set; }
+
+    internal int Content { get; set; }
+
+    public bool IsColumnReady(int x, int z) => IsReady;
+
+    public int GetTopHeight(int x, int z) => 64;
+
+    public int GetContent(int x, int y, int z) => Content;
+
+    public int GetSeasonalTemperature(int x, int z) => 8;
+
+    public int GetSeasonalHumidity(int x, int z) => 8;
+}
+
 internal sealed class BlockingSecondSampleTerrainSource(int? throwAtSample = null)
     : ITerrainMapSource, IDisposable
 {
@@ -273,6 +317,8 @@ internal sealed class BlockingSecondSampleTerrainSource(int? throwAtSample = nul
     internal ManualResetEventSlim SecondSampleStarted { get; } = new(initialState: false);
 
     internal ManualResetEventSlim AllowSecondSample { get; } = new(initialState: false);
+
+    public bool IsColumnReady(int x, int z) => true;
 
     public int GetTopHeight(int x, int z)
     {
@@ -310,6 +356,8 @@ internal sealed class BlockingSecondSampleTerrainSource(int? throwAtSample = nul
 internal sealed class ThrowingTerrainMapSource(int throwAtSample) : ITerrainMapSource
 {
     private int _sampleCount;
+
+    public bool IsColumnReady(int x, int z) => true;
 
     public int GetTopHeight(int x, int z)
     {

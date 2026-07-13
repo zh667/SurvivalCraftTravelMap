@@ -50,6 +50,24 @@ internal static class TravelMapNetworkRuntime
         }
     }
 
+    internal static void HandleLegacyHost(
+        LegacyGpsMessage message,
+        ComponentPlayer sourcePlayer,
+        ProjectNet projectNet,
+        NetNode netNode)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(sourcePlayer);
+        ArgumentNullException.ThrowIfNull(projectNet);
+        ArgumentNullException.ThrowIfNull(netNode);
+        var source = sourcePlayer.PlayerData.Client;
+        var package = new LegacyGpsPackage(message) { From = source };
+        Observe(LegacyServers.GetValue(
+            projectNet,
+            static project => new LegacyServerContext(project))
+            .HandleAsync(package, netNode));
+    }
+
     internal static void HandleCoordinate(
         CoordinateTeleportPackage package,
         ProjectNet projectNet,
