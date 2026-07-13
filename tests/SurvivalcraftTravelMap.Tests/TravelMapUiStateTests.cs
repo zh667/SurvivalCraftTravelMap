@@ -309,6 +309,24 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Fact]
+    public async Task Corrupt_previous_filename_is_isolated_and_reports_corruption_instead_of_migration()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var previous = Path.Combine(directory.Path, "travel-map-settings.json");
+        await File.WriteAllTextAsync(
+            previous,
+            "{not json",
+            TestContext.Current.CancellationToken);
+        var store = new TravelMapSettingsStore(directory.Path);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.CorruptIsolated, result.Outcome);
+        Assert.True(File.Exists(previous + ".corrupt"));
+        Assert.True(File.Exists(store.SettingsPath));
+    }
+
+    [Fact]
     public async Task Current_schema_preserves_unknown_fields_when_normalizing()
     {
         using var directory = new UiTemporaryDirectory();

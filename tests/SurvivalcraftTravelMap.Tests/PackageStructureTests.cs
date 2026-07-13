@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -82,8 +83,17 @@ public sealed class PackageStructureTests
     public void Mod_project_references_game_assemblies_without_copying_them()
     {
         var document = XDocument.Load(TestPaths.ModProject);
+        var properties = document.Descendants("PropertyGroup").Elements().ToList();
         var references = document.Descendants("Reference").ToDictionary(
             element => element.Attribute("Include")?.Value ?? string.Empty);
+
+        Assert.Equal("1.0.0", properties.Single(e => e.Name == "Version").Value);
+        Assert.Equal("1.0.0.0", properties.Single(e => e.Name == "AssemblyVersion").Value);
+        Assert.Equal("1.0.0.0", properties.Single(e => e.Name == "FileVersion").Value);
+        Assert.Equal("1.0.0", properties.Single(e => e.Name == "InformationalVersion").Value);
+        Assert.Equal(
+            "false",
+            properties.Single(e => e.Name == "IncludeSourceRevisionInInformationalVersion").Value);
 
         foreach (var assembly in new[]
                  {
@@ -97,6 +107,18 @@ public sealed class PackageStructureTests
             Assert.True(references.TryGetValue(assembly, out var reference));
             Assert.Equal("false", reference.Element("Private")?.Value);
         }
+    }
+
+    [Fact]
+    public void Mod_assembly_has_stable_informational_version_without_a_source_revision()
+    {
+        var assembly = typeof(TravelMapModLoader).Assembly;
+        var informationalVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+
+        Assert.Equal("1.0.0", informationalVersion);
+        Assert.DoesNotMatch("(?i)[0-9a-f]{40}", informationalVersion ?? string.Empty);
     }
 
     [Fact]
@@ -343,6 +365,7 @@ public sealed class PackageVerifierBehaviorTests
     [Theory]
     [InlineData("AntiCheatReportPackage", "AntiCheatReportPackage")]
     [InlineData("PackageId = 60", "package ID 60")]
+    [InlineData("1.0.0+0123456789abcdef0123456789abcdef01234567", "source revision")]
     public void Verifier_rejects_forbidden_content(string content, string expectedMessage)
     {
         using var temporaryDirectory = new TemporaryDirectory();
@@ -431,7 +454,11 @@ internal static class PackageFixtures
     {
         var packagePath = Path.Combine(directory, "SurvivalcraftTravelMap.netmod");
         using var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create);
-        AddEntry(archive, new PackageEntry("SurvivalcraftTravelMap.dll", "clean mod assembly"));
+        AddEntry(
+            archive,
+            new PackageEntry(
+                "SurvivalcraftTravelMap.dll",
+                File.ReadAllBytes(typeof(TravelMapModLoader).Assembly.Location)));
         AddEntry(
             archive,
             new PackageEntry(

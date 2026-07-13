@@ -109,9 +109,10 @@ public sealed class TravelMapSettingsStore
                 var migrated = await LoadExistingAsync(
                     _previousSettingsPath,
                     cancellationToken).ConfigureAwait(false);
-                return migrated.Outcome == TravelMapSettingsLoadOutcome.UnsupportedFutureSchemaReadOnly
-                    ? migrated
-                    : migrated with { Outcome = TravelMapSettingsLoadOutcome.MigratedPreviousPath };
+                return migrated.Outcome is TravelMapSettingsLoadOutcome.UnsupportedFutureSchemaReadOnly
+                    or TravelMapSettingsLoadOutcome.CorruptIsolated
+                        ? migrated
+                        : migrated with { Outcome = TravelMapSettingsLoadOutcome.MigratedPreviousPath };
             }
 
             var settings = new TravelMapSettings();

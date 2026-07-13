@@ -80,6 +80,9 @@ try {
         $entryBytes.Add($entryName, $bytes)
 
         $content = [Text.Encoding]::UTF8.GetString($bytes) + "`n" + [Text.Encoding]::Unicode.GetString($bytes)
+        if ([regex]::IsMatch($content, '(?i)\b\d+\.\d+\.\d+(?:\.\d+)?\+[0-9a-f]{40}\b')) {
+            throw "Package contains a forbidden SDK source revision string in '$entryName'."
+        }
         if ($content.Contains("AntiCheatReportPackage")) {
             throw "Package contains forbidden AntiCheatReportPackage string in '$entryName'."
         }
@@ -97,6 +100,13 @@ try {
         if (-not $seen.Contains($requiredEntry)) {
             throw "Package is missing required entry '$requiredEntry'."
         }
+    }
+
+    $dllText = [Text.Encoding]::UTF8.GetString($entryBytes["SurvivalcraftTravelMap.dll"]) +
+        "`n" + [Text.Encoding]::Unicode.GetString($entryBytes["SurvivalcraftTravelMap.dll"])
+    if (-not $dllText.Contains("AssemblyInformationalVersionAttribute") -or
+        -not $dllText.Contains("1.0.0")) {
+        throw "Package DLL must expose stable informational version '1.0.0'."
     }
 
 

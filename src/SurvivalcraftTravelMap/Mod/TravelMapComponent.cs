@@ -505,7 +505,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
         {
             Engine.Log.Warning($"[TravelMap] Persistence disabled: {identityError}");
             WarnPersistenceOnce("缺少可靠的世界或玩家身份，旅行地图持久化已禁用");
-            return;
+            throw new InvalidOperationException(
+                $"Travel-map persistence identity is unavailable: {identityError}");
         }
 
         try
@@ -531,6 +532,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _waypointRepository = null;
             _currentPositionWaypointHandler = null;
             WarnPersistenceOnce($"地图与坐标点持久化不可用：{exception.Message}");
+            throw;
         }
     }
 
