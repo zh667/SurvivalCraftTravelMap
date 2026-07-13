@@ -62,7 +62,10 @@ public interface IPlayerMover
 
 public interface IEntityCollisionQuery
 {
-    bool HasCollision(Vector3 feetPosition);
+    /// <summary>
+    /// Checks for blocking entities while excluding the player being teleported from the query.
+    /// </summary>
+    bool HasBlockingCollisionExcludingPlayer(Vector3 feetPosition);
 }
 
 public interface ITeleportClock

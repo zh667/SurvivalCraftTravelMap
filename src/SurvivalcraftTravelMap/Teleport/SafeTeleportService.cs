@@ -56,8 +56,7 @@ public sealed class SafeTeleportService
                 continue;
             }
 
-            var groundY = _terrain.GetSurfaceHeight(column.X, column.Z);
-            cancellationToken.ThrowIfCancellationRequested();
+            var groundY = GetSurfaceHeight(column.X, column.Z, cancellationToken);
             var feetY = (long)groundY + 1L;
             if (feetY is < int.MinValue or > int.MaxValue)
             {
@@ -129,6 +128,7 @@ public sealed class SafeTeleportService
         {
             loadCancellation.Cancel();
             timeoutCancellation.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
             throw;
         }
 
@@ -146,7 +146,21 @@ public sealed class SafeTeleportService
         {
             timeoutCancellation.Cancel();
             ObserveAbandoned(timeoutTask);
-            await loadTask.ConfigureAwait(false);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                ObserveAbandoned(loadTask);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            try
+            {
+                await loadTask.ConfigureAwait(false);
+            }
+            catch when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
             return true;
         }
@@ -154,7 +168,15 @@ public sealed class SafeTeleportService
         loadCancellation.Cancel();
         ObserveAbandoned(loadTask);
         cancellationToken.ThrowIfCancellationRequested();
-        await timeoutTask.ConfigureAwait(false);
+        try
+        {
+            await timeoutTask.ConfigureAwait(false);
+        }
+        catch when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
         return false;
     }
 
@@ -188,30 +210,26 @@ public sealed class SafeTeleportService
             return false;
         }
 
-        var groundKind = _terrain.GetBlockKind(candidate.X, groundY, candidate.Z);
-        cancellationToken.ThrowIfCancellationRequested();
+        var groundKind = GetBlockKind(candidate.X, groundY, candidate.Z, cancellationToken);
         if (groundKind != TeleportBlockKind.SafeSolid)
         {
             return false;
         }
 
-        var feetKind = _terrain.GetBlockKind(candidate.X, feetY, candidate.Z);
-        cancellationToken.ThrowIfCancellationRequested();
+        var feetKind = GetBlockKind(candidate.X, feetY, candidate.Z, cancellationToken);
         if (feetKind != TeleportBlockKind.Air)
         {
             return false;
         }
 
-        var headKind = _terrain.GetBlockKind(candidate.X, headY, candidate.Z);
-        cancellationToken.ThrowIfCancellationRequested();
+        var headKind = GetBlockKind(candidate.X, headY, candidate.Z, cancellationToken);
         if (headKind != TeleportBlockKind.Air)
         {
             return false;
         }
 
         var position = GetPosition(candidate.X, feetY, candidate.Z);
-        var hasCollision = _collisionQuery.HasCollision(position);
-        cancellationToken.ThrowIfCancellationRequested();
+        var hasCollision = HasBlockingCollisionExcludingPlayer(position, cancellationToken);
         return !hasCollision;
     }
 
@@ -221,8 +239,7 @@ public sealed class SafeTeleportService
     {
         var feetY = candidate.Y!.Value;
         cancellationToken.ThrowIfCancellationRequested();
-        var snapshot = _playerMover.CaptureSnapshot();
-        cancellationToken.ThrowIfCancellationRequested();
+        var snapshot = CaptureSnapshot(cancellationToken);
         var movement = snapshot with
         {
             Position = GetPosition(candidate.X, feetY, candidate.Z),
@@ -241,35 +258,18 @@ public sealed class SafeTeleportService
             cancellationToken.ThrowIfCancellationRequested();
             if (!IsSafe(candidate, cancellationToken))
             {
-                var postValidationFailure = new InvalidOperationException(
-                    "The teleport destination became unsafe after movement.");
-                try
-                {
-                    _playerMover.Restore(snapshot);
-                }
-                catch (Exception restoreFailure)
-                {
-                    throw new TeleportRollbackException(postValidationFailure, restoreFailure);
-                }
-
-                return TeleportResult.RolledBack;
+                throw new UnsafePostMoveValidationException();
             }
 
             return TeleportResult.Success;
         }
-        catch (TeleportRollbackException)
-        {
-            throw;
-        }
         catch (Exception originalFailure)
         {
-            try
+            RestoreOrThrow(CreateSafeRollbackSnapshot(snapshot), originalFailure);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (originalFailure is UnsafePostMoveValidationException)
             {
-                _playerMover.Restore(snapshot);
-            }
-            catch (Exception restoreFailure)
-            {
-                throw new TeleportRollbackException(originalFailure, restoreFailure);
+                return TeleportResult.RolledBack;
             }
 
             ExceptionDispatchInfo.Capture(originalFailure).Throw();
@@ -282,17 +282,111 @@ public sealed class SafeTeleportService
 
     private bool IsColumnInWorld(int x, int z, CancellationToken cancellationToken)
     {
-        var result = _terrain.IsColumnInWorld(x, z);
-        cancellationToken.ThrowIfCancellationRequested();
-        return result;
+        try
+        {
+            var result = _terrain.IsColumnInWorld(x, z);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
     }
 
     private bool IsCellInWorld(int x, int y, int z, CancellationToken cancellationToken)
     {
-        var result = _terrain.IsCellInWorld(x, y, z);
-        cancellationToken.ThrowIfCancellationRequested();
-        return result;
+        try
+        {
+            var result = _terrain.IsCellInWorld(x, y, z);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
     }
+
+    private int GetSurfaceHeight(int x, int z, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = _terrain.GetSurfaceHeight(x, z);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
+    private TeleportBlockKind GetBlockKind(int x, int y, int z, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = _terrain.GetBlockKind(x, y, z);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
+    private bool HasBlockingCollisionExcludingPlayer(
+        Vector3 feetPosition,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = _collisionQuery.HasBlockingCollisionExcludingPlayer(feetPosition);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
+    private PlayerMovementSnapshot CaptureSnapshot(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = _playerMover.CaptureSnapshot();
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
+    private void RestoreOrThrow(PlayerMovementSnapshot snapshot, Exception originalFailure)
+    {
+        try
+        {
+            _playerMover.Restore(snapshot);
+        }
+        catch (Exception restoreFailure)
+        {
+            throw new TeleportRollbackException(originalFailure, restoreFailure);
+        }
+    }
+
+    private static PlayerMovementSnapshot CreateSafeRollbackSnapshot(PlayerMovementSnapshot snapshot) =>
+        snapshot with
+        {
+            LinearVelocity = Vector3.Zero,
+            AngularVelocity = Vector3.Zero,
+            FallDistance = 0f,
+            IsFalling = false,
+            HasPendingFallDamage = false,
+        };
 
     private static bool TryFloorToInt(float value, out int result)
     {
@@ -316,4 +410,6 @@ public sealed class SafeTeleportService
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
     }
+
+    private sealed class UnsafePostMoveValidationException : Exception;
 }

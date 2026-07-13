@@ -149,7 +149,7 @@ public sealed class SafeTeleportServiceTests
     {
         var context = new TeleportTestContext();
         context.Terrain.SetSafeFeet(0, 65, 0);
-        context.Collisions.CollidingPositions.Add(new Vector3(0.5f, 65f, 0.5f));
+        context.Collisions.OtherBlockingEntityPositions.Add(new Vector3(0.5f, 65f, 0.5f));
 
         var result = await context.Service.TeleportToWaypointAsync(
             new Vector3(0f, 65f, 0f),
@@ -157,6 +157,23 @@ public sealed class SafeTeleportServiceTests
 
         Assert.Equal(TeleportResult.NoSafePosition, result);
         Assert.Empty(context.Mover.Movements);
+    }
+
+    [Fact]
+    public async Task Collision_query_excludes_the_teleporting_players_own_body()
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Collisions.PlayerSelfOverlapPositions.Add(new Vector3(0.5f, 65f, 0.5f));
+
+        var result = await context.Service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Success, result);
+        Assert.Single(context.Mover.Movements);
+        Assert.Equal(2, context.Collisions.QueryCount);
+        Assert.Equal(2, context.Collisions.ExcludedPlayerSelfOverlapCount);
     }
 
     [Fact]
@@ -231,7 +248,7 @@ public sealed class SafeTeleportServiceTests
     }
 
     [Fact]
-    public async Task Failed_post_move_validation_restores_the_exact_snapshot_once()
+    public async Task Failed_post_move_validation_restores_a_safe_snapshot_once()
     {
         var context = new TeleportTestContext();
         context.Terrain.SetSafeFeet(0, 65, 0);
@@ -247,7 +264,8 @@ public sealed class SafeTeleportServiceTests
 
         Assert.Equal(TeleportResult.RolledBack, result);
         Assert.Single(context.Mover.Movements);
-        Assert.Equal(context.Mover.Snapshot, Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
     }
 
     [Fact]
@@ -325,7 +343,8 @@ public sealed class SafeTeleportServiceTests
             context.Service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), cancellation.Token));
 
         Assert.Single(context.Mover.Movements);
-        Assert.Equal(context.Mover.Snapshot, Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
     }
 
     [Fact]
@@ -390,6 +409,130 @@ public sealed class SafeTeleportServiceTests
         Assert.Single(context.Mover.RestoredSnapshots);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Dependency_rollback_exception_from_move_or_tick_still_restores_once(bool failDuringMove)
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        var dependencyFailure = new TeleportRollbackException(
+            new InvalidOperationException("dependency original"),
+            new IOException("dependency restore"));
+        if (failDuringMove)
+        {
+            context.Mover.OnMove = () => throw dependencyFailure;
+        }
+        else
+        {
+            context.Clock.WaitForUpdate = _ => throw dependencyFailure;
+        }
+
+        var thrown = await Assert.ThrowsAsync<TeleportRollbackException>(() =>
+            context.Service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(dependencyFailure, thrown);
+        Assert.Single(context.Mover.Movements);
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
+    }
+
+    [Fact]
+    public async Task Cancellation_and_fault_from_chunk_loader_propagates_cancellation_without_movement()
+    {
+        var context = new TeleportTestContext();
+        using var cancellation = new CancellationTokenSource();
+        context.Chunks.Load = _ =>
+        {
+            cancellation.Cancel();
+            return Task.FromException(new InvalidOperationException("load failed"));
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            context.Service.TeleportToSurfaceAsync(0, 0, cancellation.Token));
+
+        Assert.Empty(context.Mover.Movements);
+        Assert.Equal(0, context.Mover.RestoreAttempts);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Cancellation_and_pre_move_terrain_or_collision_fault_propagates_cancellation(bool failTerrain)
+    {
+        var context = new TeleportTestContext();
+        using var cancellation = new CancellationTokenSource();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        if (failTerrain)
+        {
+            context.Terrain.OnBlockReadNumber = _ =>
+            {
+                cancellation.Cancel();
+                throw new InvalidOperationException("terrain failed");
+            };
+        }
+        else
+        {
+            context.Collisions.OnQuery = () =>
+            {
+                cancellation.Cancel();
+                throw new InvalidOperationException("collision failed");
+            };
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            context.Service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), cancellation.Token));
+
+        Assert.Empty(context.Mover.Movements);
+        Assert.Equal(0, context.Mover.RestoreAttempts);
+    }
+
+    [Fact]
+    public async Task Cancellation_and_post_move_collision_fault_restores_once_then_propagates_cancellation()
+    {
+        var context = new TeleportTestContext();
+        using var cancellation = new CancellationTokenSource();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Collisions.OnQueryNumber = call =>
+        {
+            if (call == 2)
+            {
+                cancellation.Cancel();
+                throw new InvalidOperationException("collision failed");
+            }
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            context.Service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), cancellation.Token));
+
+        Assert.Single(context.Mover.Movements);
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_successful_restore_wins_over_rolled_back_result()
+    {
+        var context = new TeleportTestContext();
+        using var cancellation = new CancellationTokenSource();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Clock.WaitForUpdate = _ =>
+        {
+            context.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Lava);
+            return Task.CompletedTask;
+        };
+        context.Mover.OnRestore = cancellation.Cancel;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            context.Service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), cancellation.Token));
+
+        Assert.Single(context.Mover.Movements);
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
+    }
+
     [Fact]
     public async Task Clock_or_validation_exceptions_after_move_restore_before_propagating()
     {
@@ -420,14 +563,16 @@ public sealed class SafeTeleportServiceTests
     public async Task Restore_failure_is_explicit_and_never_reported_as_success()
     {
         var context = new TeleportTestContext();
+        using var cancellation = new CancellationTokenSource();
         context.Terrain.SetSafeFeet(0, 65, 0);
         context.Clock.WaitForUpdate = _ => throw new InvalidOperationException("clock failed");
+        context.Mover.OnRestore = cancellation.Cancel;
         context.Mover.RestoreException = new IOException("restore failed");
 
         var exception = await Assert.ThrowsAsync<TeleportRollbackException>(() =>
             context.Service.TeleportToWaypointAsync(
                 new Vector3(0f, 65f, 0f),
-                TestContext.Current.CancellationToken));
+                cancellation.Token));
 
         Assert.IsType<InvalidOperationException>(exception.OriginalFailure);
         Assert.IsType<IOException>(exception.RestoreFailure);
@@ -463,6 +608,15 @@ public sealed class SafeTeleportServiceTests
         });
         Assert.All(waypoint, candidate => Assert.InRange(candidate.Y!.Value, int.MaxValue - 8, int.MaxValue));
     }
+
+    private static PlayerMovementSnapshot ExpectedSafeRollback(FakePlayerMover mover) => mover.Snapshot with
+    {
+        LinearVelocity = Vector3.Zero,
+        AngularVelocity = Vector3.Zero,
+        FallDistance = 0f,
+        IsFalling = false,
+        HasPendingFallDamage = false,
+    };
 }
 
 internal sealed class TeleportTestContext
@@ -577,6 +731,8 @@ internal sealed class FakePlayerMover : IPlayerMover
 
     internal Action? OnMove { get; set; }
 
+    internal Action? OnRestore { get; set; }
+
     internal Exception? RestoreException { get; set; }
 
     public PlayerMovementSnapshot CaptureSnapshot()
@@ -594,6 +750,7 @@ internal sealed class FakePlayerMover : IPlayerMover
     public void Restore(PlayerMovementSnapshot snapshot)
     {
         RestoreAttempts++;
+        OnRestore?.Invoke();
         if (RestoreException is not null)
         {
             throw RestoreException;
@@ -607,7 +764,13 @@ internal sealed class FakeEntityCollisionQuery : IEntityCollisionQuery
 {
     private int _queryCount;
 
-    internal HashSet<Vector3> CollidingPositions { get; } = [];
+    internal HashSet<Vector3> PlayerSelfOverlapPositions { get; } = [];
+
+    internal HashSet<Vector3> OtherBlockingEntityPositions { get; } = [];
+
+    internal int QueryCount => _queryCount;
+
+    internal int ExcludedPlayerSelfOverlapCount { get; private set; }
 
     internal Func<int, bool>? CollisionForCall { get; set; }
 
@@ -615,12 +778,18 @@ internal sealed class FakeEntityCollisionQuery : IEntityCollisionQuery
 
     internal Action<int>? OnQueryNumber { get; set; }
 
-    public bool HasCollision(Vector3 feetPosition)
+    public bool HasBlockingCollisionExcludingPlayer(Vector3 feetPosition)
     {
         _queryCount++;
         OnQuery?.Invoke();
         OnQueryNumber?.Invoke(_queryCount);
-        return CollidingPositions.Contains(feetPosition) || CollisionForCall?.Invoke(_queryCount) == true;
+        if (PlayerSelfOverlapPositions.Contains(feetPosition))
+        {
+            ExcludedPlayerSelfOverlapCount++;
+        }
+
+        return OtherBlockingEntityPositions.Contains(feetPosition)
+            || CollisionForCall?.Invoke(_queryCount) == true;
     }
 }
 
