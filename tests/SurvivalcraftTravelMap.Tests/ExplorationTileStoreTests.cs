@@ -35,6 +35,74 @@ public sealed class ExplorationTileStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Inflight_flush_cannot_evict_pinned_lease_and_dispose_publishes_a_new_generation()
+    {
+        var store = new ExplorationTileStore(_directory, capacity: 1);
+        var lease = store.AcquireMutation(0, 0);
+        var pinnedTile = lease.Tile;
+        var expected = new Rgba32(10, 20, 30, 255);
+        pinnedTile.SetPixel(4, 5, expected);
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+        var diagnosticsAfterFlush = store.Diagnostics;
+        Assert.Equal(
+            TileMutationAdmission.Pressure,
+            store.TryAcquireMutation(9, 9, out var pressuredLease));
+        Assert.Null(pressuredLease);
+        Assert.Equal(diagnosticsAfterFlush, store.Diagnostics);
+        Assert.True(store.IsUnderPressure);
+        Assert.Same(pinnedTile, store.GetOrLoad(0, 0));
+
+        lease.Dispose();
+
+        Assert.True(store.IsUnderPressure);
+        Assert.Equal(
+            TileMutationAdmission.Pressure,
+            store.TryAcquireMutation(9, 9, out pressuredLease));
+        Assert.Null(pressuredLease);
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(store.IsUnderPressure);
+        Assert.Equal(
+            TileMutationAdmission.Acquired,
+            store.TryAcquireMutation(9, 9, out var admittedLease));
+        using (admittedLease!)
+        {
+            Assert.NotSame(pinnedTile, store.GetOrLoad(0, 0));
+        }
+
+        var reloaded = new ExplorationTileStore(_directory).GetOrLoad(0, 0);
+        Assert.True(reloaded.TryGetPixel(4, 5, out var actual));
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public async Task Using_releases_admitted_lease_when_region_mutation_throws()
+    {
+        var store = new ExplorationTileStore(_directory, capacity: 1);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            using var lease = store.AcquireMutation(0, 0);
+            lease.Tile.SetRegion(
+                x: 60,
+                z: 60,
+                TerrainChunkCoordinate.Size,
+                TerrainChunkCoordinate.Size,
+                new Rgba32[TerrainChunkCoordinate.PixelCount]);
+        });
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            TileMutationAdmission.Acquired,
+            store.TryAcquireMutation(9, 9, out var admittedLease));
+        admittedLease!.Dispose();
+        Assert.False(store.IsUnderPressure);
+    }
+
+    [Fact]
     public async Task Recorded_chunk_persists_all_256_cells_with_codec_version_one()
     {
         var expected = new Rgba32(10, 20, 30, 255);
