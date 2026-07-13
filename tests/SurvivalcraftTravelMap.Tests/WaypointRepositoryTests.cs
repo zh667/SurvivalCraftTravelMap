@@ -339,6 +339,101 @@ public sealed class WaypointRepositoryTests : IDisposable
         Assert.Equal("after failure", repository.Add("after failure", Vector3.One).Name);
     }
 
+    [Theory]
+    [InlineData("add")]
+    [InlineData("rename")]
+    [InlineData("remove")]
+    public async Task Crud_is_rejected_while_load_is_queued_for_the_shared_file_lock(string operation)
+    {
+        var lockHolderAccess = new ControlledReplaceFileAccess();
+        var lockHolder = new WaypointRepository(_directory, lockHolderAccess);
+        lockHolder.Add("disk", Vector3.Zero);
+        var holderSave = lockHolder.SaveAsync(TestContext.Current.CancellationToken);
+        await lockHolderAccess.ReplaceStarted.WaitAsync(TestContext.Current.CancellationToken);
+        var repository = CreateRepository();
+        var memoryWaypoint = repository.Add("memory", Vector3.One);
+        var load = repository.LoadAsync(TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => ApplyCrud(
+                repository,
+                memoryWaypoint.Id,
+                operation));
+            Assert.Equal(memoryWaypoint, Assert.Single(repository.GetAll()));
+        }
+        finally
+        {
+            lockHolderAccess.AllowReplace();
+            await holderSave;
+            await load;
+        }
+    }
+
+    [Fact]
+    public async Task Cancelling_load_while_waiting_for_file_lock_clears_its_guard()
+    {
+        var lockHolderAccess = new ControlledReplaceFileAccess();
+        var lockHolder = new WaypointRepository(_directory, lockHolderAccess);
+        lockHolder.Add("disk", Vector3.Zero);
+        var holderSave = lockHolder.SaveAsync(TestContext.Current.CancellationToken);
+        await lockHolderAccess.ReplaceStarted.WaitAsync(TestContext.Current.CancellationToken);
+        var repository = CreateRepository();
+        using var cancellation = new CancellationTokenSource();
+        var load = repository.LoadAsync(cancellation.Token);
+
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => repository.Add("blocked", Vector3.One));
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => load);
+
+            Assert.Equal("allowed", repository.Add("allowed", Vector3.One).Name);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            lockHolderAccess.AllowReplace();
+            await holderSave;
+            await IgnoreCancellationAsync(load);
+        }
+    }
+
+    [Fact]
+    public async Task One_cancelled_queued_load_does_not_clear_another_queued_load_guard()
+    {
+        var lockHolderAccess = new ControlledReplaceFileAccess();
+        var lockHolder = new WaypointRepository(_directory, lockHolderAccess);
+        lockHolder.Add("disk", Vector3.Zero);
+        var holderSave = lockHolder.SaveAsync(TestContext.Current.CancellationToken);
+        await lockHolderAccess.ReplaceStarted.WaitAsync(TestContext.Current.CancellationToken);
+        var repository = CreateRepository();
+        using var firstCancellation = new CancellationTokenSource();
+        using var secondCancellation = new CancellationTokenSource();
+        var firstLoad = repository.LoadAsync(firstCancellation.Token);
+        var secondLoad = repository.LoadAsync(secondCancellation.Token);
+
+        try
+        {
+            firstCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => firstLoad);
+            Assert.Throws<InvalidOperationException>(() => repository.Add("still blocked", Vector3.One));
+
+            secondCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => secondLoad);
+            Assert.Equal("allowed", repository.Add("allowed", Vector3.One).Name);
+        }
+        finally
+        {
+            firstCancellation.Cancel();
+            secondCancellation.Cancel();
+            lockHolderAccess.AllowReplace();
+            await holderSave;
+            await IgnoreCancellationAsync(firstLoad);
+            await IgnoreCancellationAsync(secondLoad);
+        }
+    }
+
     [Fact]
     public async Task Invalid_schema_one_data_is_isolated_as_corrupt()
     {
@@ -519,6 +614,17 @@ public sealed class WaypointRepositoryTests : IDisposable
         }
     }
 
+    private static async Task IgnoreCancellationAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
     private sealed class ControlledReadFileAccess : IWaypointRepositoryFileAccess
     {
         private readonly TaskCompletionSource _readStarted = new(
@@ -561,6 +667,38 @@ public sealed class WaypointRepositoryTests : IDisposable
             _readException = exception;
             _continueRead.TrySetResult();
         }
+    }
+
+    private sealed class ControlledReplaceFileAccess : IWaypointRepositoryFileAccess
+    {
+        private readonly TaskCompletionSource _replaceStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _continueReplace = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task ReplaceStarted => _replaceStarted.Task;
+
+        public bool FileExists(string path) => File.Exists(path);
+
+        public bool DirectoryExists(string path) => Directory.Exists(path);
+
+        public Task<byte[]> ReadAllBytesAsync(string path, CancellationToken cancellationToken) =>
+            File.ReadAllBytesAsync(path, cancellationToken);
+
+        public async Task ReplaceAsync(
+            string path,
+            Func<Stream, CancellationToken, Task> writeAsync,
+            CancellationToken cancellationToken)
+        {
+            _replaceStarted.TrySetResult();
+            await _continueReplace.Task.WaitAsync(cancellationToken);
+            await AtomicFile.ReplaceAsync(path, writeAsync, cancellationToken);
+        }
+
+        public void Move(string sourcePath, string destinationPath) =>
+            File.Move(sourcePath, destinationPath);
+
+        public void AllowReplace() => _continueReplace.TrySetResult();
     }
 
     public void Dispose()

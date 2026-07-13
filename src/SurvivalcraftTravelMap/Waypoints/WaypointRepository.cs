@@ -45,7 +45,7 @@ public sealed class WaypointRepository
     private readonly IWaypointRepositoryFileAccess _fileAccess;
     private List<Waypoint> _waypoints = [];
     private bool _isReadOnly;
-    private bool _isLoading;
+    private int _activeLoadCount;
     private string _readOnlyError = string.Empty;
 
     public WaypointRepository(string directory)
@@ -142,10 +142,13 @@ public sealed class WaypointRepository
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        await _fileLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         BeginLoad();
+        var fileLockAcquired = false;
         try
         {
+            await _fileLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            fileLockAcquired = true;
+
             if (!_fileAccess.FileExists(_filePath))
             {
                 ReplaceWritableState([]);
@@ -212,8 +215,12 @@ public sealed class WaypointRepository
         }
         finally
         {
+            if (fileLockAcquired)
+            {
+                _fileLock.Release();
+            }
+
             EndLoad();
-            _fileLock.Release();
         }
     }
 
@@ -353,7 +360,7 @@ public sealed class WaypointRepository
 
     private void EnsureWritable()
     {
-        if (_isLoading)
+        if (_activeLoadCount > 0)
         {
             throw new InvalidOperationException("The waypoint repository is loading.");
         }
@@ -368,7 +375,7 @@ public sealed class WaypointRepository
     {
         lock (_sync)
         {
-            _isLoading = true;
+            _activeLoadCount++;
         }
     }
 
@@ -376,7 +383,7 @@ public sealed class WaypointRepository
     {
         lock (_sync)
         {
-            _isLoading = false;
+            _activeLoadCount--;
         }
     }
 
