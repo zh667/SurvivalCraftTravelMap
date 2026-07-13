@@ -185,7 +185,7 @@ public static class CoordinateTeleportResultText
         CoordinateTeleportResultCode.Malformed => "服务器拒绝了无效请求",
         CoordinateTeleportResultCode.Duplicate => "重复的地图传送请求已被拒绝",
         CoordinateTeleportResultCode.Disconnected => "连接已断开，地图传送已取消",
-        CoordinateTeleportResultCode.InternalError => "服务器执行地图传送时出错",
+        CoordinateTeleportResultCode.InternalError => "传送失败，详细原因已写入日志",
         CoordinateTeleportResultCode.Success => "传送完成",
         _ => "地图传送未完成",
     };

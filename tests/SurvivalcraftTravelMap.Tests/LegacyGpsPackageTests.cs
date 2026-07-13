@@ -1,5 +1,6 @@
 using Game.NetWork;
 using SurvivalcraftTravelMap.Network;
+using SurvivalcraftTravelMap.Teleport;
 using SurvivalcraftTravelMap.UI;
 using Xunit;
 
@@ -48,6 +49,51 @@ public sealed class LegacyGpsPackageTests
     public void Network_package_keeps_legacy_id_41()
     {
         Assert.Equal(41, LegacyGpsPackage.PackageId);
+    }
+
+    [Fact]
+    public async Task Invitation_execution_boundary_diagnoses_unexpected_failure_and_returns_safe_response()
+    {
+        var failure = new InvalidOperationException("invitation sentinel 159357");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        TeleportRequestDiagnosticContext? observedContext = null;
+
+        var response = await LegacyInvitationTeleportExecution.ExecuteAsync(
+            _ => Task.FromException<TeleportResult>(failure),
+            static _ => "unexpected success",
+            diagnostic =>
+            {
+                observedContext = TeleportDiagnosticContext.Current;
+                diagnostics.Add(diagnostic);
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("传送失败，详细原因已写入日志", response);
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(TeleportExecutionStage.ProtocolDispatch, diagnostic.Stage);
+        Assert.Same(failure, diagnostic.Exception);
+        Assert.Equal(
+            new TeleportRequestDiagnosticContext("invitation", null, "Teleport"),
+            observedContext);
+    }
+
+    [Fact]
+    public async Task Invitation_execution_boundary_does_not_duplicate_a_deeper_diagnostic()
+    {
+        var fallbackCount = 0;
+
+        var response = await LegacyInvitationTeleportExecution.ExecuteAsync(
+            _ =>
+            {
+                TeleportDiagnosticContext.MarkFailureReported();
+                return Task.FromException<TeleportResult>(new InvalidOperationException("already reported"));
+            },
+            static _ => "unexpected success",
+            _ => fallbackCount++,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("传送失败，详细原因已写入日志", response);
+        Assert.Equal(0, fallbackCount);
     }
 
     [Fact]

@@ -97,6 +97,11 @@ internal static class TravelMapNetworkRuntime
         CoordinateTeleportPackage package,
         NetNode netNode)
     {
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext(
+                "remote",
+                package.Message.RequestId,
+                package.Message.Kind.ToString()));
         var source = package.From;
         if (source is null)
         {
@@ -120,8 +125,15 @@ internal static class TravelMapNetworkRuntime
                 package.Message,
                 CancellationToken.None).ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
+            if (!TeleportDiagnosticContext.HasReportedFailure)
+            {
+                TeleportDiagnosticReporter.Report(new TeleportFailureDiagnostic(
+                    TeleportExecutionStage.ProtocolDispatch,
+                    exception));
+            }
+
             response = CoordinateTeleportMessage.Result(
                 package.Message.RequestId,
                 CoordinateTeleportResultCode.InternalError);
@@ -284,13 +296,11 @@ internal static class TravelMapNetworkRuntime
             }
 
             var position = invitee.ComponentBody.Position;
-            var result = await component.HandleLegacyTeleportToPlayerAsync(
-                new Vector3(position.X, position.Y, position.Z),
-                CancellationToken.None).ConfigureAwait(false);
-            SendResult(
-                netNode,
-                inviter,
-                result == TeleportResult.Success
+            var response = await LegacyInvitationTeleportExecution.ExecuteAsync(
+                cancellationToken => component.HandleLegacyTeleportToPlayerAsync(
+                    new Vector3(position.X, position.Y, position.Z),
+                    cancellationToken),
+                static result => result == TeleportResult.Success
                     ? "传送完成"
                     : result switch
                     {
@@ -299,8 +309,11 @@ internal static class TravelMapNetworkRuntime
                         TeleportResult.OutOfWorld => "目标位置超出世界范围",
                         TeleportResult.RolledBack => "落点复查失败，已回到原位置",
                         TeleportResult.Busy => "已有传送正在进行，请稍后再试",
-                        _ => "传送未完成",
-                    });
+                        _ => "传送失败，详细原因已写入日志",
+                    },
+                TeleportDiagnosticReporter.Report,
+                CancellationToken.None).ConfigureAwait(false);
+            SendResult(netNode, inviter, response);
         }
 
         private ComponentPlayer? FindPlayer(Guid playerId) =>
@@ -319,6 +332,50 @@ internal static class TravelMapNetworkRuntime
             {
                 netNode.QueuePackage(new LegacyGpsPackage(message) { To = target });
             }
+        }
+    }
+}
+
+internal static class LegacyInvitationTeleportExecution
+{
+    internal const string FailureResponse = "传送失败，详细原因已写入日志";
+
+    internal static async Task<string> ExecuteAsync(
+        Func<CancellationToken, Task<TeleportResult>> executor,
+        Func<TeleportResult, string> formatResult,
+        Action<TeleportFailureDiagnostic> reportFailure,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(formatResult);
+        ArgumentNullException.ThrowIfNull(reportFailure);
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("invitation", null, "Teleport"));
+        try
+        {
+            return formatResult(await executor(cancellationToken).ConfigureAwait(false));
+        }
+        catch (Exception exception)
+        {
+            if (!TeleportDiagnosticContext.HasReportedFailure)
+            {
+                try
+                {
+                    reportFailure(new TeleportFailureDiagnostic(
+                        TeleportExecutionStage.ProtocolDispatch,
+                        exception));
+                }
+                catch
+                {
+                    // A diagnostic sink must not fault the observed ID-41 task.
+                }
+                finally
+                {
+                    TeleportDiagnosticContext.MarkFailureReported();
+                }
+            }
+
+            return FailureResponse;
         }
     }
 }

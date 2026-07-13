@@ -209,6 +209,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
         int z,
         CancellationToken cancellationToken)
     {
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("local", null, "SurfaceRequest"));
         var service = GetLocalTeleportService();
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -220,6 +222,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
         Vector3 xyz,
         CancellationToken cancellationToken)
     {
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("local", null, "WaypointRequest"));
         var service = GetLocalTeleportService();
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -264,6 +268,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
     {
         ArgumentNullException.ThrowIfNull(binding);
         ArgumentNullException.ThrowIfNull(message);
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext(
+                "remote",
+                message.RequestId,
+                message.Kind.ToString()));
         var sourceIdentity = binding.Identity;
         CoordinateTeleportServerSession session;
         lock (_networkSync)
@@ -310,6 +319,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
         Vector3 target,
         CancellationToken cancellationToken)
     {
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("invitation", null, "Teleport"));
         if (WorkType != TravelMapWorkType.Server || TeleportService is null)
         {
             return TeleportResult.OutOfWorld;
@@ -486,7 +497,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             clock,
             WorkType == TravelMapWorkType.Server
                 ? SynchronizeAuthoritativePosition
-                : static () => { });
+                : static () => { },
+            TeleportDiagnosticReporter.Report);
         if (TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(RuntimeContext))
         {
             _authoritativeHostTeleport = new AuthoritativeHostTeleportSession(
@@ -512,11 +524,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
         CoordinateTeleportMessage request,
         CoordinateTeleportResultCode? result)
     {
-        var target = request.Kind == CoordinateTeleportMessageKind.SurfaceRequest
-            ? $"x={request.X},z={request.Z}"
-            : $"x={request.Target.X:0.###},y={request.Target.Y:0.###},z={request.Target.Z:0.###}";
         Engine.Log.Information(
-            $"[TravelMap] Coordinate teleport route={route}, request={request.RequestId}, kind={request.Kind}, target=({target}), result={result?.ToString() ?? "Missing"}.");
+            $"[TravelMap] Coordinate teleport route={route}, request={request.RequestId}, kind={request.Kind}, result={result?.ToString() ?? "Missing"}.");
     }
 
     private void InitializeUiSettings(UiInitializationState state)

@@ -529,6 +529,11 @@ public sealed class CoordinateTeleportServerSession : IDisposable
             _hasLastAcceptedRequestId = true;
         }
 
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext(
+                "remote",
+                message.RequestId,
+                message.Kind.ToString()));
         var result = CoordinateTeleportResultCode.InternalError;
         try
         {
@@ -564,8 +569,15 @@ public sealed class CoordinateTeleportServerSession : IDisposable
         {
             result = CoordinateTeleportResultCode.TimedOut;
         }
-        catch
+        catch (Exception exception)
         {
+            if (!TeleportDiagnosticContext.HasReportedFailure)
+            {
+                TeleportDiagnosticReporter.Report(new TeleportFailureDiagnostic(
+                    TeleportExecutionStage.ProtocolDispatch,
+                    exception));
+            }
+
             result = CoordinateTeleportResultCode.InternalError;
         }
         finally
@@ -709,6 +721,11 @@ public sealed class AuthoritativeHostTeleportSession : IDisposable
         }
 
         var message = createMessage(requestId);
+        using var diagnosticScope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext(
+                "host",
+                message.RequestId,
+                message.Kind.ToString()));
         CoordinateTeleportResultCode result;
         if ((message.Kind == CoordinateTeleportMessageKind.SurfaceRequest
                 && !_options.SurfaceTeleportEnabled)
@@ -737,8 +754,15 @@ public sealed class AuthoritativeHostTeleportSession : IDisposable
             {
                 result = CoordinateTeleportResultCode.TimedOut;
             }
-            catch
+            catch (Exception exception)
             {
+                if (!TeleportDiagnosticContext.HasReportedFailure)
+                {
+                    TeleportDiagnosticReporter.Report(new TeleportFailureDiagnostic(
+                        TeleportExecutionStage.ProtocolDispatch,
+                        exception));
+                }
+
                 result = CoordinateTeleportResultCode.InternalError;
             }
         }

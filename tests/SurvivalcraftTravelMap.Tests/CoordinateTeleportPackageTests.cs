@@ -116,12 +116,41 @@ public sealed class CoordinateTeleportPackageTests
     }
 }
 
-public sealed class CoordinateTeleportServerSessionTests
+public sealed class CoordinateTeleportPackageTestsServerSession
 {
     [Fact]
     public void Server_execution_deadline_is_strictly_shorter_than_client_response_timeout()
     {
         Assert.True(CoordinateTeleportServerSession.ExecutionDeadline < CoordinateTeleportClientSession.ResponseTimeout);
+    }
+
+    [Fact]
+    public async Task Unexpected_remote_executor_failure_is_diagnosed_and_mapped_to_internal_error()
+    {
+        var executor = new ThrowingExecutor(new InvalidOperationException("remote sentinel 741852"));
+        using var session = new CoordinateTeleportServerSession(
+            "peer-a",
+            executor,
+            new CoordinateTeleportServerOptions());
+        var request = CoordinateTeleportMessage.SurfaceRequest(37, 123, -456);
+        var diagnosticContext = new TeleportRequestDiagnosticContext(
+            "remote",
+            request.RequestId,
+            request.Kind.ToString());
+
+        CoordinateTeleportMessage response;
+        using (TeleportDiagnosticContext.Ensure(diagnosticContext))
+        {
+            response = await session.HandleAsync(
+                "peer-a",
+                request,
+                TestContext.Current.CancellationToken);
+            Assert.True(TeleportDiagnosticContext.HasReportedFailure);
+        }
+
+        Assert.Equal(CoordinateTeleportResultCode.InternalError, response.ResultCode);
+        Assert.Equal(diagnosticContext, executor.ObservedContext);
+        Assert.False(executor.ObservedReportedFailure);
     }
 
     [Fact]
@@ -551,9 +580,32 @@ public sealed class CoordinateTeleportServerSessionTests
             return Result;
         }
     }
+
+    private sealed class ThrowingExecutor(Exception failure) : ICoordinateTeleportExecutor
+    {
+        internal TeleportRequestDiagnosticContext? ObservedContext { get; private set; }
+
+        internal bool ObservedReportedFailure { get; private set; }
+
+        public Task<TeleportResult> TeleportToSurfaceAsync(
+            int x,
+            int z,
+            CancellationToken cancellationToken) => Throw();
+
+        public Task<TeleportResult> TeleportToWaypointAsync(
+            Vector3 xyz,
+            CancellationToken cancellationToken) => Throw();
+
+        private Task<TeleportResult> Throw()
+        {
+            ObservedContext = TeleportDiagnosticContext.Current;
+            ObservedReportedFailure = TeleportDiagnosticContext.HasReportedFailure;
+            return Task.FromException<TeleportResult>(failure);
+        }
+    }
 }
 
-public sealed class CoordinateTeleportClientSessionTests
+public sealed class CoordinateTeleportPackageTestsClientSession
 {
     [Fact]
     public async Task Client_waits_for_capability_and_success_without_direct_position_write()
@@ -657,6 +709,41 @@ public sealed class CoordinateTeleportClientSessionTests
         Assert.Equal(uint.MaxValue, sequence.Next([]));
         Assert.Equal(1u, sequence.Next([uint.MaxValue]));
         Assert.Equal(2u, sequence.Next([1u]));
+    }
+
+    [Fact]
+    public async Task Unexpected_host_executor_failure_reports_original_request_and_internal_error()
+    {
+        var executor = new HostRecordingExecutor
+        {
+            Failure = new InvalidOperationException("host sentinel 963258"),
+        };
+        var reported = new List<(CoordinateTeleportMessage Message, CoordinateTeleportResultCode Result)>();
+        using var host = CreateObservedHost(
+            executor,
+            (message, result) => reported.Add((message, result)));
+        var diagnosticContext = new TeleportRequestDiagnosticContext(
+            "host",
+            1,
+            CoordinateTeleportMessageKind.SurfaceRequest.ToString());
+
+        CoordinateTeleportResultCode result;
+        using (TeleportDiagnosticContext.Ensure(diagnosticContext))
+        {
+            result = await host.RequestSurfaceAsync(
+                10,
+                20,
+                TestContext.Current.CancellationToken);
+            Assert.True(TeleportDiagnosticContext.HasReportedFailure);
+        }
+
+        Assert.Equal(CoordinateTeleportResultCode.InternalError, result);
+        Assert.Equal(diagnosticContext, executor.ObservedContext);
+        var observation = Assert.Single(reported);
+        Assert.Equal(1u, observation.Message.RequestId);
+        Assert.Equal(CoordinateTeleportMessageKind.SurfaceRequest, observation.Message.Kind);
+        Assert.Equal(CoordinateTeleportResultCode.InternalError, observation.Result);
+        Assert.DoesNotContain(reported, item => item.Result == CoordinateTeleportResultCode.Success);
     }
 
     [Fact]
@@ -774,6 +861,10 @@ public sealed class CoordinateTeleportClientSessionTests
 
         internal TeleportResult Result { get; init; } = TeleportResult.Success;
 
+        internal Exception? Failure { get; init; }
+
+        internal TeleportRequestDiagnosticContext? ObservedContext { get; private set; }
+
         internal (int X, int Z)? SurfaceTarget { get; private set; }
 
         internal Vector3? WaypointTarget { get; private set; }
@@ -785,7 +876,13 @@ public sealed class CoordinateTeleportClientSessionTests
         {
             CallCount++;
             SurfaceTarget = (x, z);
+            ObservedContext = TeleportDiagnosticContext.Current;
             await Task.Delay(Delay, cancellationToken);
+            if (Failure is not null)
+            {
+                throw Failure;
+            }
+
             return Result;
         }
 
@@ -795,7 +892,13 @@ public sealed class CoordinateTeleportClientSessionTests
         {
             CallCount++;
             WaypointTarget = xyz;
+            ObservedContext = TeleportDiagnosticContext.Current;
             await Task.Delay(Delay, cancellationToken);
+            if (Failure is not null)
+            {
+                throw Failure;
+            }
+
             return Result;
         }
     }

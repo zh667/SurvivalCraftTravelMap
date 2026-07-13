@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Xml.Linq;
 using Game.NetWork;
 using SurvivalcraftTravelMap.Mod;
+using SurvivalcraftTravelMap.Network;
 using Xunit;
 
 namespace SurvivalcraftTravelMap.Tests;
@@ -146,6 +147,47 @@ public sealed class PackageStructureTests
 
         Assert.True(conflictGate >= 0);
         Assert.True(playerInitialization > conflictGate);
+    }
+
+    [Fact]
+    public void Teleport_runtime_sources_scope_routes_report_fallbacks_and_never_log_target_coordinates()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var runtime = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "Network",
+            "TravelMapNetworkRuntime.cs"));
+        var package = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "Network",
+            "CoordinateTeleportPackage.cs"));
+        var reportStart = component.IndexOf("private static void ReportCoordinateTeleportResult", StringComparison.Ordinal);
+        var reportEnd = component.IndexOf("private void InitializeUiSettings", reportStart, StringComparison.Ordinal);
+        var reportMethod = component[reportStart..reportEnd];
+
+        Assert.Contains("TeleportDiagnosticContext.Ensure", runtime, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception exception)", runtime, StringComparison.Ordinal);
+        Assert.Contains("TeleportExecutionStage.ProtocolDispatch", runtime, StringComparison.Ordinal);
+        Assert.Contains("!TeleportDiagnosticContext.HasReportedFailure", runtime, StringComparison.Ordinal);
+        Assert.Contains("TeleportDiagnosticContext.Ensure", package, StringComparison.Ordinal);
+        Assert.Contains("TeleportDiagnosticReporter.Report", component, StringComparison.Ordinal);
+        Assert.Contains("route={route}, request={request.RequestId}, kind={request.Kind}, result=", reportMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("request.X", reportMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("request.Z", reportMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("request.Target", reportMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("target=(", reportMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Internal_error_user_message_is_the_safe_diagnostic_notice()
+    {
+        Assert.Equal(
+            "传送失败，详细原因已写入日志",
+            CoordinateTeleportResultText.For(CoordinateTeleportResultCode.InternalError));
     }
 
     [Fact]
