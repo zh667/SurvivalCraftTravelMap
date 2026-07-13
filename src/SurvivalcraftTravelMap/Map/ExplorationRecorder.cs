@@ -22,8 +22,7 @@ public sealed class ExplorationRecorder(
         var maximumX = checked(centerX + radius);
         var minimumZ = checked(centerZ - radius);
         var maximumZ = checked(centerZ + radius);
-        var acquiredTiles = new Dictionary<(int X, int Z), MapTile>();
-        var touchedTiles = new HashSet<MapTile>();
+        var leases = new Dictionary<(int X, int Z), ExplorationTileStore.MutationLease>();
 
         try
         {
@@ -34,14 +33,13 @@ public sealed class ExplorationRecorder(
                     var color = _sampler.Sample(x, z);
                     var coordinate = TileCoordinate.FromWorld(x, z);
                     var key = (X: coordinate.TileX, Z: coordinate.TileZ);
-                    if (!acquiredTiles.TryGetValue(key, out var tile))
+                    if (!leases.TryGetValue(key, out var lease))
                     {
-                        tile = _tileStore.GetOrLoadAndMarkDirty(key.X, key.Z);
-                        acquiredTiles.Add(key, tile);
+                        lease = _tileStore.AcquireMutation(key.X, key.Z);
+                        leases.Add(key, lease);
                     }
 
-                    tile.SetPixel(coordinate.LocalX, coordinate.LocalZ, color);
-                    touchedTiles.Add(tile);
+                    lease.Tile.SetPixel(coordinate.LocalX, coordinate.LocalZ, color);
 
                     if (x == maximumX)
                     {
@@ -57,11 +55,9 @@ public sealed class ExplorationRecorder(
         }
         finally
         {
-            // Mark after the last successful mutation. If recording or sampling fails,
-            // every tile with completed writes still advances its generation exactly once.
-            foreach (var tile in touchedTiles)
+            foreach (var lease in leases.Values)
             {
-                _tileStore.MarkDirty(tile);
+                lease.Dispose();
             }
         }
     }

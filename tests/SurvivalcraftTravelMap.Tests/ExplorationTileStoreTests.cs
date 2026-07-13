@@ -17,6 +17,23 @@ public sealed class ExplorationTileStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Mutation_lease_dispose_is_idempotent_and_publishes_the_completed_write()
+    {
+        var store = new ExplorationTileStore(_directory, capacity: 1);
+        var lease = store.AcquireMutation(0, 0);
+        lease.Tile.SetPixel(4, 5, new Rgba32(10, 20, 30, 255));
+
+        lease.Dispose();
+        lease.Dispose();
+        store.GetOrLoad(9, 9);
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(_directory).GetOrLoad(0, 0);
+        Assert.True(reloaded.TryGetPixel(4, 5, out var color));
+        Assert.Equal(new Rgba32(10, 20, 30, 255), color);
+    }
+
+    [Fact]
     public async Task Flush_atomically_persists_a_dirty_tile()
     {
         var store = new ExplorationTileStore(_directory, capacity: 2);

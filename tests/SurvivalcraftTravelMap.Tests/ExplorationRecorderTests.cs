@@ -7,6 +7,76 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public async Task Mutation_survives_concurrent_flush_and_trim_pressure_at_low_capacity()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource();
+        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var recorder = new ExplorationRecorder(sampler, store);
+        var recording = Task.Run(
+            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+            store.GetOrLoad(9, 9);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        await recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(directory.Path);
+        Assert.True(reloaded.GetOrLoad(0, 0).TryGetPixel(63, 62, out _));
+        Assert.True(reloaded.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
+    }
+
+    [Fact]
+    public async Task Sampler_exception_survives_concurrent_flush_and_trim_and_keeps_successful_pixels()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource(throwAtSample: 4);
+        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var recorder = new ExplorationRecorder(sampler, store);
+        var recording = Task.Run(
+            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+            store.GetOrLoad(9, 9);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        var exception = await Assert.ThrowsAsync<TerrainSamplingException>(
+            () => recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.Equal("sample 4", exception.Message);
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(directory.Path);
+        var firstTile = reloaded.GetOrLoad(0, 0);
+        Assert.True(firstTile.TryGetPixel(62, 62, out _));
+        Assert.True(firstTile.TryGetPixel(63, 62, out _));
+        Assert.True(reloaded.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
+    }
+
+    [Fact]
     public async Task Low_capacity_recording_pins_every_touched_tile_until_it_is_dirty()
     {
         using var directory = new TemporaryDirectory();
@@ -114,7 +184,7 @@ public sealed class ExplorationRecorderTests
             source.AllowSecondSample.Set();
         }
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        await Assert.ThrowsAsync<TerrainSamplingException>(
             () => recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         await store.FlushAsync(TestContext.Current.CancellationToken);
 
@@ -201,7 +271,7 @@ internal sealed class BlockingSecondSampleTerrainSource(int? throwAtSample = nul
 
         if (sample == throwAtSample)
         {
-            throw new InvalidOperationException("Deterministic terrain sampling failure.");
+            throw new TerrainSamplingException($"sample {sample}");
         }
 
         return 64;

@@ -56,7 +56,7 @@ public sealed class ExplorationTileStore
         }
     }
 
-    public MapTile GetOrLoadAndMarkDirty(int tileX, int tileZ)
+    public MutationLease AcquireMutation(int tileX, int tileZ)
     {
         var key = new TileKey(tileX, tileZ);
         lock (_sync)
@@ -74,9 +74,10 @@ public sealed class ExplorationTileStore
                 _cache.Add(key, entry);
             }
 
+            entry.PinCount++;
             SetDirty(entry);
             TrimCleanEntries();
-            return entry.Tile;
+            return new MutationLease(entry.Tile, () => CompleteMutation(entry));
         }
     }
 
@@ -187,12 +188,23 @@ public sealed class ExplorationTileStore
         Touch(entry);
     }
 
+    private void CompleteMutation(CacheEntry entry)
+    {
+        lock (_sync)
+        {
+            SetDirty(entry);
+            entry.PinCount--;
+            TrimCleanEntries();
+        }
+    }
+
     private void TrimCleanEntries()
     {
         while (_cache.Count > Capacity)
         {
             var candidate = _lru.Last;
-            while (candidate is not null && _cache[candidate.Value].IsDirty)
+            while (candidate is not null
+                && (_cache[candidate.Value].IsDirty || _cache[candidate.Value].PinCount > 0))
             {
                 candidate = candidate.Previous;
             }
@@ -209,6 +221,24 @@ public sealed class ExplorationTileStore
 
     private readonly record struct TileKey(int X, int Z);
 
+    public sealed class MutationLease : IDisposable
+    {
+        private Action? _complete;
+
+        internal MutationLease(MapTile tile, Action complete)
+        {
+            Tile = tile;
+            _complete = complete;
+        }
+
+        public MapTile Tile { get; }
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _complete, null)?.Invoke();
+        }
+    }
+
     private sealed class CacheEntry(MapTile tile, LinkedListNode<TileKey> node)
     {
         public MapTile Tile { get; } = tile;
@@ -218,6 +248,8 @@ public sealed class ExplorationTileStore
         public bool IsDirty { get; set; }
 
         public long Generation { get; set; }
+
+        public int PinCount { get; set; }
     }
 
     private sealed record PendingWrite(TileKey Key, MapTile Original, MapTile Snapshot, long Generation);
