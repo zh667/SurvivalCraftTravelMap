@@ -10,6 +10,84 @@ public sealed class TerrainMapSamplerTests
     private static readonly int[] TransparentTopContents = [28, 99, 19, 174, 25];
     private static readonly int[] WaterVariantContents = [226, 229, 232, 233];
 
+    [Theory]
+    [InlineData(TerrainChunkCoordinate.PixelCount - 1)]
+    [InlineData(TerrainChunkCoordinate.PixelCount + 1)]
+    public void Try_sample_chunk_requires_exactly_one_chunk_of_destination_space(int length)
+    {
+        var source = new FakeTerrainMapSource();
+        var sampler = new TerrainMapSampler(source, CreatePixelData());
+
+        Assert.Throws<ArgumentException>(() =>
+            sampler.TrySampleChunk(new TerrainChunkCoordinate(0, 0), new Rgba32[length]));
+        Assert.Equal(0, source.ChunkReadinessChecks);
+        Assert.Empty(source.SampledColumns);
+        Assert.Empty(source.ContentCalls);
+    }
+
+    [Fact]
+    public void Try_sample_chunk_checks_readiness_once_and_does_not_read_an_unready_chunk()
+    {
+        var source = new FakeTerrainMapSource(isReady: false);
+        var sampler = new TerrainMapSampler(source, CreatePixelData());
+        var destination = Enumerable.Repeat(
+            new Rgba32(20, 30, 40, 50),
+            TerrainChunkCoordinate.PixelCount).ToArray();
+        var chunk = new TerrainChunkCoordinate(7, -9);
+
+        var sampled = sampler.TrySampleChunk(chunk, destination);
+
+        Assert.False(sampled);
+        Assert.Equal(1, source.ChunkReadinessChecks);
+        Assert.Equal([chunk], source.RequestedChunks);
+        Assert.Equal(0, source.ColumnReadinessChecks);
+        Assert.Empty(source.SampledColumns);
+        Assert.Empty(source.ContentCalls);
+        Assert.All(destination, color => Assert.Equal(new Rgba32(20, 30, 40, 50), color));
+    }
+
+    [Fact]
+    public void Try_sample_chunk_samples_all_negative_origin_columns_in_z_major_order()
+    {
+        var source = new FakeTerrainMapSource(topHeight: 72, defaultContent: 1);
+        var sampler = new TerrainMapSampler(source, CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+        {
+            [1] = Pixel(1, 10, 20, 30),
+        }));
+        var destination = new Rgba32[TerrainChunkCoordinate.PixelCount];
+        var chunk = new TerrainChunkCoordinate(-2, -3);
+
+        var sampled = sampler.TrySampleChunk(chunk, destination);
+
+        Assert.True(sampled);
+        Assert.Equal(1, source.ChunkReadinessChecks);
+        Assert.Equal([chunk], source.RequestedChunks);
+        Assert.Equal(0, source.ColumnReadinessChecks);
+        Assert.Equal(
+            from localZ in Enumerable.Range(0, TerrainChunkCoordinate.Size)
+            from localX in Enumerable.Range(0, TerrainChunkCoordinate.Size)
+            select (chunk.OriginX + localX, chunk.OriginZ + localZ),
+            source.SampledColumns);
+        Assert.Equal(TerrainChunkCoordinate.PixelCount, source.ContentCalls.Count);
+        Assert.All(destination, color => Assert.Equal(new Rgba32(10, 20, 30, 255), color));
+    }
+
+    [Fact]
+    public void Try_sample_chunk_rejects_the_chunk_when_any_sample_has_zero_alpha()
+    {
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
+        source.SetContent(2, 64, 3, 0);
+        var sampler = new TerrainMapSampler(source, CreatePixelData());
+        var destination = new Rgba32[TerrainChunkCoordinate.PixelCount];
+
+        var sampled = sampler.TrySampleChunk(new TerrainChunkCoordinate(0, 0), destination);
+
+        Assert.False(sampled);
+        Assert.Equal(1, source.ChunkReadinessChecks);
+        Assert.Equal(0, source.ColumnReadinessChecks);
+        Assert.Equal(0, destination[(3 * TerrainChunkCoordinate.Size) + 2].A);
+    }
+
     [Fact]
     public void Try_sample_rejects_a_transparent_air_pixel()
     {
@@ -353,9 +431,26 @@ internal sealed class FakeTerrainMapSource(
 
     internal List<(int X, int Z)> HumidityCalls { get; } = [];
 
+    internal int ColumnReadinessChecks { get; private set; }
+
+    internal int ChunkReadinessChecks { get; private set; }
+
+    internal List<TerrainChunkCoordinate> RequestedChunks { get; } = [];
+
     internal void SetContent(int x, int y, int z, int content) => _contents[(x, y, z)] = content;
 
-    public bool IsColumnReady(int x, int z) => isReady;
+    public bool IsColumnReady(int x, int z)
+    {
+        ColumnReadinessChecks++;
+        return isReady;
+    }
+
+    public bool IsChunkSurfaceReady(TerrainChunkCoordinate chunk)
+    {
+        ChunkReadinessChecks++;
+        RequestedChunks.Add(chunk);
+        return isReady;
+    }
 
     public int GetTopHeight(int x, int z)
     {

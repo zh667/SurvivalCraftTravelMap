@@ -9,6 +9,13 @@ public sealed class SurvivalcraftTerrainMapSource(SubsystemTerrain terrain) : IT
     public bool IsColumnReady(int x, int z) =>
         _terrain.Terrain.GetChunkAtCell(x, z) is { State: TerrainChunkState.Valid };
 
+    public bool IsChunkSurfaceReady(TerrainChunkCoordinate chunk) =>
+        _terrain.Terrain.GetChunkAtCell(chunk.OriginX, chunk.OriginZ) is { } terrainChunk
+        && IsSurfaceReadable(terrainChunk.State);
+
+    internal static bool IsSurfaceReadable(TerrainChunkState state) =>
+        state >= TerrainChunkState.InvalidPropagatedLight;
+
     public int GetTopHeight(int x, int z) => _terrain.Terrain.GetTopHeight(x, z);
 
     public int GetContent(int x, int y, int z) => _terrain.Terrain.GetCellContents(x, y, z);

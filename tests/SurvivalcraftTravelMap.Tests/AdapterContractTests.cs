@@ -1,5 +1,6 @@
 using System.Numerics;
 using Game;
+using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Teleport;
 using Xunit;
@@ -34,6 +35,27 @@ public sealed class AdapterContractTests
         { new(Hazard: SurvivalcraftBlockHazard.Cactus), TeleportBlockKind.Cactus },
         { new(Hazard: SurvivalcraftBlockHazard.Spikes), TeleportBlockKind.Spikes },
     };
+
+    [Fact]
+    public void Terrain_map_adapter_rejects_every_chunk_state_before_propagated_light()
+    {
+        var states = Enum.GetValues<TerrainChunkState>()
+            .Where(state => state < TerrainChunkState.InvalidPropagatedLight)
+            .ToArray();
+
+        Assert.NotEmpty(states);
+        Assert.All(states, state => Assert.False(SurvivalcraftTerrainMapSource.IsSurfaceReadable(state)));
+    }
+
+    [Theory]
+    [InlineData(TerrainChunkState.InvalidPropagatedLight)]
+    [InlineData(TerrainChunkState.InvalidVertices1)]
+    [InlineData(TerrainChunkState.InvalidVertices2)]
+    [InlineData(TerrainChunkState.Valid)]
+    public void Terrain_map_adapter_accepts_every_surface_readable_chunk_state(TerrainChunkState state)
+    {
+        Assert.True(SurvivalcraftTerrainMapSource.IsSurfaceReadable(state));
+    }
 
     [Theory]
     [MemberData(nameof(BlockKinds))]

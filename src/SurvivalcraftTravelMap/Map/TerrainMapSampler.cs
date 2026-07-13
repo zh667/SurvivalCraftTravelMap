@@ -4,6 +4,9 @@ public interface ITerrainMapSource
 {
     bool IsColumnReady(int x, int z);
 
+    bool IsChunkSurfaceReady(TerrainChunkCoordinate chunk) =>
+        IsColumnReady(chunk.OriginX, chunk.OriginZ);
+
     int GetTopHeight(int x, int z);
 
     int GetContent(int x, int y, int z);
@@ -80,6 +83,38 @@ public sealed class TerrainMapSampler
 
         color = default;
         return false;
+    }
+
+    public bool TrySampleChunk(
+        TerrainChunkCoordinate chunk,
+        Span<Rgba32> destination)
+    {
+        if (destination.Length != TerrainChunkCoordinate.PixelCount)
+        {
+            throw new ArgumentException(
+                $"Destination length must be exactly {TerrainChunkCoordinate.PixelCount} pixels.",
+                nameof(destination));
+        }
+
+        if (!_terrain.IsChunkSurfaceReady(chunk))
+        {
+            return false;
+        }
+
+        for (var localZ = 0; localZ < TerrainChunkCoordinate.Size; localZ++)
+        {
+            for (var localX = 0; localX < TerrainChunkCoordinate.Size; localX++)
+            {
+                var color = Sample(chunk.OriginX + localX, chunk.OriginZ + localZ);
+                destination[(localZ * TerrainChunkCoordinate.Size) + localX] = color;
+                if (color.A == 0)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private static int GetTemperatureAdjustmentAtHeight(int y) =>
