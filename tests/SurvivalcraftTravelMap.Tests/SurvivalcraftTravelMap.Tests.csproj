@@ -16,5 +16,25 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SurvivalcraftTravelMap\SurvivalcraftTravelMap.csproj" />
+    <Reference Include="Survivalcraft">
+      <HintPath>$(SurvivalcraftDir)Survivalcraft.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Engine">
+      <HintPath>$(SurvivalcraftDir)Engine.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="EntitySystem">
+      <HintPath>$(SurvivalcraftDir)EntitySystem.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(SurvivalcraftDir)Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="LiteNetLib">
+      <HintPath>$(SurvivalcraftDir)LiteNetLib.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 </Project>

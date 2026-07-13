@@ -394,8 +394,18 @@ public sealed class CoordinateTeleportPackage : IPackage
 
     public void ReadData(PackageStreamReader reader)
     {
-        var remaining = checked((int)(reader.BaseStream.Length - reader.BaseStream.Position));
-        Message = CoordinateTeleportCodec.Deserialize(reader.ReadBytes(remaining));
+        try
+        {
+            Message = CoordinateTeleportCodec.Read(reader);
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is EndOfStreamException or IOException or ArgumentException)
+        {
+            throw new InvalidDataException("Coordinate teleport payload is truncated or invalid.", exception);
+        }
     }
 
     public void Handle(ProjectNet projectNet, NetNode netNode, bool isServer) =>
@@ -595,6 +605,7 @@ public sealed class CoordinateTeleportServerSession : IDisposable
         TeleportResult.NoSafePosition => CoordinateTeleportResultCode.NoSafePosition,
         TeleportResult.OutOfWorld => CoordinateTeleportResultCode.OutOfWorld,
         TeleportResult.RolledBack => CoordinateTeleportResultCode.RolledBack,
+        TeleportResult.Busy => CoordinateTeleportResultCode.Rejected,
         _ => CoordinateTeleportResultCode.InternalError,
     };
 

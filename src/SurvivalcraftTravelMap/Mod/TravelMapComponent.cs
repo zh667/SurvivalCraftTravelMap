@@ -66,6 +66,7 @@ public static class TravelMapRuntimePolicy
 public sealed class TravelMapComponent : Component, IUpdateable
 {
     private static int s_nextUpdateLocationId = -1_000_000;
+    private static readonly CoordinateTeleportFutureSchemaWarningGate ServerSettingsWarningGate = new();
 
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly TravelMapUiController _uiController = new();
@@ -103,6 +104,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     internal SafeTeleportService? TeleportService { get; private set; }
 
+    internal CancellationToken LifetimeToken => _lifetimeCancellation.Token;
+
     public TravelMapWorkType WorkType { get; private set; }
 
     public Action<TravelMapClientTravelCommand>? ClientTravelCommand { get; set; }
@@ -126,7 +129,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
             {
                 var optionsPath = Engine.Storage.GetSystemPath(
                     "app:/SurvivalcraftTravelMap/server-settings.json");
-                _coordinateServerOptions = new CoordinateTeleportServerOptionsStore(optionsPath).Load();
+                var loadResult = new CoordinateTeleportServerOptionsStore(optionsPath).LoadWithOutcome();
+                _coordinateServerOptions = loadResult.Options;
+                ServerSettingsWarningGate.NotifyIfNeeded(loadResult, static message => Engine.Log.Warning(message));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -261,20 +266,25 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _ => throw new InvalidOperationException($"Unsupported Survivalcraft work type: {workType}."),
     };
 
+    internal TravelMapBoundPeer? TryBindNetworkPeer(Client source) =>
+        WorkType == TravelMapWorkType.Server
+            ? TravelMapBoundPeer.TryCreate(source, Player, LifetimeToken)
+            : null;
+
     internal async Task<CoordinateTeleportMessage> HandleCoordinateServerAsync(
-        Client source,
+        TravelMapBoundPeer binding,
         CoordinateTeleportMessage message,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(binding);
         ArgumentNullException.ThrowIfNull(message);
-        var sourceIdentity = TravelMapNetworkPeerIdentity.ForClient(source);
+        var sourceIdentity = binding.Identity;
         CoordinateTeleportServerSession session;
         lock (_networkSync)
         {
             if (WorkType != TravelMapWorkType.Server
                 || TeleportService is null
-                || source.PlayerGuid != Player.PlayerGuid)
+                || !binding.IsCurrent)
             {
                 return CoordinateTeleportMessage.Result(
                     message.RequestId,
@@ -288,10 +298,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
             session = _coordinateServerSession;
         }
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            _lifetimeCancellation.Token);
-        return await session.HandleAsync(sourceIdentity, message, linked.Token).ConfigureAwait(false);
+        return await CoordinateTeleportBoundOperation.ExecuteAsync(
+            binding,
+            session,
+            message,
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal bool ReceiveCoordinateServerMessage(Client source, CoordinateTeleportMessage message)

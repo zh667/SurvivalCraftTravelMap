@@ -16,7 +16,51 @@ public sealed class TravelMapModLoader : ModLoader
             return;
         }
 
-        PackageManager.RegisterPackage(new LegacyGpsPackage());
-        PackageManager.RegisterPackage(new CoordinateTeleportPackage());
+        TravelMapPackageRegistration.TryRegister(
+            PackageManager.RegisterPackage,
+            PackageManager.UnRegisterPackage,
+            message => DialogsManager.Alert("Mod conflict", message));
+    }
+}
+
+public static class TravelMapPackageRegistration
+{
+    public static bool TryRegister(
+        Action<IPackage> register,
+        Action<IPackage> unregister,
+        Action<string> reportError)
+    {
+        ArgumentNullException.ThrowIfNull(register);
+        ArgumentNullException.ThrowIfNull(unregister);
+        ArgumentNullException.ThrowIfNull(reportError);
+        IPackage[] packages = [new LegacyGpsPackage(), new CoordinateTeleportPackage()];
+        var registered = new List<IPackage>(packages.Length);
+        foreach (var package in packages)
+        {
+            try
+            {
+                register(package);
+                registered.Add(package);
+            }
+            catch (Exception exception)
+            {
+                foreach (var completed in registered.AsEnumerable().Reverse())
+                {
+                    try
+                    {
+                        unregister(completed);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                reportError(
+                    $"Survivalcraft Travel Map could not register network package ID {package.ID}: {exception.Message}");
+                return false;
+            }
+        }
+
+        return true;
     }
 }

@@ -86,18 +86,21 @@ internal static class TravelMapNetworkRuntime
         }
 
         CoordinateTeleportMessage response;
+        TravelMapBoundPeer? binding = null;
         try
         {
             var component = source.PlayerData?.ComponentPlayer?.Entity
                 .FindComponent<TravelMapComponent>(false);
-            response = component is null
-                ? CoordinateTeleportMessage.Result(
-                    package.Message.RequestId,
-                    CoordinateTeleportResultCode.Rejected)
-                : await component.HandleCoordinateServerAsync(
-                    source,
-                    package.Message,
-                    CancellationToken.None).ConfigureAwait(false);
+            binding = component?.TryBindNetworkPeer(source);
+            if (component is null || binding is null)
+            {
+                return;
+            }
+
+            response = await component.HandleCoordinateServerAsync(
+                binding,
+                package.Message,
+                CancellationToken.None).ConfigureAwait(false);
         }
         catch
         {
@@ -106,7 +109,7 @@ internal static class TravelMapNetworkRuntime
                 CoordinateTeleportResultCode.InternalError);
         }
 
-        if (source.IsConnected)
+        if (binding is not null && binding.IsCurrent)
         {
             netNode.QueuePackage(new CoordinateTeleportPackage(response) { To = source });
         }
@@ -277,6 +280,7 @@ internal static class TravelMapNetworkRuntime
                         TeleportResult.NoSafePosition => "目标玩家附近没有安全落点",
                         TeleportResult.OutOfWorld => "目标位置超出世界范围",
                         TeleportResult.RolledBack => "落点复查失败，已回到原位置",
+                        TeleportResult.Busy => "已有传送正在进行，请稍后再试",
                         _ => "传送未完成",
                     });
         }

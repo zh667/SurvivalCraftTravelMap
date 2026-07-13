@@ -104,8 +104,9 @@ public sealed class PackageStructureTests
 
         Assert.Contains("ModsManager.GetModEntity(\"34GPSFix\"", source, StringComparison.Ordinal);
         Assert.Contains("DialogsManager.Alert", source, StringComparison.Ordinal);
-        Assert.Contains("PackageManager.RegisterPackage(new LegacyGpsPackage())", source, StringComparison.Ordinal);
-        Assert.Contains("PackageManager.RegisterPackage(new CoordinateTeleportPackage())", source, StringComparison.Ordinal);
+        Assert.Contains("TravelMapPackageRegistration.TryRegister", source, StringComparison.Ordinal);
+        Assert.Contains("PackageManager.RegisterPackage", source, StringComparison.Ordinal);
+        Assert.Contains("PackageManager.UnRegisterPackage", source, StringComparison.Ordinal);
         Assert.DoesNotContain("PackageId = 60", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AntiCheat", source, StringComparison.OrdinalIgnoreCase);
     }

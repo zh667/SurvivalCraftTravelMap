@@ -12,6 +12,7 @@ public sealed class SafeTeleportService
     private readonly IPlayerMover _playerMover;
     private readonly IEntityCollisionQuery _collisionQuery;
     private readonly ITeleportClock _clock;
+    private int _transactionActive;
 
     public SafeTeleportService(
         ITerrainAccess terrain,
@@ -38,6 +39,26 @@ public sealed class SafeTeleportService
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (Interlocked.CompareExchange(ref _transactionActive, 1, 0) != 0)
+        {
+            return TeleportResult.Busy;
+        }
+
+        try
+        {
+            return await TeleportToSurfaceCoreAsync(x, z, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _transactionActive, 0);
+        }
+    }
+
+    private async Task<TeleportResult> TeleportToSurfaceCoreAsync(
+        int x,
+        int z,
+        CancellationToken cancellationToken)
+    {
         if (!IsColumnInWorld(x, z, cancellationToken))
         {
             return TeleportResult.OutOfWorld;
@@ -82,6 +103,25 @@ public sealed class SafeTeleportService
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (Interlocked.CompareExchange(ref _transactionActive, 1, 0) != 0)
+        {
+            return TeleportResult.Busy;
+        }
+
+        try
+        {
+            return await TeleportToWaypointCoreAsync(xyz, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _transactionActive, 0);
+        }
+    }
+
+    private async Task<TeleportResult> TeleportToWaypointCoreAsync(
+        Vector3 xyz,
+        CancellationToken cancellationToken)
+    {
         if (!TryFloorToInt(xyz.X, out var x)
             || !TryFloorToInt(xyz.Y, out var y)
             || !TryFloorToInt(xyz.Z, out var z)

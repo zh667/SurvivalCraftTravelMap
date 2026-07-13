@@ -7,6 +7,154 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class SafeTeleportServiceTests
 {
     [Fact]
+    public async Task One_player_rejects_overlapping_transactions_and_releases_gate_after_completion()
+    {
+        var context = new TeleportTestContext();
+        var service = context.Service;
+        var enteredPostMoveValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePostMoveValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Terrain.SetSafeFeet(1, 65, 0);
+        context.Clock.WaitForUpdate = async cancellationToken =>
+        {
+            enteredPostMoveValidation.TrySetResult();
+            await releasePostMoveValidation.Task.WaitAsync(cancellationToken);
+        };
+
+        var first = service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), CancellationToken.None);
+        await enteredPostMoveValidation.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var overlapping = await service.TeleportToSurfaceAsync(1, 0, TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Busy, overlapping);
+        Assert.Single(context.Mover.Movements);
+
+        releasePostMoveValidation.TrySetResult();
+        Assert.Equal(TeleportResult.Success, await first);
+        Assert.Equal(
+            TeleportResult.Success,
+            await service.TeleportToSurfaceAsync(1, 0, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Legacy_and_ID61_entry_shapes_share_the_same_non_queueing_gate_in_both_directions()
+    {
+        foreach (var legacyStartsFirst in new[] { true, false })
+        {
+            var context = new TeleportTestContext();
+            var service = context.Service;
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            context.Terrain.SetSafeFeet(0, 65, 0);
+            context.Terrain.SetSafeFeet(1, 65, 0);
+            context.Clock.WaitForUpdate = async cancellationToken =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+            };
+
+            var first = legacyStartsFirst
+                ? service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), CancellationToken.None)
+                : service.TeleportToSurfaceAsync(1, 0, CancellationToken.None);
+            await entered.Task.WaitAsync(TestContext.Current.CancellationToken);
+            var overlapping = legacyStartsFirst
+                ? await service.TeleportToSurfaceAsync(1, 0, TestContext.Current.CancellationToken)
+                : await service.TeleportToWaypointAsync(
+                    new Vector3(0f, 65f, 0f),
+                    TestContext.Current.CancellationToken);
+
+            Assert.Equal(TeleportResult.Busy, overlapping);
+            Assert.Single(context.Mover.Movements);
+            release.TrySetResult();
+            Assert.Equal(TeleportResult.Success, await first);
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_rolls_back_releases_the_gate_and_allows_the_next_transaction()
+    {
+        var context = new TeleportTestContext();
+        var service = context.Service;
+        using var cancellation = new CancellationTokenSource();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Clock.WaitForUpdate = async token =>
+        {
+            cancellation.Cancel();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), cancellation.Token));
+
+        context.Clock.WaitForUpdate = _ => Task.CompletedTask;
+        Assert.Single(context.Mover.RestoredSnapshots);
+        Assert.Equal(
+            TeleportResult.Success,
+            await service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Exception_releases_the_gate_and_allows_the_next_transaction()
+    {
+        var context = new TeleportTestContext();
+        var service = context.Service;
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Terrain.ThrowOnReadNumber = 1;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        context.Terrain.ThrowOnReadNumber = null;
+        Assert.Equal(
+            TeleportResult.Success,
+            await service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Different_players_have_independent_teleport_transaction_gates()
+    {
+        var first = new TeleportTestContext();
+        var second = new TeleportTestContext();
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        first.Terrain.SetSafeFeet(0, 65, 0);
+        second.Terrain.SetSafeFeet(0, 65, 0);
+        first.Clock.WaitForUpdate = async token =>
+        {
+            firstEntered.TrySetResult();
+            await release.Task.WaitAsync(token);
+        };
+        second.Clock.WaitForUpdate = async token =>
+        {
+            secondEntered.TrySetResult();
+            await release.Task.WaitAsync(token);
+        };
+
+        var firstOperation = first.Service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            CancellationToken.None);
+        var secondOperation = second.Service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            CancellationToken.None);
+        await Task.WhenAll(firstEntered.Task, secondEntered.Task)
+            .WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(first.Mover.Movements);
+        Assert.Single(second.Mover.Movements);
+        release.TrySetResult();
+        Assert.Equal(TeleportResult.Success, await firstOperation);
+        Assert.Equal(TeleportResult.Success, await secondOperation);
+    }
+
+    [Fact]
     public void Surface_candidates_use_radius_eight_squared_distance_then_coordinate_order()
     {
         var candidates = TeleportCandidate.GenerateSurface(10, -20).ToArray();

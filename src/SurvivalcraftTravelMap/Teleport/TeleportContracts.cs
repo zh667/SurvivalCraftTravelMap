@@ -9,6 +9,7 @@ public enum TeleportResult
     NoSafePosition,
     OutOfWorld,
     RolledBack,
+    Busy,
 }
 
 public enum TeleportBlockKind

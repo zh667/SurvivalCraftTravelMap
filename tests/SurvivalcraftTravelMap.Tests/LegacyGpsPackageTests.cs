@@ -1,3 +1,4 @@
+using Game.NetWork;
 using SurvivalcraftTravelMap.Network;
 using SurvivalcraftTravelMap.UI;
 using Xunit;
@@ -49,10 +50,82 @@ public sealed class LegacyGpsPackageTests
         Assert.Equal(41, LegacyGpsPackage.PackageId);
     }
 
+    [Fact]
+    public void Network_ReadData_consumes_only_ID41_payload_from_shared_package_reader()
+    {
+        var first = LegacyGpsCodec.Serialize(LegacyGpsMessage.TeleportAllow(true));
+        var second = CoordinateTeleportCodec.Serialize(CoordinateTeleportMessage.SurfaceRequest(9, 12, 34));
+        var batch = first
+            .Concat(new byte[] { 0x88, CoordinateTeleportPackage.PackageId })
+            .Concat(second)
+            .Concat(new byte[] { 0x88, 99 })
+            .ToArray();
+        using var writer = new PackageStreamWriter();
+        writer.Write(batch);
+        using var reader = new PackageStreamReader(writer.Data());
+        var legacy = new LegacyGpsPackage();
+
+        legacy.ReadData(reader);
+        Assert.Equal(LegacyGpsMessage.TeleportAllow(true), legacy.Message);
+        Assert.Equal(0x88, reader.ReadByte());
+        Assert.Equal(CoordinateTeleportPackage.PackageId, reader.ReadByte());
+
+        var coordinate = new CoordinateTeleportPackage();
+        coordinate.ReadData(reader);
+        Assert.Equal(CoordinateTeleportMessage.SurfaceRequest(9, 12, 34), coordinate.Message);
+        Assert.Equal(0x88, reader.ReadByte());
+        Assert.Equal(99, reader.ReadByte());
+    }
+
+    [Theory]
+    [MemberData(nameof(GoldenPayloads))]
+    public void Network_ReadData_stops_at_the_next_package_sentinel(
+        LegacyGpsMessage message,
+        string _)
+    {
+        using var writer = new PackageStreamWriter();
+        writer.Write(LegacyGpsCodec.Serialize(message));
+        writer.Write((byte)0x88);
+        writer.Write((byte)77);
+        using var reader = new PackageStreamReader(writer.Data());
+        var package = new LegacyGpsPackage();
+
+        package.ReadData(reader);
+
+        Assert.Equal(message, package.Message);
+        Assert.Equal(0x88, reader.ReadByte());
+        Assert.Equal(77, reader.ReadByte());
+    }
+
+    [Fact]
+    public void Network_ReadData_rejects_oversized_string_length_before_consuming_following_bytes()
+    {
+        using var writer = new PackageStreamWriter();
+        writer.Write(Convert.FromHexString("02000000818001"));
+        writer.Write((byte)0x88);
+        using var reader = new PackageStreamReader(writer.Data());
+        var package = new LegacyGpsPackage();
+
+        Assert.Throws<InvalidDataException>(() => package.ReadData(reader));
+        Assert.Equal(7, reader.BaseStream.Position);
+        Assert.Equal(0x88, reader.ReadByte());
+    }
+
+    [Fact]
+    public void Network_ReadData_rejects_a_truncated_string_payload()
+    {
+        using var writer = new PackageStreamWriter();
+        writer.Write(Convert.FromHexString("020000000541"));
+        using var reader = new PackageStreamReader(writer.Data());
+
+        Assert.Throws<InvalidDataException>(() => new LegacyGpsPackage().ReadData(reader));
+    }
+
     [Theory]
     [InlineData("", "truncated")]
     [InlineData("06000000", "kind")]
     [InlineData("02000000", "truncated")]
+    [InlineData("0200000000", "empty")]
     [InlineData("0000000000", "trailing")]
     [InlineData("02000000818001", "too large")]
     public void Codec_rejects_malformed_truncated_oversized_and_trailing_payloads(

@@ -264,8 +264,7 @@ public sealed class LegacyGpsPackage : IPackage
 
     public void ReadData(PackageStreamReader reader)
     {
-        var remaining = checked((int)(reader.BaseStream.Length - reader.BaseStream.Position));
-        Message = LegacyGpsCodec.Deserialize(reader.ReadBytes(remaining));
+        Message = LegacyGpsCodec.Read(reader);
     }
 
     public void Handle(ProjectNet projectNet, NetNode netNode, bool isServer) =>

@@ -1,4 +1,5 @@
 using System.Numerics;
+using Game.NetWork;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Network;
 using SurvivalcraftTravelMap.Teleport;
@@ -70,10 +71,226 @@ public sealed class CoordinateTeleportPackageTests
 
         Assert.Contains("too large", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Theory]
+    [MemberData(nameof(RoundTrips))]
+    public void Network_ReadData_stops_at_the_next_package_sentinel(
+        CoordinateTeleportMessage message)
+    {
+        using var writer = new PackageStreamWriter();
+        writer.Write(CoordinateTeleportCodec.Serialize(message));
+        writer.Write((byte)0x88);
+        writer.Write((byte)77);
+        using var reader = new PackageStreamReader(writer.Data());
+        var package = new CoordinateTeleportPackage();
+
+        package.ReadData(reader);
+
+        Assert.Equal(message, package.Message);
+        Assert.Equal(0x88, reader.ReadByte());
+        Assert.Equal(77, reader.ReadByte());
+    }
+
+    [Fact]
+    public void Network_ReadData_rejects_oversized_string_length_before_consuming_following_bytes()
+    {
+        using var writer = new PackageStreamWriter();
+        writer.Write(Convert.FromHexString("0401000000018102"));
+        writer.Write((byte)0x88);
+        using var reader = new PackageStreamReader(writer.Data());
+        var package = new CoordinateTeleportPackage();
+
+        Assert.Throws<InvalidDataException>(() => package.ReadData(reader));
+        Assert.Equal(8, reader.BaseStream.Position);
+        Assert.Equal(0x88, reader.ReadByte());
+    }
+
+    [Fact]
+    public void Network_ReadData_rejects_a_truncated_fixed_payload()
+    {
+        using var writer = new PackageStreamWriter();
+        writer.Write(Convert.FromHexString("020100000000"));
+        using var reader = new PackageStreamReader(writer.Data());
+
+        Assert.Throws<InvalidDataException>(() => new CoordinateTeleportPackage().ReadData(reader));
+    }
 }
 
 public sealed class CoordinateTeleportServerSessionTests
 {
+    [Fact]
+    public async Task Different_ID61_request_ids_cannot_overlap_one_players_safe_teleport_transaction()
+    {
+        var context = new TeleportTestContext();
+        var service = context.Service;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Terrain.SetSafeFeet(1, 65, 0);
+        context.Clock.WaitForUpdate = async cancellationToken =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+        };
+        using var session = new CoordinateTeleportServerSession(
+            "peer-a",
+            new SafeTeleportExecutor(service),
+            new CoordinateTeleportServerOptions());
+
+        var first = session.HandleAsync(
+            "peer-a",
+            CoordinateTeleportMessage.WaypointRequest(12, new Vector3(0f, 65f, 0f)),
+            CancellationToken.None);
+        await entered.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var overlapping = await session.HandleAsync(
+            "peer-a",
+            CoordinateTeleportMessage.SurfaceRequest(13, 1, 0),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CoordinateTeleportResultCode.Rejected, overlapping.ResultCode);
+        Assert.Single(context.Mover.Movements);
+        release.TrySetResult();
+        Assert.Equal(CoordinateTeleportResultCode.Success, (await first).ResultCode);
+    }
+
+    [Fact]
+    public void Future_server_settings_schema_is_read_only_and_never_overwritten()
+    {
+        using var directory = new NetworkTemporaryDirectory();
+        var path = Path.Combine(directory.Path, "server-settings.json");
+        const string future = """
+            {"schemaVersion":2,"surfaceTeleportEnabled":false,"futureSetting":"keep"}
+            """;
+        File.WriteAllText(path, future);
+        var store = new CoordinateTeleportServerOptionsStore(path);
+
+        var loaded = store.LoadWithOutcome();
+
+        Assert.Equal(
+            CoordinateTeleportServerOptionsLoadOutcome.UnsupportedFutureSchemaReadOnly,
+            loaded.Outcome);
+        Assert.True(loaded.Options.SurfaceTeleportEnabled);
+        Assert.True(loaded.Options.WaypointTeleportEnabled);
+        Assert.Throws<InvalidOperationException>(() => store.Save(new CoordinateTeleportServerOptions()));
+        Assert.Equal(future, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".corrupt"));
+    }
+
+    [Fact]
+    public void Arbitrarily_large_future_schema_is_preserved_read_only()
+    {
+        using var directory = new NetworkTemporaryDirectory();
+        var path = Path.Combine(directory.Path, "server-settings.json");
+        const string future = """
+            {"schemaVersion":999999999999999999999999999,"futureSetting":"keep"}
+            """;
+        File.WriteAllText(path, future);
+        var store = new CoordinateTeleportServerOptionsStore(path);
+
+        var loaded = store.LoadWithOutcome();
+
+        Assert.Equal(
+            CoordinateTeleportServerOptionsLoadOutcome.UnsupportedFutureSchemaReadOnly,
+            loaded.Outcome);
+        Assert.Equal(future, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".corrupt"));
+    }
+
+    [Fact]
+    public void Future_schema_runtime_warning_is_emitted_once()
+    {
+        var gate = new CoordinateTeleportFutureSchemaWarningGate();
+        var messages = new List<string>();
+        var result = new CoordinateTeleportServerOptionsLoadResult(
+            new CoordinateTeleportServerOptions(),
+            CoordinateTeleportServerOptionsLoadOutcome.UnsupportedFutureSchemaReadOnly);
+
+        gate.NotifyIfNeeded(result, messages.Add);
+        gate.NotifyIfNeeded(result, messages.Add);
+
+        Assert.Single(messages);
+        Assert.Contains("read-only", messages[0], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"schemaVersion\":0}")]
+    [InlineData("null")]
+    [InlineData("{")]
+    public void Invalid_server_settings_are_isolated_and_recreated_as_schema_one(string json)
+    {
+        using var directory = new NetworkTemporaryDirectory();
+        var path = Path.Combine(directory.Path, "server-settings.json");
+        File.WriteAllText(path, json);
+        var store = new CoordinateTeleportServerOptionsStore(path);
+
+        var loaded = store.LoadWithOutcome();
+
+        Assert.Equal(CoordinateTeleportServerOptionsLoadOutcome.CorruptIsolated, loaded.Outcome);
+        Assert.True(loaded.Options.SurfaceTeleportEnabled);
+        Assert.True(loaded.Options.WaypointTeleportEnabled);
+        Assert.True(File.Exists(path + ".corrupt"));
+        Assert.Contains("\"schemaVersion\": 1", File.ReadAllText(path), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Schema_one_allows_unknown_fields_and_null_switches_as_safe_defaults()
+    {
+        using var directory = new NetworkTemporaryDirectory();
+        var path = Path.Combine(directory.Path, "server-settings.json");
+        File.WriteAllText(
+            path,
+            """
+            {"schemaVersion":1,"surfaceTeleportEnabled":null,"waypointTeleportEnabled":null,"unknown":"kept-compatible"}
+            """);
+        var store = new CoordinateTeleportServerOptionsStore(path);
+
+        var loaded = store.LoadWithOutcome();
+
+        Assert.Equal(CoordinateTeleportServerOptionsLoadOutcome.Loaded, loaded.Outcome);
+        Assert.True(loaded.Options.SurfaceTeleportEnabled);
+        Assert.True(loaded.Options.WaypointTeleportEnabled);
+        Assert.False(File.Exists(path + ".corrupt"));
+    }
+
+    [Fact]
+    public void Missing_settings_are_created_and_a_stale_tmp_is_replaced_atomically()
+    {
+        using var directory = new NetworkTemporaryDirectory();
+        var path = Path.Combine(directory.Path, "server-settings.json");
+        var store = new CoordinateTeleportServerOptionsStore(path);
+
+        var created = store.LoadWithOutcome();
+        File.WriteAllText(path + ".tmp", "stale");
+        store.Save(new CoordinateTeleportServerOptions
+        {
+            SurfaceTeleportEnabled = false,
+            WaypointTeleportEnabled = true,
+        });
+
+        Assert.Equal(CoordinateTeleportServerOptionsLoadOutcome.Created, created.Outcome);
+        Assert.False(File.Exists(path + ".tmp"));
+        Assert.False(store.Load().SurfaceTeleportEnabled);
+    }
+
+    [Fact]
+    public void Failed_temporary_write_leaves_the_original_settings_intact()
+    {
+        using var directory = new NetworkTemporaryDirectory();
+        var path = Path.Combine(directory.Path, "server-settings.json");
+        var store = new CoordinateTeleportServerOptionsStore(path);
+        store.Save(new CoordinateTeleportServerOptions
+        {
+            SurfaceTeleportEnabled = false,
+            WaypointTeleportEnabled = true,
+        });
+        var original = File.ReadAllText(path);
+        Directory.CreateDirectory(path + ".tmp");
+
+        Assert.ThrowsAny<Exception>(() => store.Save(new CoordinateTeleportServerOptions()));
+        Assert.Equal(original, File.ReadAllText(path));
+    }
+
     [Fact]
     public async Task Server_options_store_defaults_both_modes_on_and_persists_independent_switches()
     {
@@ -145,6 +362,7 @@ public sealed class CoordinateTeleportServerSessionTests
     [InlineData(TeleportResult.NoSafePosition, CoordinateTeleportResultCode.NoSafePosition)]
     [InlineData(TeleportResult.OutOfWorld, CoordinateTeleportResultCode.OutOfWorld)]
     [InlineData(TeleportResult.RolledBack, CoordinateTeleportResultCode.RolledBack)]
+    [InlineData(TeleportResult.Busy, CoordinateTeleportResultCode.Rejected)]
     public async Task Server_maps_safe_teleport_results_to_stable_codes(
         TeleportResult serviceResult,
         CoordinateTeleportResultCode expected)
@@ -443,6 +661,72 @@ public sealed class CoordinateTeleportClientSessionTests
 
 public sealed class NetworkAdapterContractTests
 {
+    [Theory]
+    [InlineData(CoordinateTeleportResultCode.Success)]
+    [InlineData(CoordinateTeleportResultCode.Rejected)]
+    public async Task Client_network_result_never_invokes_the_local_position_writer(
+        CoordinateTeleportResultCode serverResult)
+    {
+        var clock = new AdapterProtocolClock();
+        var sent = new List<CoordinateTeleportMessage>();
+        var session = new CoordinateTeleportClientSession("server", sent.Add, clock, _ => { });
+        var directPositionWrites = 0;
+        Task<CoordinateTeleportResultCode>? networkOperation = null;
+        var router = new TravelMapTeleportRouter(
+            TravelMapWorkType.Client,
+            (_, _) =>
+            {
+                directPositionWrites++;
+                return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
+            },
+            command => networkOperation = session.RequestSurfaceAsync(
+                (int)command.Target.X,
+                (int)command.Target.Z,
+                CancellationToken.None));
+
+        Assert.Equal(
+            TravelMapTeleportDispatchResult.CommandQueued,
+            await router.RequestSurfaceAsync(
+                new Vector3(10f, 999f, 20f),
+                TestContext.Current.CancellationToken));
+        var capability = Assert.Single(sent);
+        session.Receive(
+            "server",
+            CoordinateTeleportMessage.CapabilityResponse(capability.RequestId, true, true));
+        await WaitForAdapterCountAsync(sent, 2);
+        session.Receive(
+            "server",
+            CoordinateTeleportMessage.Result(sent[1].RequestId, serverResult));
+
+        Assert.Equal(serverResult, await networkOperation!);
+        Assert.Equal(0, directPositionWrites);
+    }
+
+    [Fact]
+    public async Task Client_network_timeout_never_invokes_the_local_position_writer()
+    {
+        var clock = new AdapterProtocolClock();
+        var directPositionWrites = 0;
+        Task<CoordinateTeleportResultCode>? networkOperation = null;
+        var session = new CoordinateTeleportClientSession("server", _ => { }, clock, _ => { });
+        var router = new TravelMapTeleportRouter(
+            TravelMapWorkType.Client,
+            (_, _) =>
+            {
+                directPositionWrites++;
+                return Task.FromResult(TravelMapTeleportDispatchResult.LocalRequested);
+            },
+            command => networkOperation = session.RequestWaypointAsync(
+                command.Target,
+                CancellationToken.None));
+
+        await router.RequestWaypointAsync(new Vector3(1f, 64f, 2f), CancellationToken.None);
+        clock.Advance(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(CoordinateTeleportResultCode.TimedOut, await networkOperation!);
+        Assert.Equal(0, directPositionWrites);
+    }
+
     [Fact]
     public void Teleport_router_distinguishes_surface_XZ_from_waypoint_XYZ_for_Task9()
     {
@@ -457,6 +741,36 @@ public sealed class NetworkAdapterContractTests
         Assert.Equal(TravelMapClientTravelMode.Waypoint, waypoint.Mode);
         Assert.NotEqual(surface.Mode, waypoint.Mode);
         Assert.Equal(42.25f, waypoint.Target.Y);
+    }
+
+    private static async Task WaitForAdapterCountAsync<T>(IReadOnlyCollection<T> values, int count)
+    {
+        while (values.Count < count)
+        {
+            await Task.Delay(1, TestContext.Current.CancellationToken);
+        }
+    }
+
+    private sealed class AdapterProtocolClock : ICoordinateTeleportProtocolClock
+    {
+        private readonly List<(TimeSpan Delay, TaskCompletionSource Completion)> _delays = [];
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+            _delays.Add((delay, completion));
+            return completion.Task;
+        }
+
+        internal void Advance(TimeSpan duration)
+        {
+            foreach (var pending in _delays.Where(item => item.Delay <= duration).ToArray())
+            {
+                pending.Completion.TrySetResult();
+                _delays.Remove(pending);
+            }
+        }
     }
 }
 
