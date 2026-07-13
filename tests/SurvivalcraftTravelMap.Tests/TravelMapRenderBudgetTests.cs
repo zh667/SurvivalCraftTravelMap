@@ -167,6 +167,9 @@ public sealed class MapTileSnapshotTests
         const int originZ = 32;
         const int width = 16;
         const int height = 16;
+        const int writeCount = 10_000;
+        const int maximumSnapshotAttempts = 100_000;
+        var coordinationTimeout = TimeSpan.FromSeconds(30);
         var tile = new MapTile(0, 0);
         var oldColor = new Rgba32(1, 2, 3, 255);
         var newColor = new Rgba32(101, 102, 103, 255);
@@ -176,31 +179,122 @@ public sealed class MapTileSnapshotTests
             Enumerable.Repeat(oldColor, width * height).ToArray(),
         };
         tile.SetRegion(originX, originZ, width, height, regions[1]);
-        var failures = new ConcurrentQueue<long>();
-        using var start = new ManualResetEventSlim();
+        var initialVersion = tile.Version;
+        var finalVersion = initialVersion + writeCount;
+        var failures = new ConcurrentQueue<string>();
+        var checkedSnapshotCount = 0;
+        var intermediateSnapshotCount = 0;
+        using var participantsReady = new CountdownEvent(2);
+        using var releaseTogether = new ManualResetEventSlim();
+        using var readerEnteredLoop = new ManualResetEventSlim();
+        using var writerStarted = new ManualResetEventSlim();
+        using var writerFinished = new ManualResetEventSlim();
+        using var firstIntermediateSnapshotObserved = new ManualResetEventSlim();
+        using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        timeoutCancellation.CancelAfter(coordinationTimeout);
+        var cancellationToken = timeoutCancellation.Token;
+
+        var reader = Task.Run(() =>
+        {
+            participantsReady.Signal();
+            releaseTogether.Wait(cancellationToken);
+
+            CheckSnapshot(tile.CreateVersionedSnapshot());
+            readerEnteredLoop.Set();
+            if (!writerStarted.Wait(coordinationTimeout, cancellationToken))
+            {
+                throw new TimeoutException("Writer did not start after the reader entered its snapshot loop.");
+            }
+
+            while (!writerFinished.IsSet && checkedSnapshotCount < maximumSnapshotAttempts)
+            {
+                var captured = tile.CreateVersionedSnapshot();
+                CheckSnapshot(captured);
+                checkedSnapshotCount++;
+                if (captured.Version > initialVersion
+                    && captured.Version < finalVersion
+                    && !writerFinished.IsSet)
+                {
+                    intermediateSnapshotCount++;
+                    firstIntermediateSnapshotObserved.Set();
+                }
+
+                Thread.Yield();
+            }
+
+            if (!writerFinished.IsSet)
+            {
+                throw new TimeoutException(
+                    $"Reader exhausted {maximumSnapshotAttempts} bounded attempts before the writer finished.");
+            }
+
+            CheckSnapshot(tile.CreateVersionedSnapshot());
+        }, cancellationToken);
+
         var writer = Task.Run(() =>
         {
-            start.Wait(TestContext.Current.CancellationToken);
-            for (var i = 0; i < 10_000; i++)
+            participantsReady.Signal();
+            releaseTogether.Wait(cancellationToken);
+            if (!readerEnteredLoop.Wait(coordinationTimeout, cancellationToken))
             {
-                tile.SetRegion(originX, originZ, width, height, regions[i & 1]);
+                throw new TimeoutException("Reader did not enter its snapshot loop before the writer start gate.");
             }
-        }, TestContext.Current.CancellationToken);
 
-        start.Set();
-        while (!writer.IsCompleted)
+            writerStarted.Set();
+            try
+            {
+                for (var i = 0; i < writeCount; i++)
+                {
+                    tile.SetRegion(originX, originZ, width, height, regions[i & 1]);
+                    if (i == 0
+                        && !firstIntermediateSnapshotObserved.Wait(
+                            coordinationTimeout,
+                            cancellationToken))
+                    {
+                        throw new TimeoutException(
+                            "Reader did not capture an intermediate snapshot after the first region commit.");
+                    }
+
+                    Thread.Yield();
+                }
+            }
+            finally
+            {
+                writerFinished.Set();
+            }
+        }, cancellationToken);
+
+        if (!participantsReady.Wait(coordinationTimeout, cancellationToken))
         {
-            CheckSnapshot(tile.CreateVersionedSnapshot());
+            timeoutCancellation.Cancel();
+            releaseTogether.Set();
+            throw new TimeoutException("Reader and writer did not both reach the coordinated start barrier.");
         }
 
-        await writer;
-        CheckSnapshot(tile.CreateVersionedSnapshot());
+        releaseTogether.Set();
+        await Task.WhenAll(reader, writer).WaitAsync(
+            coordinationTimeout,
+            TestContext.Current.CancellationToken);
         Assert.Empty(failures);
-        Assert.Equal(10_001, tile.Version);
+        Assert.True(checkedSnapshotCount > 0, "Reader did not inspect any snapshot after writer start.");
+        Assert.True(
+            intermediateSnapshotCount > 0,
+            "Reader did not inspect a snapshot with an intermediate version while the writer was active.");
+        Assert.Equal(finalVersion, tile.Version);
 
         void CheckSnapshot(VersionedMapTileSnapshot captured)
         {
-            var expected = (captured.Version & 1) == 0 ? newColor : oldColor;
+            if (captured.Version < initialVersion || captured.Version > finalVersion)
+            {
+                failures.Enqueue(
+                    $"Snapshot version {captured.Version} was outside [{initialVersion}, {finalVersion}].");
+                return;
+            }
+
+            var expected = ((captured.Version - initialVersion) & 1) == 0
+                ? oldColor
+                : newColor;
             for (var localZ = 0; localZ < height; localZ++)
             {
                 for (var localX = 0; localX < width; localX++)
@@ -211,7 +305,9 @@ public sealed class MapTileSnapshotTests
                             out var actual)
                         || actual != expected)
                     {
-                        failures.Enqueue(captured.Version);
+                        failures.Enqueue(
+                            $"Snapshot {captured.Version} had {actual} at "
+                            + $"({originX + localX}, {originZ + localZ}); expected {expected}.");
                         return;
                     }
                 }
