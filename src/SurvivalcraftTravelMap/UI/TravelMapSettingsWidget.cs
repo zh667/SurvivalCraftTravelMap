@@ -13,6 +13,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
     private readonly TravelMapSettings _settings;
     private readonly TravelMapSettingsStore _store;
     private readonly Action<string> _notify;
+    private readonly CoalescingSaveQueue _saveQueue;
     private readonly SliderWidget _miniMapZoom;
     private readonly SliderWidget _largeMapZoom;
     private readonly List<BevelledButtonWidget> _sizeButtons = [];
@@ -25,6 +26,10 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _notify = notify ?? throw new ArgumentNullException(nameof(notify));
+        _saveQueue = new CoalescingSaveQueue(
+            PersistAsync,
+            _ => _notify("地图设置未能保存，本次会话仍保留当前值"),
+            TimeSpan.FromMilliseconds(150));
         Size = new Vector2(420f, 430f);
         HorizontalAlignment = WidgetAlignment.Center;
         VerticalAlignment = WidgetAlignment.Center;
@@ -141,6 +146,15 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         }
     }
 
+    public override void Dispose()
+    {
+        _saveQueue.Dispose();
+        base.Dispose();
+    }
+
+    internal Task WhenSaveIdleAsync(CancellationToken cancellationToken = default) =>
+        _saveQueue.WhenIdleAsync(cancellationToken);
+
     private CheckboxWidget CreateToggle(string text, bool value, Action<bool> assign)
     {
         var checkbox = new CheckboxWidget
@@ -203,13 +217,13 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         Persist();
     }
 
-    private void Persist() => _ = PersistAsync();
+    private void Persist() => _saveQueue.RequestSave();
 
-    private async Task PersistAsync()
+    private async Task PersistAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await _store.SaveAsync(_settings).ConfigureAwait(false);
+            await _store.SaveAsync(_settings, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

@@ -565,8 +565,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
             : shutdownLimit - shutdownClock.Elapsed;
         static void ReportShutdownFailure(Exception exception) =>
             Engine.Log.Warning($"[TravelMap] Shutdown operation failed: {exception.Message}");
+        Task? dialogWork = null;
         if (_largeMapDialog is not null)
         {
+            dialogWork = _largeMapDialog.WhenBackgroundWorkIdleAsync();
             DialogsManager.HideDialog(_largeMapDialog);
             _largeMapDialog.Dispose();
             _largeMapDialog = null;
@@ -594,6 +596,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     RemainingTime(),
                     ReportShutdownFailure);
             }
+        }
+
+        if (dialogWork is not null && RemainingTime() > TimeSpan.Zero)
+        {
+            BoundedTaskObserver.ObserveWithin(
+                dialogWork,
+                RemainingTime(),
+                ReportShutdownFailure);
         }
 
         if (_settingsStore is not null

@@ -311,6 +311,12 @@ public sealed class TravelMapDialog : Dialog
         base.Dispose();
     }
 
+    internal Task WhenBackgroundWorkIdleAsync(CancellationToken cancellationToken = default) =>
+        Task.WhenAll(
+            _actionRunner.WhenIdleAsync(cancellationToken),
+            _persistenceRunner.WhenIdleAsync(cancellationToken),
+            _settingsWidget.WhenSaveIdleAsync(cancellationToken));
+
     private void ApplyTransformCommand(TravelMapUiCommand command)
     {
         if (command.Transform is not { } transform)

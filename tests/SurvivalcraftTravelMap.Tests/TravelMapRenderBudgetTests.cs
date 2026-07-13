@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Numerics;
 using SurvivalcraftTravelMap.Map;
+using SurvivalcraftTravelMap.Persistence;
 using SurvivalcraftTravelMap.UI;
 using SurvivalcraftTravelMap.Waypoints;
 using Xunit;
@@ -9,6 +10,86 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapRenderBudgetTests
 {
+    [Theory]
+    [InlineData(32f)]
+    [InlineData(2f)]
+    public void Production_store_does_not_materialize_unknown_viewport_tiles(float blocksPerPixel)
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path, capacity: 128);
+        var source = new TileStoreMapPixelSource(store);
+        var transform = new MapTransform(
+            Vector2.Zero,
+            blocksPerPixel,
+            new Vector2(1920f, 1080f));
+
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, new CountingRenderSink());
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, new CountingRenderSink());
+
+        Assert.Equal(0, store.Diagnostics.TileMaterializations);
+        Assert.Equal(0, store.Diagnostics.FileProbeCount);
+        Assert.Equal(0, store.Diagnostics.DiskReadAttempts);
+        Assert.Equal(0, source.SnapshotCloneCount);
+    }
+
+    [Theory]
+    [InlineData(32f)]
+    [InlineData(2f)]
+    public async Task Production_store_bounds_known_tile_work_and_reuses_second_frame_snapshots(
+        float blocksPerPixel)
+    {
+        using var directory = new TemporaryDirectory();
+        var seed = new ExplorationTileStore(directory.Path, capacity: 512);
+        for (var tileZ = -7; tileZ < 8; tileZ++)
+        {
+            for (var tileX = -10; tileX < 10; tileX++)
+            {
+                using var mutation = seed.AcquireMutation(tileX, tileZ);
+                mutation.Tile.SetPixel(0, 0, new Rgba32(10, 20, 30, 255));
+            }
+        }
+
+        await seed.FlushAsync(TestContext.Current.CancellationToken);
+        var store = new ExplorationTileStore(directory.Path, capacity: 128);
+        var source = new TileStoreMapPixelSource(store);
+        var transform = new MapTransform(
+            Vector2.Zero,
+            blocksPerPixel,
+            new Vector2(1920f, 1080f));
+
+        var firstSink = new CapturingRenderSink();
+        var firstStatistics = TravelMapRenderModel.RenderTerrain(source, transform, 1f, firstSink);
+        var firstFrameDiagnostics = store.Diagnostics;
+        var firstFrameClones = source.SnapshotCloneCount;
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, new CountingRenderSink());
+
+        Assert.Equal(300, store.Diagnostics.KnownTileCount);
+        Assert.NotEmpty(firstSink.Terrain);
+        Assert.InRange(
+            firstStatistics.PixelQueries,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            firstStatistics.PrimitiveCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            firstFrameDiagnostics.TileMaterializations,
+            1,
+            TileStoreMapPixelSource.MaximumTilesPerFrame);
+        Assert.Equal(
+            firstFrameDiagnostics.TileMaterializations,
+            firstFrameDiagnostics.FileProbeCount);
+        Assert.Equal(
+            firstFrameDiagnostics.TileMaterializations,
+            firstFrameDiagnostics.DiskReadAttempts);
+        Assert.InRange(firstFrameClones, 1, TileStoreMapPixelSource.MaximumTilesPerFrame);
+        Assert.Equal(firstFrameDiagnostics.TileMaterializations, store.Diagnostics.TileMaterializations);
+        Assert.Equal(firstFrameDiagnostics.FileProbeCount, store.Diagnostics.FileProbeCount);
+        Assert.Equal(firstFrameDiagnostics.DiskReadAttempts, store.Diagnostics.DiskReadAttempts);
+        Assert.Equal(firstFrameClones, source.SnapshotCloneCount);
+    }
+
     [Theory]
     [InlineData(32f)]
     [InlineData(2f)]

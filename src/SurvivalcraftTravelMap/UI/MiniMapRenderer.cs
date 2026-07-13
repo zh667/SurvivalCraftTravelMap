@@ -12,6 +12,47 @@ namespace SurvivalcraftTravelMap.UI;
 
 public readonly record struct PlayerMapPose(NVector3 Position, float Heading);
 
+internal enum MapTextAlignment
+{
+    Default,
+    BottomLeft,
+}
+
+internal interface IMapFontQueue
+{
+    void QueueText(
+        string text,
+        NVector2 position,
+        Rgba32 color,
+        MapTextAlignment alignment,
+        float scale);
+}
+
+internal static class MiniMapTextRenderer
+{
+    public static void QueueWaypointLabel(
+        IMapFontQueue queue,
+        string text,
+        NVector2 position,
+        Rgba32 color) => queue.QueueText(
+            text,
+            position,
+            color,
+            MapTextAlignment.Default,
+            TravelMapTypography.SecondaryLabelScale);
+
+    public static void QueueCoordinates(
+        IMapFontQueue queue,
+        string text,
+        NVector2 position,
+        Rgba32 color) => queue.QueueText(
+            text,
+            position,
+            color,
+            MapTextAlignment.BottomLeft,
+            TravelMapTypography.SecondaryLabelScale);
+}
+
 public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 {
     private static readonly Color Basalt = ToEngineColor(TravelMapPalette.Basalt);
@@ -26,6 +67,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     private readonly BitmapFont _font;
     private FlatBatch2D? _flatBatch;
     private FontBatch2D? _fontBatch;
+    private IMapFontQueue? _mapFontQueue;
     private Engine.Matrix _drawTransform;
     private MapTransform _drawMapTransform;
     private NVector2? _labelPointer;
@@ -133,6 +175,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             depthStencilState: DepthStencilState.None,
             blendState: BlendState.AlphaBlend,
             samplerState: SamplerState.PointClamp);
+        _mapFontQueue = new EngineMapFontQueue(_fontBatch);
         var triangleStart = _flatBatch.TriangleVertices.Count;
         var lineStart = _flatBatch.LineVertices.Count;
         var textStart = _fontBatch.TriangleVertices.Count;
@@ -166,6 +209,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         _fontBatch.TransformTriangles(_drawTransform, textStart);
         _flatBatch = null;
         _fontBatch = null;
+        _mapFontQueue = null;
         _drawWaypoints = Array.Empty<Waypoint>();
     }
 
@@ -208,14 +252,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             ToEngineColor(color));
         if (ShowWaypointLabels && ShouldDrawWaypointLabel(waypoint, center))
         {
-            _fontBatch!.QueueText(
+            MiniMapTextRenderer.QueueWaypointLabel(
+                _mapFontQueue!,
                 waypoint.Name,
-                ToEngine(center + new NVector2(9f, -9f)),
-                0f,
-                ToEngineColor(TravelMapPalette.SnowText),
-                TextAnchor.Default,
-                new Engine.Vector2(0.72f),
-                Engine.Vector2.Zero);
+                center + new NVector2(9f, -9f),
+                TravelMapPalette.SnowText);
         }
     }
 
@@ -233,14 +274,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             _coordinateText = TravelMapRenderModel.FormatCoordinates(worldPosition);
         }
 
-        _fontBatch!.QueueText(
+        MiniMapTextRenderer.QueueCoordinates(
+            _mapFontQueue!,
             _coordinateText,
-            new Engine.Vector2(10f, ActualSize.Y - 12f),
-            0f,
-            ToEngineColor(color),
-            TextAnchor.Bottom | TextAnchor.Left,
-            new Engine.Vector2(0.75f),
-            Engine.Vector2.Zero);
+            new NVector2(10f, ActualSize.Y - 12f),
+            color);
     }
 
     private bool ShouldDrawWaypointLabel(Waypoint waypoint, NVector2 position)
@@ -267,6 +305,25 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         }
 
         return true;
+    }
+
+    private sealed class EngineMapFontQueue(FontBatch2D batch) : IMapFontQueue
+    {
+        public void QueueText(
+            string text,
+            NVector2 position,
+            Rgba32 color,
+            MapTextAlignment alignment,
+            float scale) => batch.QueueText(
+                text,
+                ToEngine(position),
+                0f,
+                ToEngineColor(color),
+                alignment == MapTextAlignment.BottomLeft
+                    ? TextAnchor.Bottom | TextAnchor.Left
+                    : TextAnchor.Default,
+                new Engine.Vector2(scale),
+                Engine.Vector2.Zero);
     }
 
     private void QueueSurveyCrosshair(NVector2 center)
