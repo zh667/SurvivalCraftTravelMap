@@ -50,21 +50,72 @@ public sealed class MapTile
         var pixelIndex = GetPixelIndex(x, z);
         lock (_sync)
         {
-            var exploredMask = (byte)(1 << (pixelIndex & 7));
-            if (color.A == 0)
+            SetPixelCore(pixelIndex, color);
+            _version++;
+        }
+    }
+
+    public void SetRegion(
+        int x,
+        int z,
+        int width,
+        int height,
+        ReadOnlySpan<Rgba32> colors)
+    {
+        if ((uint)x >= Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x));
+        }
+
+        if ((uint)z >= Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(z));
+        }
+
+        if (width <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width));
+        }
+
+        if (height <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height));
+        }
+
+        var pixelCount = checked(width * height);
+        var endX = checked(x + width);
+        var endZ = checked(z + height);
+        if (endX > Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width));
+        }
+
+        if (endZ > Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height));
+        }
+
+        if (colors.Length != pixelCount)
+        {
+            throw new ArgumentException(
+                $"Region colors must contain exactly {pixelCount} pixels.",
+                nameof(colors));
+        }
+
+        lock (_sync)
+        {
+            for (var localZ = 0; localZ < height; localZ++)
             {
-                _explored[pixelIndex >> 3] &= (byte)~exploredMask;
-            }
-            else
-            {
-                _explored[pixelIndex >> 3] |= exploredMask;
+                var tileRowStart = ((z + localZ) * Size) + x;
+                var sourceRowStart = localZ * width;
+                for (var localX = 0; localX < width; localX++)
+                {
+                    var pixelIndex = tileRowStart + localX;
+                    var color = colors[sourceRowStart + localX];
+                    SetPixelCore(pixelIndex, color);
+                }
             }
 
-            var colorIndex = pixelIndex * 4;
-            _colors[colorIndex] = color.R;
-            _colors[colorIndex + 1] = color.G;
-            _colors[colorIndex + 2] = color.B;
-            _colors[colorIndex + 3] = color.A;
             _version++;
         }
     }
@@ -141,6 +192,25 @@ public sealed class MapTile
             colors[colorIndex + 2],
             colors[colorIndex + 3]);
         return true;
+    }
+
+    private void SetPixelCore(int pixelIndex, Rgba32 color)
+    {
+        var exploredMask = (byte)(1 << (pixelIndex & 7));
+        if (color.A == 0)
+        {
+            _explored[pixelIndex >> 3] &= (byte)~exploredMask;
+        }
+        else
+        {
+            _explored[pixelIndex >> 3] |= exploredMask;
+        }
+
+        var colorIndex = pixelIndex * 4;
+        _colors[colorIndex] = color.R;
+        _colors[colorIndex + 1] = color.G;
+        _colors[colorIndex + 2] = color.B;
+        _colors[colorIndex + 3] = color.A;
     }
 
     private static int GetPixelIndex(int x, int z)

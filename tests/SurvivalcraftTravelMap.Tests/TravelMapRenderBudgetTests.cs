@@ -161,38 +161,62 @@ public sealed class MapTileSnapshotTests
     }
 
     [Fact]
-    public async Task Snapshot_version_and_rgba_are_coherent_under_concurrent_writes()
+    public async Task Snapshot_sees_complete_old_or_new_region_under_concurrent_writes()
     {
+        const int originX = 16;
+        const int originZ = 32;
+        const int width = 16;
+        const int height = 16;
         var tile = new MapTile(0, 0);
-        var colors = new[]
+        var oldColor = new Rgba32(1, 2, 3, 255);
+        var newColor = new Rgba32(101, 102, 103, 255);
+        var regions = new[]
         {
-            new Rgba32(1, 2, 3, 4),
-            new Rgba32(101, 102, 103, 104),
+            Enumerable.Repeat(newColor, width * height).ToArray(),
+            Enumerable.Repeat(oldColor, width * height).ToArray(),
         };
-        var failures = new ConcurrentQueue<Rgba32>();
+        tile.SetRegion(originX, originZ, width, height, regions[1]);
+        var failures = new ConcurrentQueue<long>();
         using var start = new ManualResetEventSlim();
         var writer = Task.Run(() =>
         {
             start.Wait(TestContext.Current.CancellationToken);
-            for (var i = 0; i < 50_000; i++)
+            for (var i = 0; i < 10_000; i++)
             {
-                tile.SetPixel(1, 1, colors[i & 1]);
+                tile.SetRegion(originX, originZ, width, height, regions[i & 1]);
             }
         }, TestContext.Current.CancellationToken);
 
         start.Set();
         while (!writer.IsCompleted)
         {
-            var captured = tile.CreateVersionedSnapshot();
-            if (captured.Snapshot.TryGetPixel(1, 1, out var color) && !colors.Contains(color))
-            {
-                failures.Enqueue(color);
-            }
+            CheckSnapshot(tile.CreateVersionedSnapshot());
         }
 
         await writer;
+        CheckSnapshot(tile.CreateVersionedSnapshot());
         Assert.Empty(failures);
-        Assert.Equal(50_000, tile.Version);
+        Assert.Equal(10_001, tile.Version);
+
+        void CheckSnapshot(VersionedMapTileSnapshot captured)
+        {
+            var expected = (captured.Version & 1) == 0 ? newColor : oldColor;
+            for (var localZ = 0; localZ < height; localZ++)
+            {
+                for (var localX = 0; localX < width; localX++)
+                {
+                    if (!captured.Snapshot.TryGetPixel(
+                            originX + localX,
+                            originZ + localZ,
+                            out var actual)
+                        || actual != expected)
+                    {
+                        failures.Enqueue(captured.Version);
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     [Fact]
