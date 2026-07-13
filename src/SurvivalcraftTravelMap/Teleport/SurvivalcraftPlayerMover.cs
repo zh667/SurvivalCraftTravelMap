@@ -34,9 +34,88 @@ public sealed class SurvivalcraftPlayerMover : IPlayerMover
         FallDistance = 0f,
         IsFalling = false,
         HasPendingFallDamage = false,
+        NativeState = null,
     });
 
     public void Restore(PlayerMovementSnapshot snapshot) => _facade.WriteMovement(snapshot);
+
+    public void RestoreSafely(PlayerMovementSnapshot snapshot) => _facade.WriteMovement(snapshot with
+    {
+        LinearVelocity = System.Numerics.Vector3.Zero,
+        AngularVelocity = System.Numerics.Vector3.Zero,
+        FallDistance = 0f,
+        IsFalling = false,
+        HasPendingFallDamage = false,
+        NativeState = null,
+    });
+}
+
+public readonly record struct SurvivalcraftEngineMovementState(
+    System.Numerics.Vector3 Position,
+    System.Numerics.Quaternion Rotation,
+    System.Numerics.Vector3 LinearVelocity,
+    System.Numerics.Vector3 CollisionVelocityChange,
+    object? StandingBody,
+    int? StandingValue,
+    System.Numerics.Vector3 StandingVelocity,
+    bool IsFalling,
+    bool WasStanding);
+
+public sealed record SurvivalcraftNativeMovementState(
+    System.Numerics.Vector3 CollisionVelocityChange,
+    object? StandingBody,
+    int? StandingValue,
+    System.Numerics.Vector3 StandingVelocity,
+    bool IsFalling,
+    bool WasStanding);
+
+public static class SurvivalcraftMovementStateCodec
+{
+    public static PlayerMovementSnapshot Capture(SurvivalcraftEngineMovementState state) => new(
+        state.Position,
+        state.Rotation,
+        state.LinearVelocity,
+        System.Numerics.Vector3.Zero,
+        0f,
+        state.IsFalling,
+        state.CollisionVelocityChange.Y > 0f && !state.WasStanding,
+        new SurvivalcraftNativeMovementState(
+            state.CollisionVelocityChange,
+            state.StandingBody,
+            state.StandingValue,
+            state.StandingVelocity,
+            state.IsFalling,
+            state.WasStanding));
+
+    public static SurvivalcraftEngineMovementState RestoreExact(PlayerMovementSnapshot snapshot)
+    {
+        if (snapshot.NativeState is not SurvivalcraftNativeMovementState nativeState)
+        {
+            throw new InvalidOperationException("An exact Survivalcraft restore requires its captured native movement state.");
+        }
+
+        return new SurvivalcraftEngineMovementState(
+            snapshot.Position,
+            snapshot.Rotation,
+            snapshot.LinearVelocity,
+            nativeState.CollisionVelocityChange,
+            nativeState.StandingBody,
+            nativeState.StandingValue,
+            nativeState.StandingVelocity,
+            nativeState.IsFalling,
+            nativeState.WasStanding);
+    }
+
+    public static SurvivalcraftEngineMovementState RestoreSafely(PlayerMovementSnapshot snapshot) => new(
+        snapshot.Position,
+        snapshot.Rotation,
+        System.Numerics.Vector3.Zero,
+        System.Numerics.Vector3.Zero,
+        null,
+        null,
+        System.Numerics.Vector3.Zero,
+        false,
+        true);
 }
 
 internal sealed class SurvivalcraftPlayerFacade : ISurvivalcraftPlayerFacade
@@ -64,31 +143,38 @@ internal sealed class SurvivalcraftPlayerFacade : ISurvivalcraftPlayerFacade
 
     public PlayerMovementSnapshot ReadMovement() => _dispatcher.Invoke(() =>
     {
-        var velocity = ToNumerics(_body.Velocity);
-        var collisionVelocity = _body.CollisionVelocityChange;
-        var isFalling = (bool)FallingField.GetValue(_locomotion)!;
-        var wasStanding = (bool)WasStandingField.GetValue(_health)!;
-        return new PlayerMovementSnapshot(
+        var state = new SurvivalcraftEngineMovementState(
             ToNumerics(_body.Position),
             ToNumerics(_body.Rotation),
-            velocity,
-            System.Numerics.Vector3.Zero,
-            0f,
-            isFalling,
-            collisionVelocity.Y > 0f && !wasStanding);
+            ToNumerics(_body.Velocity),
+            ToNumerics(_body.CollisionVelocityChange),
+            _body.StandingOnBody,
+            _body.StandingOnValue,
+            ToNumerics(_body.StandingOnVelocity),
+            (bool)FallingField.GetValue(_locomotion)!,
+            (bool)WasStandingField.GetValue(_health)!);
+        return SurvivalcraftMovementStateCodec.Capture(state);
     });
 
     public void WriteMovement(PlayerMovementSnapshot movement) => _dispatcher.Invoke(() =>
     {
-        _body.Position = ToEngine(movement.Position);
-        _body.Rotation = ToEngine(movement.Rotation);
-        _body.Velocity = ToEngine(movement.LinearVelocity);
-        _body.CollisionVelocityChange = Engine.Vector3.Zero;
-        _body.StandingOnBody = null!;
-        _body.StandingOnValue = null;
-        _body.StandingOnVelocity = Engine.Vector3.Zero;
-        FallingField.SetValue(_locomotion, movement.IsFalling);
-        WasStandingField.SetValue(_health, !movement.HasPendingFallDamage);
+        var state = movement.NativeState is null
+            ? SurvivalcraftMovementStateCodec.RestoreSafely(movement)
+            : SurvivalcraftMovementStateCodec.RestoreExact(movement);
+        _body.Position = ToEngine(state.Position);
+        _body.Rotation = ToEngine(state.Rotation);
+        _body.Velocity = ToEngine(state.LinearVelocity);
+        _body.CollisionVelocityChange = ToEngine(state.CollisionVelocityChange);
+        _body.StandingOnBody = state.StandingBody switch
+        {
+            null => null!,
+            ComponentBody body => body,
+            _ => throw new InvalidOperationException("Captured standing body is not a Survivalcraft ComponentBody."),
+        };
+        _body.StandingOnValue = state.StandingValue;
+        _body.StandingOnVelocity = ToEngine(state.StandingVelocity);
+        FallingField.SetValue(_locomotion, state.IsFalling);
+        WasStandingField.SetValue(_health, state.WasStanding);
     });
 
     private static FieldInfo GetRequiredField(Type type, string name) =>

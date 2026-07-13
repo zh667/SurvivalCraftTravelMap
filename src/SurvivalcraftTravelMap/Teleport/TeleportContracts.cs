@@ -33,7 +33,8 @@ public readonly record struct PlayerMovementSnapshot(
     Vector3 AngularVelocity,
     float FallDistance,
     bool IsFalling,
-    bool HasPendingFallDamage);
+    bool HasPendingFallDamage,
+    object? NativeState = null);
 
 public interface ITerrainAccess
 {
@@ -48,8 +49,14 @@ public interface ITerrainAccess
 
 public interface IChunkLoader
 {
-    Task LoadAreaAsync(int centerX, int centerZ, int radius, CancellationToken cancellationToken);
+    Task<IChunkLoadLease> LoadAreaAsync(
+        int centerX,
+        int centerZ,
+        int radius,
+        CancellationToken cancellationToken);
 }
+
+public interface IChunkLoadLease : IDisposable;
 
 public interface IPlayerMover
 {
@@ -58,6 +65,8 @@ public interface IPlayerMover
     void Move(PlayerMovementSnapshot movement);
 
     void Restore(PlayerMovementSnapshot snapshot);
+
+    void RestoreSafely(PlayerMovementSnapshot snapshot);
 }
 
 public interface IEntityCollisionQuery

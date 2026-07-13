@@ -5,7 +5,7 @@ using Game;
 public sealed class GameUpdateDispatcher : IDisposable
 {
     private readonly object _sync = new();
-    private readonly Queue<Action> _work = [];
+    private readonly Queue<IQueuedWork> _work = [];
     private readonly List<NextUpdateWaiter> _nextUpdateWaiters = [];
     private readonly int _updateThreadId = Environment.CurrentManagedThreadId;
     private bool _disposed;
@@ -40,24 +40,14 @@ public sealed class GameUpdateDispatcher : IDisposable
             return action();
         }
 
-        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invocation = new QueuedInvocation<T>(action);
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _work.Enqueue(() =>
-            {
-                try
-                {
-                    completion.TrySetResult(action());
-                }
-                catch (Exception exception)
-                {
-                    completion.TrySetException(exception);
-                }
-            });
+            _work.Enqueue(invocation);
         }
 
-        return completion.Task.GetAwaiter().GetResult();
+        return invocation.Task.GetAwaiter().GetResult();
     }
 
     public Task WaitForNextUpdateAsync(CancellationToken cancellationToken)
@@ -89,7 +79,7 @@ public sealed class GameUpdateDispatcher : IDisposable
             throw new InvalidOperationException("Game update work must be pumped by the owning update thread.");
         }
 
-        Action[] work;
+        IQueuedWork[] work;
         NextUpdateWaiter[] waiters;
         lock (_sync)
         {
@@ -105,15 +95,15 @@ public sealed class GameUpdateDispatcher : IDisposable
             waiter.Completion.TrySetResult();
         }
 
-        foreach (var action in work)
+        foreach (var item in work)
         {
-            action();
+            item.Execute();
         }
     }
 
     public void Dispose()
     {
-        Action[] work;
+        IQueuedWork[] work;
         NextUpdateWaiter[] waiters;
         lock (_sync)
         {
@@ -136,9 +126,9 @@ public sealed class GameUpdateDispatcher : IDisposable
             waiter.Completion.TrySetException(exception);
         }
 
-        foreach (var action in work)
+        foreach (var item in work)
         {
-            action();
+            item.Fail(exception);
         }
     }
 
@@ -147,6 +137,36 @@ public sealed class GameUpdateDispatcher : IDisposable
     private readonly record struct NextUpdateWaiter(
         TaskCompletionSource Completion,
         CancellationTokenRegistration Registration);
+
+    private interface IQueuedWork
+    {
+        void Execute();
+
+        void Fail(Exception exception);
+    }
+
+    private sealed class QueuedInvocation<T>(Func<T> action) : IQueuedWork
+    {
+        private readonly Func<T> _action = action;
+        private readonly TaskCompletionSource<T> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task<T> Task => _completion.Task;
+
+        public void Execute()
+        {
+            try
+            {
+                _completion.TrySetResult(_action());
+            }
+            catch (Exception exception)
+            {
+                _completion.TrySetException(exception);
+            }
+        }
+
+        public void Fail(Exception exception) => _completion.TrySetException(exception);
+    }
 }
 
 public sealed class SurvivalcraftTeleportClock(GameUpdateDispatcher dispatcher) : ITeleportClock
@@ -166,6 +186,28 @@ public interface ISurvivalcraftChunkFacade
     void RequestArea(int centerX, int centerZ, int radius);
 
     bool IsAreaReady(int centerX, int centerZ, int radius);
+
+    void ReleaseArea();
+}
+
+public abstract class DispatcherBoundChunkFacade(GameUpdateDispatcher dispatcher) : ISurvivalcraftChunkFacade
+{
+    private readonly GameUpdateDispatcher _dispatcher =
+        dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+
+    public void RequestArea(int centerX, int centerZ, int radius) =>
+        _dispatcher.Invoke(() => RequestAreaOnUpdateThread(centerX, centerZ, radius));
+
+    public bool IsAreaReady(int centerX, int centerZ, int radius) =>
+        _dispatcher.Invoke(() => IsAreaReadyOnUpdateThread(centerX, centerZ, radius));
+
+    public void ReleaseArea() => _dispatcher.Invoke(ReleaseAreaOnUpdateThread);
+
+    protected abstract void RequestAreaOnUpdateThread(int centerX, int centerZ, int radius);
+
+    protected abstract bool IsAreaReadyOnUpdateThread(int centerX, int centerZ, int radius);
+
+    protected abstract void ReleaseAreaOnUpdateThread();
 }
 
 public sealed class SurvivalcraftChunkLoader : IChunkLoader, IDisposable
@@ -173,6 +215,11 @@ public sealed class SurvivalcraftChunkLoader : IChunkLoader, IDisposable
     private readonly ISurvivalcraftChunkFacade _facade;
     private readonly ITeleportClock _clock;
     private readonly IDisposable? _ownedFacade;
+    private readonly SemaphoreSlim _requestGate = new(1, 1);
+    private readonly CancellationTokenSource _disposeCancellation = new();
+    private readonly object _leaseSync = new();
+    private ChunkLoadLease? _activeLease;
+    private int _disposed;
 
     public SurvivalcraftChunkLoader(ISurvivalcraftChunkFacade facade, ITeleportClock clock)
     {
@@ -197,30 +244,123 @@ public sealed class SurvivalcraftChunkLoader : IChunkLoader, IDisposable
         _ownedFacade = facade;
     }
 
-    public async Task LoadAreaAsync(
+    public async Task<IChunkLoadLease> LoadAreaAsync(
         int centerX,
         int centerZ,
         int radius,
         CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        _facade.RequestArea(centerX, centerZ, radius);
-        while (true)
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _disposeCancellation.Token);
+        var gateHeld = false;
+        var requested = false;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (_facade.IsAreaReady(centerX, centerZ, radius))
+            await _requestGate.WaitAsync(linkedCancellation.Token).ConfigureAwait(false);
+            gateHeld = true;
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            _facade.RequestArea(centerX, centerZ, radius);
+            requested = true;
+            while (true)
+            {
+                linkedCancellation.Token.ThrowIfCancellationRequested();
+                if (_facade.IsAreaReady(centerX, centerZ, radius))
+                {
+                    var lease = new ChunkLoadLease(this);
+                    lock (_leaseSync)
+                    {
+                        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+                        _activeLease = lease;
+                    }
+
+                    gateHeld = false;
+                    requested = false;
+                    return lease;
+                }
+
+                await _clock.WaitForNextUpdateAsync(linkedCancellation.Token).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (requested)
+            {
+                try
+                {
+                    _facade.ReleaseArea();
+                }
+                finally
+                {
+                    if (gateHeld)
+                    {
+                        _requestGate.Release();
+                    }
+                }
+            }
+            else if (gateHeld)
+            {
+                _requestGate.Release();
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _disposeCancellation.Cancel();
+        ChunkLoadLease? lease;
+        lock (_leaseSync)
+        {
+            lease = _activeLease;
+        }
+
+        try
+        {
+            lease?.Dispose();
+        }
+        finally
+        {
+            _ownedFacade?.Dispose();
+        }
+    }
+
+    private void Release(ChunkLoadLease lease)
+    {
+        lock (_leaseSync)
+        {
+            if (!ReferenceEquals(_activeLease, lease))
             {
                 return;
             }
 
-            await _clock.WaitForNextUpdateAsync(cancellationToken).ConfigureAwait(false);
+            _activeLease = null;
+        }
+
+        try
+        {
+            _facade.ReleaseArea();
+        }
+        finally
+        {
+            _requestGate.Release();
         }
     }
 
-    public void Dispose() => _ownedFacade?.Dispose();
+    private sealed class ChunkLoadLease(SurvivalcraftChunkLoader owner) : IChunkLoadLease
+    {
+        private SurvivalcraftChunkLoader? _owner = owner;
+
+        public void Dispose() => Interlocked.Exchange(ref _owner, null)?.Release(this);
+    }
 }
 
-internal sealed class SurvivalcraftChunkFacade : ISurvivalcraftChunkFacade, IDisposable
+internal sealed class SurvivalcraftChunkFacade : DispatcherBoundChunkFacade, IDisposable
 {
     private const int ChunkSize = 16;
 
@@ -228,54 +368,67 @@ internal sealed class SurvivalcraftChunkFacade : ISurvivalcraftChunkFacade, IDis
     private readonly int _updateLocationId;
     private readonly GameUpdateDispatcher _dispatcher;
     private bool _requested;
-    private bool _disposed;
+    private int _disposed;
 
     internal SurvivalcraftChunkFacade(
         SubsystemTerrain terrain,
         int updateLocationId,
         GameUpdateDispatcher dispatcher)
+        : base(dispatcher)
     {
         _terrain = terrain;
         _updateLocationId = updateLocationId;
         _dispatcher = dispatcher;
     }
 
-    public void RequestArea(int centerX, int centerZ, int radius)
+    protected override void RequestAreaOnUpdateThread(int centerX, int centerZ, int radius)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        _dispatcher.Invoke(() =>
-        {
-            var distance = Math.Max(32f, radius + ChunkSize * 2f);
-            _terrain.TerrainUpdater.SetUpdateLocation(
-                _updateLocationId,
-                new Engine.Vector2(centerX + 0.5f, centerZ + 0.5f),
-                distance,
-                distance);
-            _requested = true;
-        });
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        var distance = Math.Max(32f, radius + ChunkSize * 2f);
+        _terrain.TerrainUpdater.SetUpdateLocation(
+            _updateLocationId,
+            new Engine.Vector2(centerX + 0.5f, centerZ + 0.5f),
+            distance,
+            distance);
+        _requested = true;
     }
 
-    public bool IsAreaReady(int centerX, int centerZ, int radius)
+    protected override bool IsAreaReadyOnUpdateThread(int centerX, int centerZ, int radius)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        return _dispatcher.Invoke(() => IsAreaReadyOnUpdateThread(centerX, centerZ, radius));
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        return AreChunksReadyOnUpdateThread(centerX, centerZ, radius);
     }
 
-    public void Dispose()
+    protected override void ReleaseAreaOnUpdateThread()
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
         {
             return;
         }
 
-        _disposed = true;
+        ReleaseAreaCore();
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _dispatcher.Invoke(ReleaseAreaCore);
+    }
+
+    private void ReleaseAreaCore()
+    {
         if (_requested)
         {
-            _dispatcher.Invoke(() => _terrain.TerrainUpdater.RemoveUpdateLocation(_updateLocationId));
+            _terrain.TerrainUpdater.RemoveUpdateLocation(_updateLocationId);
+            _requested = false;
         }
     }
 
-    private bool IsAreaReadyOnUpdateThread(int centerX, int centerZ, int radius)
+    private bool AreChunksReadyOnUpdateThread(int centerX, int centerZ, int radius)
     {
         var minX = ClampToInt((long)centerX - radius);
         var minZ = ClampToInt((long)centerZ - radius);

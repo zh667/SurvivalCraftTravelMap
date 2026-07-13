@@ -58,6 +58,63 @@ public sealed class AdapterContractTests
         Assert.Equal(1, facade.ReadinessChecks);
         Assert.Equal(1, clock.UpdateWaits);
         Assert.Empty(clock.Delays);
+        Assert.Equal(1, facade.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Chunk_adapter_holds_request_until_lease_disposal_then_allows_the_next_request()
+    {
+        var facade = new FakeChunkFacade { Ready = true };
+        var clock = new FakeTeleportClock();
+        using var adapter = new SurvivalcraftChunkLoader(facade, clock);
+
+        var firstLease = await adapter.LoadAreaAsync(
+            10,
+            -20,
+            8,
+            TestContext.Current.CancellationToken);
+        var secondLoad = adapter.LoadAreaAsync(
+            30,
+            -40,
+            8,
+            TestContext.Current.CancellationToken);
+
+        Assert.False(secondLoad.IsCompleted);
+        Assert.Equal([(10, -20, 8)], facade.Requests);
+        Assert.Equal(0, facade.ReleaseCount);
+
+        firstLease.Dispose();
+        var secondLease = await secondLoad;
+        Assert.Equal([(10, -20, 8), (30, -40, 8)], facade.Requests);
+        Assert.Equal(1, facade.ReleaseCount);
+
+        secondLease.Dispose();
+        secondLease.Dispose();
+        Assert.Equal(2, facade.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Dispatcher_bound_chunk_facade_releases_a_worker_disposed_lease_on_the_update_thread()
+    {
+        using var dispatcher = new GameUpdateDispatcher();
+        var updateThread = Environment.CurrentManagedThreadId;
+        var facade = new FakeDispatcherBoundChunkFacade(dispatcher);
+        using var adapter = new SurvivalcraftChunkLoader(facade, new FakeTeleportClock());
+        var lease = await adapter.LoadAreaAsync(
+            0,
+            0,
+            8,
+            TestContext.Current.CancellationToken);
+
+        var worker = Task.Run(lease.Dispose, TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
+        Assert.Equal(0, facade.ReleaseCount);
+
+        dispatcher.Pump();
+        await worker;
+
+        Assert.Equal(1, facade.ReleaseCount);
+        Assert.Equal(updateThread, facade.ReleaseThread);
     }
 
     [Fact]
@@ -73,7 +130,7 @@ public sealed class AdapterContractTests
     [Fact]
     public void Player_adapter_move_preserves_pose_but_clears_both_velocities_and_fall_state()
     {
-        var movement = CreateMovement();
+        var movement = CreateMovement() with { NativeState = new object() };
         var facade = new FakePlayerFacade();
         var adapter = new SurvivalcraftPlayerMover(facade);
 
@@ -86,25 +143,90 @@ public sealed class AdapterContractTests
         Assert.Equal(0f, facade.Movement.FallDistance);
         Assert.False(facade.Movement.IsFalling);
         Assert.False(facade.Movement.HasPendingFallDamage);
+        Assert.Null(facade.Movement.NativeState);
     }
 
     [Fact]
     public void Player_adapter_restore_applies_the_passed_safe_snapshot_losslessly()
     {
-        var safeSnapshot = CreateMovement() with
-        {
-            LinearVelocity = Vector3.Zero,
-            AngularVelocity = Vector3.Zero,
-            FallDistance = 0f,
-            IsFalling = false,
-            HasPendingFallDamage = false,
-        };
+        var nativeState = new object();
+        var safeSnapshot = CreateMovement() with { NativeState = nativeState };
         var facade = new FakePlayerFacade();
         var adapter = new SurvivalcraftPlayerMover(facade);
 
         adapter.Restore(safeSnapshot);
 
         Assert.Equal(safeSnapshot, facade.Movement);
+        Assert.Same(nativeState, facade.Movement.NativeState);
+    }
+
+    [Fact]
+    public void Player_adapter_safe_restore_discards_native_state_and_clears_all_movement_transients()
+    {
+        var snapshot = CreateMovement() with { NativeState = new object() };
+        var facade = new FakePlayerFacade();
+        var adapter = new SurvivalcraftPlayerMover(facade);
+
+        adapter.RestoreSafely(snapshot);
+
+        Assert.Equal(snapshot.Position, facade.Movement.Position);
+        Assert.Equal(snapshot.Rotation, facade.Movement.Rotation);
+        Assert.Equal(Vector3.Zero, facade.Movement.LinearVelocity);
+        Assert.Equal(Vector3.Zero, facade.Movement.AngularVelocity);
+        Assert.Equal(0f, facade.Movement.FallDistance);
+        Assert.False(facade.Movement.IsFalling);
+        Assert.False(facade.Movement.HasPendingFallDamage);
+        Assert.Null(facade.Movement.NativeState);
+    }
+
+    [Fact]
+    public void Survivalcraft_state_codec_exactly_round_trips_collision_standing_and_fall_state()
+    {
+        var standingBody = new object();
+        var engineState = new SurvivalcraftEngineMovementState(
+            new Vector3(1f, 2f, 3f),
+            Quaternion.CreateFromYawPitchRoll(0.5f, 0.25f, -0.1f),
+            new Vector3(4f, 5f, 6f),
+            new Vector3(7f, 8f, 9f),
+            standingBody,
+            42,
+            new Vector3(10f, 11f, 12f),
+            true,
+            false);
+
+        var snapshot = SurvivalcraftMovementStateCodec.Capture(engineState);
+        var restored = SurvivalcraftMovementStateCodec.RestoreExact(snapshot);
+
+        Assert.Equal(engineState, restored);
+        Assert.Same(standingBody, restored.StandingBody);
+    }
+
+    [Fact]
+    public void Survivalcraft_state_codec_safe_restore_preserves_pose_only_and_clears_native_transients()
+    {
+        var engineState = new SurvivalcraftEngineMovementState(
+            new Vector3(1f, 2f, 3f),
+            Quaternion.Identity,
+            new Vector3(4f, 5f, 6f),
+            new Vector3(7f, 8f, 9f),
+            new object(),
+            42,
+            new Vector3(10f, 11f, 12f),
+            true,
+            false);
+        var snapshot = SurvivalcraftMovementStateCodec.Capture(engineState);
+
+        var safe = SurvivalcraftMovementStateCodec.RestoreSafely(snapshot);
+
+        Assert.Equal(engineState.Position, safe.Position);
+        Assert.Equal(engineState.Rotation, safe.Rotation);
+        Assert.Equal(Vector3.Zero, safe.LinearVelocity);
+        Assert.Equal(Vector3.Zero, safe.CollisionVelocityChange);
+        Assert.Null(safe.StandingBody);
+        Assert.Null(safe.StandingValue);
+        Assert.Equal(Vector3.Zero, safe.StandingVelocity);
+        Assert.False(safe.IsFalling);
+        Assert.True(safe.WasStanding);
     }
 
     [Fact]
@@ -156,6 +278,27 @@ public sealed class AdapterContractTests
         Assert.Equal(updateThread, resumedThread);
     }
 
+    [Fact]
+    public async Task Disposing_with_a_pending_worker_player_write_fails_it_without_running_the_delegate()
+    {
+        var dispatcher = new GameUpdateDispatcher();
+        var facade = new FakePlayerFacade();
+        var movement = CreateMovement();
+        var writes = 0;
+        var worker = Task.Run(() => dispatcher.Invoke(() =>
+        {
+            writes++;
+            facade.WriteMovement(movement);
+        }), TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
+
+        dispatcher.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => worker);
+        Assert.Equal(0, writes);
+        Assert.Equal(default, facade.Movement);
+    }
+
     [Theory]
     [InlineData(TravelMapWorkType.Local, true, true, true)]
     [InlineData(TravelMapWorkType.Server, false, true, false)]
@@ -169,6 +312,26 @@ public sealed class AdapterContractTests
         Assert.Equal(createsUi, TravelMapRuntimePolicy.CreatesUi(workType));
         Assert.Equal(createsTeleportService, TravelMapRuntimePolicy.CreatesTeleportService(workType));
         Assert.Equal(allowsDirectPositionWrite, TravelMapRuntimePolicy.AllowsDirectPositionWrite(workType));
+    }
+
+    [Fact]
+    public void Runtime_cleanup_releases_chunks_before_dispatcher_and_always_runs_final_cleanup()
+    {
+        var events = new List<string>();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            TravelMapRuntimePolicy.CleanupRuntime(
+                () => events.Add("cancel"),
+                () =>
+                {
+                    events.Add("chunks");
+                    throw new InvalidOperationException("chunk cleanup failed");
+                },
+                () => events.Add("dispatcher"),
+                () => events.Add("final")));
+
+        Assert.Equal("chunk cleanup failed", exception.Message);
+        Assert.Equal(["cancel", "chunks", "dispatcher", "final"], events);
     }
 
     private static PlayerMovementSnapshot CreateMovement() => new(
@@ -212,12 +375,38 @@ internal sealed class FakeChunkFacade : ISurvivalcraftChunkFacade
 
     internal int ReadinessChecks { get; private set; }
 
+    internal bool Ready { get; set; }
+
+    internal int ReleaseCount { get; private set; }
+
     public void RequestArea(int centerX, int centerZ, int radius) => Requests.Add((centerX, centerZ, radius));
 
     public bool IsAreaReady(int centerX, int centerZ, int radius)
     {
         ReadinessChecks++;
-        return false;
+        return Ready;
+    }
+
+    public void ReleaseArea() => ReleaseCount++;
+}
+
+internal sealed class FakeDispatcherBoundChunkFacade(GameUpdateDispatcher dispatcher)
+    : DispatcherBoundChunkFacade(dispatcher)
+{
+    internal int ReleaseCount { get; private set; }
+
+    internal int ReleaseThread { get; private set; }
+
+    protected override void RequestAreaOnUpdateThread(int centerX, int centerZ, int radius)
+    {
+    }
+
+    protected override bool IsAreaReadyOnUpdateThread(int centerX, int centerZ, int radius) => true;
+
+    protected override void ReleaseAreaOnUpdateThread()
+    {
+        ReleaseCount++;
+        ReleaseThread = Environment.CurrentManagedThreadId;
     }
 }
 

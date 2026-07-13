@@ -55,6 +55,11 @@ public sealed class SafeTeleportServiceTests
         var context = new TeleportTestContext();
         context.Terrain.SetSafeFeet(9, 65, 20);
         var expectedSnapshot = context.Mover.Snapshot;
+        context.Clock.WaitForUpdate = _ =>
+        {
+            Assert.Equal(0, context.Chunks.Lease.DisposeCount);
+            return Task.CompletedTask;
+        };
 
         var result = await context.Service.TeleportToSurfaceAsync(10, 20, TestContext.Current.CancellationToken);
 
@@ -70,6 +75,7 @@ public sealed class SafeTeleportServiceTests
         Assert.False(movement.HasPendingFallDamage);
         Assert.Equal(1, context.Clock.UpdateWaitCount);
         Assert.Empty(context.Mover.RestoredSnapshots);
+        Assert.Equal(1, context.Chunks.Lease.DisposeCount);
     }
 
     [Theory]
@@ -181,7 +187,7 @@ public sealed class SafeTeleportServiceTests
     {
         var context = new TeleportTestContext();
         context.Terrain.SetSafeFeet(0, 65, 0);
-        context.Chunks.Load = _ => new TaskCompletionSource(
+        context.Chunks.Load = _ => new TaskCompletionSource<IChunkLoadLease>(
             TaskCreationOptions.RunContinuationsAsynchronously).Task;
         context.Clock.Delay = (_, _) => Task.CompletedTask;
 
@@ -191,13 +197,39 @@ public sealed class SafeTeleportServiceTests
         Assert.Equal([TimeSpan.FromSeconds(10)], context.Clock.RequestedDelays);
         Assert.True(context.Chunks.LastToken.IsCancellationRequested);
         Assert.Empty(context.Mover.Movements);
+        Assert.Equal(0, context.Chunks.Lease.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Timed_out_noncooperative_loader_disposes_a_lease_that_completes_late()
+    {
+        var context = new TeleportTestContext();
+        var completion = new TaskCompletionSource<IChunkLoadLease>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateLease = new FakeChunkLoadLease();
+        context.Chunks.Load = _ => completion.Task;
+        context.Clock.Delay = (_, _) => Task.CompletedTask;
+
+        var result = await context.Service.TeleportToSurfaceAsync(
+            0,
+            0,
+            TestContext.Current.CancellationToken);
+        completion.SetResult(lateLease);
+        await lateLease.Disposed.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.ChunkTimeout, result);
+        Assert.Equal(1, lateLease.DisposeCount);
     }
 
     [Fact]
     public async Task Timeout_clock_failure_still_cancels_an_unbounded_chunk_load()
     {
         var context = new TeleportTestContext();
-        context.Chunks.Load = cancellationToken => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        context.Chunks.Load = async cancellationToken =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        };
         context.Clock.Delay = (_, _) => Task.FromException(new InvalidOperationException("clock failed"));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -229,6 +261,8 @@ public sealed class SafeTeleportServiceTests
         Assert.Empty(noSafe.Mover.Movements);
         Assert.Empty(outside.Mover.Movements);
         Assert.Empty(outside.Chunks.Requests);
+        Assert.Equal(1, noSafe.Chunks.Lease.DisposeCount);
+        Assert.Equal(0, outside.Chunks.Lease.DisposeCount);
     }
 
     [Fact]
@@ -266,6 +300,8 @@ public sealed class SafeTeleportServiceTests
         Assert.Single(context.Mover.Movements);
         Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
         Assert.Equal(1, context.Mover.RestoreAttempts);
+        Assert.Equal(0, context.Mover.ExactRestoreAttempts);
+        Assert.Equal(1, context.Chunks.Lease.DisposeCount);
     }
 
     [Fact]
@@ -289,7 +325,7 @@ public sealed class SafeTeleportServiceTests
     {
         var context = new TeleportTestContext();
         using var cancellation = new CancellationTokenSource();
-        context.Chunks.Load = _ => new TaskCompletionSource(
+        context.Chunks.Load = _ => new TaskCompletionSource<IChunkLoadLease>(
             TaskCreationOptions.RunContinuationsAsynchronously).Task;
         context.Clock.Delay = (_, _) => new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously).Task;
@@ -314,6 +350,7 @@ public sealed class SafeTeleportServiceTests
 
         Assert.Empty(context.Mover.Movements);
         Assert.Empty(context.Mover.RestoredSnapshots);
+        Assert.Equal(1, context.Chunks.Lease.DisposeCount);
     }
 
     [Fact]
@@ -447,7 +484,7 @@ public sealed class SafeTeleportServiceTests
         context.Chunks.Load = _ =>
         {
             cancellation.Cancel();
-            return Task.FromException(new InvalidOperationException("load failed"));
+            return Task.FromException<IChunkLoadLease>(new InvalidOperationException("load failed"));
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -556,6 +593,7 @@ public sealed class SafeTeleportServiceTests
 
             Assert.Single(context.Mover.Movements);
             Assert.Single(context.Mover.RestoredSnapshots);
+            Assert.Equal(1, context.Chunks.Lease.DisposeCount);
         }
     }
 
@@ -696,17 +734,50 @@ internal sealed class FakeTeleportTerrain : ITerrainAccess
 
 internal sealed class FakeChunkLoader : IChunkLoader
 {
-    internal Func<CancellationToken, Task> Load { get; set; } = _ => Task.CompletedTask;
+    internal FakeChunkLoadLease Lease { get; } = new();
+
+    internal Func<CancellationToken, Task<IChunkLoadLease>>? CustomLoad { get; set; }
+
+    internal Func<CancellationToken, Task<IChunkLoadLease>> Load
+    {
+        get => CustomLoad ?? (_ => Task.FromResult<IChunkLoadLease>(Lease));
+        set => CustomLoad = value;
+    }
 
     internal List<(int X, int Z, int Radius)> Requests { get; } = [];
 
     internal CancellationToken LastToken { get; private set; }
 
-    public Task LoadAreaAsync(int centerX, int centerZ, int radius, CancellationToken cancellationToken)
+    public Task<IChunkLoadLease> LoadAreaAsync(
+        int centerX,
+        int centerZ,
+        int radius,
+        CancellationToken cancellationToken)
     {
         Requests.Add((centerX, centerZ, radius));
         LastToken = cancellationToken;
         return Load(cancellationToken);
+    }
+}
+
+internal sealed class FakeChunkLoadLease : IChunkLoadLease
+{
+    private int _disposed;
+
+    internal int DisposeCount { get; private set; }
+
+    internal TaskCompletionSource Disposed { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        DisposeCount++;
+        Disposed.TrySetResult();
     }
 }
 
@@ -729,6 +800,8 @@ internal sealed class FakePlayerMover : IPlayerMover
 
     internal int RestoreAttempts { get; private set; }
 
+    internal int ExactRestoreAttempts { get; private set; }
+
     internal Action? OnMove { get; set; }
 
     internal Action? OnRestore { get; set; }
@@ -748,6 +821,11 @@ internal sealed class FakePlayerMover : IPlayerMover
     }
 
     public void Restore(PlayerMovementSnapshot snapshot)
+    {
+        ExactRestoreAttempts++;
+    }
+
+    public void RestoreSafely(PlayerMovementSnapshot snapshot)
     {
         RestoreAttempts++;
         OnRestore?.Invoke();

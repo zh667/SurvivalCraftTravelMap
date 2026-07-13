@@ -21,6 +21,40 @@ public static class TravelMapRuntimePolicy
     public static bool CreatesTeleportService(TravelMapWorkType workType) => workType is not TravelMapWorkType.Client;
 
     public static bool AllowsDirectPositionWrite(TravelMapWorkType workType) => workType == TravelMapWorkType.Local;
+
+    public static void CleanupRuntime(
+        Action cancelLifetime,
+        Action releaseChunks,
+        Action disposeDispatcher,
+        Action finalCleanup)
+    {
+        ArgumentNullException.ThrowIfNull(cancelLifetime);
+        ArgumentNullException.ThrowIfNull(releaseChunks);
+        ArgumentNullException.ThrowIfNull(disposeDispatcher);
+        ArgumentNullException.ThrowIfNull(finalCleanup);
+        try
+        {
+            cancelLifetime();
+        }
+        finally
+        {
+            try
+            {
+                releaseChunks();
+            }
+            finally
+            {
+                try
+                {
+                    disposeDispatcher();
+                }
+                finally
+                {
+                    finalCleanup();
+                }
+            }
+        }
+    }
 }
 
 public sealed class TravelMapComponent : Component, IUpdateable
@@ -115,11 +149,15 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     public override void OnEntityRemoved()
     {
-        _lifetimeCancellation.Cancel();
-        _chunkLoader?.Dispose();
-        _dispatcher?.Dispose();
-        _lifetimeCancellation.Dispose();
-        base.OnEntityRemoved();
+        TravelMapRuntimePolicy.CleanupRuntime(
+            () => _lifetimeCancellation.Cancel(),
+            () => _chunkLoader?.Dispose(),
+            () => _dispatcher?.Dispose(),
+            () =>
+            {
+                _lifetimeCancellation.Dispose();
+                base.OnEntityRemoved();
+            });
     }
 
     private SafeTeleportService GetLocalTeleportService()

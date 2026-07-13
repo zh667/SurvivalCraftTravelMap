@@ -43,34 +43,38 @@ public sealed class SafeTeleportService
             return TeleportResult.OutOfWorld;
         }
 
-        if (!await LoadChunksAsync(x, z, cancellationToken).ConfigureAwait(false))
+        var chunkLease = await LoadChunksAsync(x, z, cancellationToken).ConfigureAwait(false);
+        if (chunkLease is null)
         {
             return TeleportResult.ChunkTimeout;
         }
 
-        foreach (var column in TeleportCandidate.GenerateSurface(x, z))
+        using (chunkLease)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!IsColumnInWorld(column.X, column.Z, cancellationToken))
+            foreach (var column in TeleportCandidate.GenerateSurface(x, z))
             {
-                continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!IsColumnInWorld(column.X, column.Z, cancellationToken))
+                {
+                    continue;
+                }
+
+                var groundY = GetSurfaceHeight(column.X, column.Z, cancellationToken);
+                var feetY = (long)groundY + 1L;
+                if (feetY is < int.MinValue or > int.MaxValue)
+                {
+                    continue;
+                }
+
+                var candidate = new TeleportCandidate(column.X, (int)feetY, column.Z);
+                if (IsSafe(candidate, cancellationToken))
+                {
+                    return await MoveTransactionallyAsync(candidate, cancellationToken).ConfigureAwait(false);
+                }
             }
 
-            var groundY = GetSurfaceHeight(column.X, column.Z, cancellationToken);
-            var feetY = (long)groundY + 1L;
-            if (feetY is < int.MinValue or > int.MaxValue)
-            {
-                continue;
-            }
-
-            var candidate = new TeleportCandidate(column.X, (int)feetY, column.Z);
-            if (IsSafe(candidate, cancellationToken))
-            {
-                return await MoveTransactionallyAsync(candidate, cancellationToken).ConfigureAwait(false);
-            }
+            return TeleportResult.NoSafePosition;
         }
-
-        return TeleportResult.NoSafePosition;
     }
 
     public async Task<TeleportResult> TeleportToWaypointAsync(
@@ -87,24 +91,31 @@ public sealed class SafeTeleportService
             return TeleportResult.OutOfWorld;
         }
 
-        if (!await LoadChunksAsync(x, z, cancellationToken).ConfigureAwait(false))
+        var chunkLease = await LoadChunksAsync(x, z, cancellationToken).ConfigureAwait(false);
+        if (chunkLease is null)
         {
             return TeleportResult.ChunkTimeout;
         }
 
-        foreach (var candidate in TeleportCandidate.GenerateWaypoint(x, y, z))
+        using (chunkLease)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (IsSafe(candidate, cancellationToken))
+            foreach (var candidate in TeleportCandidate.GenerateWaypoint(x, y, z))
             {
-                return await MoveTransactionallyAsync(candidate, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsSafe(candidate, cancellationToken))
+                {
+                    return await MoveTransactionallyAsync(candidate, cancellationToken).ConfigureAwait(false);
+                }
             }
-        }
 
-        return TeleportResult.NoSafePosition;
+            return TeleportResult.NoSafePosition;
+        }
     }
 
-    private async Task<bool> LoadChunksAsync(int x, int z, CancellationToken cancellationToken)
+    private async Task<IChunkLoadLease?> LoadChunksAsync(
+        int x,
+        int z,
+        CancellationToken cancellationToken)
     {
         using var loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -113,7 +124,7 @@ public sealed class SafeTeleportService
             static state => ((TaskCompletionSource)state!).TrySetResult(),
             cancellationSignal);
 
-        Task loadTask;
+        Task<IChunkLoadLease> loadTask;
         Task timeoutTask;
         try
         {
@@ -137,7 +148,7 @@ public sealed class SafeTeleportService
         {
             loadCancellation.Cancel();
             timeoutCancellation.Cancel();
-            ObserveAbandoned(loadTask);
+            DisposeAbandonedLease(loadTask);
             ObserveAbandoned(timeoutTask);
             cancellationToken.ThrowIfCancellationRequested();
         }
@@ -148,25 +159,33 @@ public sealed class SafeTeleportService
             ObserveAbandoned(timeoutTask);
             if (cancellationToken.IsCancellationRequested)
             {
-                ObserveAbandoned(loadTask);
+                DisposeAbandonedLease(loadTask);
                 cancellationToken.ThrowIfCancellationRequested();
             }
 
+            IChunkLoadLease lease;
             try
             {
-                await loadTask.ConfigureAwait(false);
+                lease = await loadTask.ConfigureAwait(false)
+                    ?? throw new InvalidOperationException("Chunk loader returned a null lease.");
             }
             catch when (cancellationToken.IsCancellationRequested)
             {
                 throw new OperationCanceledException(cancellationToken);
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                lease.Dispose();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
-            return true;
+            return lease;
         }
 
         loadCancellation.Cancel();
-        ObserveAbandoned(loadTask);
+        DisposeAbandonedLease(loadTask);
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
@@ -177,7 +196,7 @@ public sealed class SafeTeleportService
             throw new OperationCanceledException(cancellationToken);
         }
 
-        return false;
+        return null;
     }
 
     private bool IsSafe(TeleportCandidate candidate, CancellationToken cancellationToken)
@@ -370,7 +389,7 @@ public sealed class SafeTeleportService
     {
         try
         {
-            _playerMover.Restore(snapshot);
+            _playerMover.RestoreSafely(snapshot);
         }
         catch (Exception restoreFailure)
         {
@@ -408,6 +427,34 @@ public sealed class SafeTeleportService
             static completed => _ = completed.Exception,
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static void DisposeAbandonedLease(Task<IChunkLoadLease> task)
+    {
+        _ = task.ContinueWith(
+            static completed =>
+            {
+                if (completed.IsFaulted)
+                {
+                    _ = completed.Exception;
+                    return;
+                }
+
+                if (completed.Status == TaskStatus.RanToCompletion)
+                {
+                    try
+                    {
+                        completed.Result?.Dispose();
+                    }
+                    catch
+                    {
+                        // There is no caller left to receive a late cleanup failure.
+                    }
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
     }
 
