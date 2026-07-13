@@ -73,19 +73,88 @@ public sealed class TerrainMapSamplerTests
     }
 
     [Fact]
-    public void Try_sample_chunk_rejects_the_chunk_when_any_sample_has_zero_alpha()
+    public void Chunk_commit_seam_keeps_existing_tile_byte_identical_when_mid_chunk_sample_is_transparent()
     {
         var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
-        source.SetContent(2, 64, 3, 0);
-        var sampler = new TerrainMapSampler(source, CreatePixelData());
-        var destination = new Rgba32[TerrainChunkCoordinate.PixelCount];
+        source.SetContent(5, 64, 6, 0);
+        var sampler = new TerrainMapSampler(source, CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+        {
+            [1] = Pixel(1, 10, 20, 30),
+        }));
+        var tile = CreateSeededTile();
+        var before = CaptureTileState(tile);
+        var untouched = new Rgba32(200, 201, 202, 203);
+        var staging = Enumerable.Repeat(untouched, TerrainChunkCoordinate.PixelCount).ToArray();
 
-        var sampled = sampler.TrySampleChunk(new TerrainChunkCoordinate(0, 0), destination);
+        var committed = TrySampleChunkAndCommit(
+            sampler,
+            new TerrainChunkCoordinate(0, 0),
+            tile,
+            staging);
 
-        Assert.False(sampled);
+        Assert.False(committed);
         Assert.Equal(1, source.ChunkReadinessChecks);
         Assert.Equal(0, source.ColumnReadinessChecks);
-        Assert.Equal(0, destination[(3 * TerrainChunkCoordinate.Size) + 2].A);
+        Assert.Equal(new Rgba32(10, 20, 30, 255), staging[0]);
+        Assert.NotEqual(untouched, staging[0]);
+        Assert.Equal(0, staging[(6 * TerrainChunkCoordinate.Size) + 5].A);
+        AssertTileStateUnchanged(before, tile);
+    }
+
+    [Fact]
+    public void Chunk_commit_seam_keeps_existing_tile_byte_identical_when_mid_chunk_sample_throws()
+    {
+        var sentinel = new InvalidOperationException("mid-chunk sentinel");
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
+        source.ThrowFromTopHeightAt(4, 5, sentinel);
+        var sampler = new TerrainMapSampler(source, CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+        {
+            [1] = Pixel(1, 10, 20, 30),
+        }));
+        var tile = CreateSeededTile();
+        var before = CaptureTileState(tile);
+        var untouched = new Rgba32(200, 201, 202, 203);
+        var staging = Enumerable.Repeat(untouched, TerrainChunkCoordinate.PixelCount).ToArray();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            TrySampleChunkAndCommit(
+                sampler,
+                new TerrainChunkCoordinate(0, 0),
+                tile,
+                staging));
+
+        Assert.Same(sentinel, exception);
+        Assert.Equal(new Rgba32(10, 20, 30, 255), staging[0]);
+        Assert.NotEqual(untouched, staging[0]);
+        Assert.Equal(untouched, staging[(5 * TerrainChunkCoordinate.Size) + 4]);
+        AssertTileStateUnchanged(before, tile);
+    }
+
+    [Fact]
+    public void Chunk_commit_seam_sets_one_tile_region_after_complete_sample_succeeds()
+    {
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
+        var sampler = new TerrainMapSampler(source, CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+        {
+            [1] = Pixel(1, 10, 20, 30),
+        }));
+        var tile = CreateSeededTile();
+        var before = CaptureTileState(tile);
+        var staging = new Rgba32[TerrainChunkCoordinate.PixelCount];
+
+        var committed = TrySampleChunkAndCommit(
+            sampler,
+            new TerrainChunkCoordinate(0, 0),
+            tile,
+            staging);
+
+        var after = CaptureTileState(tile);
+        Assert.True(committed);
+        Assert.Equal(before.Version + 1, after.Version);
+        Assert.False(before.Explored.AsSpan().SequenceEqual(after.Explored));
+        Assert.False(before.Colors.AsSpan().SequenceEqual(after.Colors));
+        Assert.True(tile.TryGetPixel(16, 32, out var color));
+        Assert.Equal(new Rgba32(10, 20, 30, 255), color);
     }
 
     [Fact]
@@ -349,6 +418,53 @@ public sealed class TerrainMapSamplerTests
 
     public static TheoryData<int> WaterVariantCases => new(WaterVariantContents);
 
+    private static bool TrySampleChunkAndCommit(
+        TerrainMapSampler sampler,
+        TerrainChunkCoordinate chunk,
+        MapTile tile,
+        Rgba32[] staging)
+    {
+        if (!sampler.TrySampleChunk(chunk, staging))
+        {
+            return false;
+        }
+
+        tile.SetRegion(
+            x: 16,
+            z: 32,
+            TerrainChunkCoordinate.Size,
+            TerrainChunkCoordinate.Size,
+            staging);
+        return true;
+    }
+
+    private static MapTile CreateSeededTile()
+    {
+        var tile = new MapTile(0, 0);
+        tile.SetPixel(1, 2, new Rgba32(11, 22, 33, 255));
+        tile.SetPixel(48, 50, new Rgba32(44, 55, 66, 255));
+        return tile;
+    }
+
+    private static (long Version, byte[] Explored, byte[] Colors) CaptureTileState(MapTile tile)
+    {
+        var explored = new byte[MapTile.ExploredByteCount];
+        var colors = new byte[MapTile.ColorByteCount];
+        tile.CopyExploredTo(explored);
+        tile.CopyColorsTo(colors);
+        return (tile.Version, explored, colors);
+    }
+
+    private static void AssertTileStateUnchanged(
+        (long Version, byte[] Explored, byte[] Colors) expected,
+        MapTile actual)
+    {
+        var actualState = CaptureTileState(actual);
+        Assert.Equal(expected.Version, actualState.Version);
+        Assert.True(expected.Explored.AsSpan().SequenceEqual(actualState.Explored));
+        Assert.True(expected.Colors.AsSpan().SequenceEqual(actualState.Colors));
+    }
+
     internal static IReadOnlyDictionary<int, BlockPixelData> CreatePixelData(
         IReadOnlyDictionary<int, BlockPixelData>? overrides = null)
     {
@@ -422,6 +538,7 @@ internal sealed class FakeTerrainMapSource(
     bool isReady = true) : ITerrainMapSource
 {
     private readonly Dictionary<(int X, int Y, int Z), int> _contents = [];
+    private readonly Dictionary<(int X, int Z), Exception> _topHeightFailures = [];
 
     internal List<(int X, int Y, int Z)> ContentCalls { get; } = [];
 
@@ -439,6 +556,9 @@ internal sealed class FakeTerrainMapSource(
 
     internal void SetContent(int x, int y, int z, int content) => _contents[(x, y, z)] = content;
 
+    internal void ThrowFromTopHeightAt(int x, int z, Exception exception) =>
+        _topHeightFailures[(x, z)] = exception;
+
     public bool IsColumnReady(int x, int z)
     {
         ColumnReadinessChecks++;
@@ -455,6 +575,11 @@ internal sealed class FakeTerrainMapSource(
     public int GetTopHeight(int x, int z)
     {
         SampledColumns.Add((x, z));
+        if (_topHeightFailures.TryGetValue((x, z), out var exception))
+        {
+            throw exception;
+        }
+
         return topHeight;
     }
 
