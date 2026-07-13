@@ -10,17 +10,22 @@ public sealed class GameUpdateDispatcher : IDisposable
     private readonly int _updateThreadId = Environment.CurrentManagedThreadId;
     private readonly Action? _afterPumpClaimed;
     private readonly Action? _afterDisposeMarked;
-    private int _activePumpCount;
+    private readonly Action? _afterDisposeWaitStarted;
+    private int _activeExecutionCount;
     private bool _disposed;
 
     public GameUpdateDispatcher()
     {
     }
 
-    internal GameUpdateDispatcher(Action? afterPumpClaimed, Action? afterDisposeMarked)
+    internal GameUpdateDispatcher(
+        Action? afterPumpClaimed,
+        Action? afterDisposeMarked,
+        Action? afterDisposeWaitStarted = null)
     {
         _afterPumpClaimed = afterPumpClaimed;
         _afterDisposeMarked = afterDisposeMarked;
+        _afterDisposeWaitStarted = afterDisposeWaitStarted;
     }
 
     public int PendingCount
@@ -47,10 +52,22 @@ public sealed class GameUpdateDispatcher : IDisposable
     public T Invoke<T>(Func<T> action)
     {
         ArgumentNullException.ThrowIfNull(action);
-        ThrowIfDisposed();
         if (Environment.CurrentManagedThreadId == _updateThreadId)
         {
-            return action();
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                _activeExecutionCount++;
+            }
+
+            try
+            {
+                return action();
+            }
+            finally
+            {
+                CompleteActiveExecution();
+            }
         }
 
         var invocation = new QueuedInvocation<T>(action);
@@ -100,7 +117,7 @@ public sealed class GameUpdateDispatcher : IDisposable
             _work.Clear();
             waiters = _nextUpdateWaiters.ToArray();
             _nextUpdateWaiters.Clear();
-            _activePumpCount++;
+            _activeExecutionCount++;
         }
 
         try
@@ -134,11 +151,7 @@ public sealed class GameUpdateDispatcher : IDisposable
         }
         finally
         {
-            lock (_sync)
-            {
-                _activePumpCount--;
-                Monitor.PulseAll(_sync);
-            }
+            CompleteActiveExecution();
         }
     }
 
@@ -147,7 +160,7 @@ public sealed class GameUpdateDispatcher : IDisposable
         IQueuedWork[] work = [];
         NextUpdateWaiter[] waiters = [];
         var marked = false;
-        var waitForActivePump = false;
+        var waitForActiveExecution = false;
         lock (_sync)
         {
             if (!_disposed)
@@ -160,9 +173,9 @@ public sealed class GameUpdateDispatcher : IDisposable
                 _nextUpdateWaiters.Clear();
             }
 
-            // A queued action may dispose reentrantly on the update thread. It cannot wait for
-            // its own Pump; Pump observes the disposed flag and fails the remaining claimed work.
-            waitForActivePump = _activePumpCount > 0
+            // An owner-thread action may dispose reentrantly. It cannot wait for its own active
+            // execution; its finally path decrements the count and Pump fails remaining work.
+            waitForActiveExecution = _activeExecutionCount > 0
                 && Environment.CurrentManagedThreadId != _updateThreadId;
         }
 
@@ -183,15 +196,29 @@ public sealed class GameUpdateDispatcher : IDisposable
             item.Fail(exception);
         }
 
-        if (waitForActivePump)
+        if (waitForActiveExecution)
         {
             lock (_sync)
             {
-                while (_activePumpCount > 0)
+                if (_activeExecutionCount > 0)
+                {
+                    _afterDisposeWaitStarted?.Invoke();
+                }
+
+                while (_activeExecutionCount > 0)
                 {
                     Monitor.Wait(_sync);
                 }
             }
+        }
+    }
+
+    private void CompleteActiveExecution()
+    {
+        lock (_sync)
+        {
+            _activeExecutionCount--;
+            Monitor.PulseAll(_sync);
         }
     }
 
@@ -202,8 +229,6 @@ public sealed class GameUpdateDispatcher : IDisposable
             return _disposed;
         }
     }
-
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
     private readonly record struct NextUpdateWaiter(
         TaskCompletionSource Completion,

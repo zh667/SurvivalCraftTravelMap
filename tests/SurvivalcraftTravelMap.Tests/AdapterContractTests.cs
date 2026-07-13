@@ -356,6 +356,89 @@ public sealed class AdapterContractTests
         Assert.Throws<ObjectDisposedException>(() => dispatcher.Invoke(static () => { }));
     }
 
+    [Fact]
+    public async Task Foreign_dispose_waits_for_an_owner_fast_path_action_to_finish()
+    {
+        using var dispatcherReady = new ManualResetEventSlim();
+        using var actionStarted = new ManualResetEventSlim();
+        using var releaseAction = new ManualResetEventSlim();
+        using var ownerFinished = new ManualResetEventSlim();
+        using var disposeMarked = new ManualResetEventSlim();
+        using var disposeWaiting = new ManualResetEventSlim();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        GameUpdateDispatcher? dispatcherReference = null;
+        Exception? ownerFailure = null;
+        var owner = new Thread(() =>
+        {
+            try
+            {
+                dispatcherReference = new GameUpdateDispatcher(
+                    afterPumpClaimed: null,
+                    afterDisposeMarked: disposeMarked.Set,
+                    afterDisposeWaitStarted: disposeWaiting.Set);
+                dispatcherReady.Set();
+                dispatcherReference.Invoke(() =>
+                {
+                    actionStarted.Set();
+                    releaseAction.Wait(cancellationToken);
+                });
+            }
+            catch (Exception exception)
+            {
+                ownerFailure = exception;
+            }
+            finally
+            {
+                ownerFinished.Set();
+            }
+        });
+        owner.Start();
+        Assert.True(dispatcherReady.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+        var dispatcher = dispatcherReference ?? throw new InvalidOperationException("Dispatcher was not created.");
+        Assert.True(actionStarted.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+        var disposal = Task.Run(dispatcher.Dispose, cancellationToken);
+
+        try
+        {
+            Assert.True(disposeMarked.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+            Assert.True(disposeWaiting.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+            Assert.False(disposal.IsCompleted);
+        }
+        finally
+        {
+            releaseAction.Set();
+        }
+
+        Assert.True(ownerFinished.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+        owner.Join();
+        await disposal;
+        Assert.Null(ownerFailure);
+        var postDisposeCalls = 0;
+        Assert.Throws<ObjectDisposedException>(() => dispatcher.Invoke(() => postDisposeCalls++));
+        Assert.Equal(0, postDisposeCalls);
+    }
+
+    [Fact]
+    public async Task Reentrant_dispose_fails_the_next_claimed_pump_item_without_running_it()
+    {
+        var dispatcher = new GameUpdateDispatcher();
+        var first = Task.Run(
+            () => dispatcher.Invoke(dispatcher.Dispose),
+            TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
+        var secondCalls = 0;
+        var second = Task.Run(
+            () => dispatcher.Invoke(() => secondCalls++),
+            TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 2, TimeSpan.FromSeconds(5)));
+
+        dispatcher.Pump();
+
+        await first;
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => second);
+        Assert.Equal(0, secondCalls);
+    }
+
     [Theory]
     [InlineData(TravelMapWorkType.Local, true, true, true)]
     [InlineData(TravelMapWorkType.Server, false, true, false)]
