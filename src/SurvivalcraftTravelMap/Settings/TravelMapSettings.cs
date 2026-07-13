@@ -2,7 +2,9 @@ namespace SurvivalcraftTravelMap.Settings;
 
 public sealed class TravelMapSettings
 {
-    private static readonly int[] SupportedMiniMapSizes = [160, 192, 256, 320, 384];
+    private static readonly int[] MiniMapSizes = [160, 192, 256, 320, 384];
+
+    public static IReadOnlyList<int> SupportedMiniMapSizes { get; } = Array.AsReadOnly(MiniMapSizes);
 
     public bool IsMiniMapVisible { get; set; } = true;
 
@@ -28,14 +30,17 @@ public sealed class TravelMapSettings
         MiniMapBlocksPerPixel = ClampOrDefault(MiniMapBlocksPerPixel, 0.5f, 8f, 1f);
         LargeMapBlocksPerPixel = ClampOrDefault(LargeMapBlocksPerPixel, 0.25f, 32f, 2f);
         NightMinimumBrightness = ClampOrDefault(NightMinimumBrightness, 0.4f, 1f, 0.4f);
+        LargeMapHotkey = "M";
     }
+
+    public static bool IsSupportedMiniMapSize(int size) => Array.IndexOf(MiniMapSizes, size) >= 0;
 
     private static int NearestSupportedSize(int requested)
     {
-        var nearest = SupportedMiniMapSizes[0];
+        var nearest = MiniMapSizes[0];
         var nearestDistance = Math.Abs((long)requested - nearest);
 
-        foreach (var candidate in SupportedMiniMapSizes.AsSpan(1))
+        foreach (var candidate in MiniMapSizes.AsSpan(1))
         {
             var distance = Math.Abs((long)requested - candidate);
             if (distance < nearestDistance)

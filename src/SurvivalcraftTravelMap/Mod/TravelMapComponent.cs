@@ -2,7 +2,12 @@ using System.Numerics;
 using Game;
 using Game.NetWork;
 using GameEntitySystem;
+using SurvivalcraftTravelMap.Map;
+using SurvivalcraftTravelMap.Persistence;
+using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.Teleport;
+using SurvivalcraftTravelMap.UI;
+using SurvivalcraftTravelMap.Waypoints;
 using TemplatesDatabase;
 
 namespace SurvivalcraftTravelMap.Mod;
@@ -62,8 +67,22 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private static int s_nextUpdateLocationId = -1_000_000;
 
     private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private readonly TravelMapUiController _uiController = new();
     private GameUpdateDispatcher? _dispatcher;
     private SurvivalcraftChunkLoader? _chunkLoader;
+    private TravelMapSettingsStore? _settingsStore;
+    private TravelMapSettings? _settings;
+    private ExplorationTileStore? _tileStore;
+    private ExplorationRecorder? _explorationRecorder;
+    private WaypointRepository? _waypointRepository;
+    private IReadOnlyList<Waypoint> _waypoints = Array.Empty<Waypoint>();
+    private MiniMapRenderer? _miniMap;
+    private TravelMapDialog? _largeMapDialog;
+    private Task? _flushTask;
+    private int _lastRecordedX = int.MinValue;
+    private int _lastRecordedZ = int.MinValue;
+    private float _stationaryRecordElapsed;
+    private float _flushElapsed;
 
     internal ComponentPlayer Player { get; private set; } = null!;
 
@@ -76,6 +95,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
     internal SafeTeleportService? TeleportService { get; private set; }
 
     public TravelMapWorkType WorkType { get; private set; }
+
+    public Action<TravelMapClientTravelCommand>? ClientTravelCommand { get; set; }
 
     public UpdateOrder UpdateOrder => UpdateOrder.Default;
 
@@ -95,34 +116,50 @@ public sealed class TravelMapComponent : Component, IUpdateable
             : null;
 
         _dispatcher = new GameUpdateDispatcher();
-        if (!TravelMapRuntimePolicy.CreatesTeleportService(WorkType))
+        if (TravelMapRuntimePolicy.CreatesTeleportService(WorkType))
+        {
+            var bodies = Project.FindSubsystem<SubsystemBodies>(true);
+            var terrainAccess = new SurvivalcraftTerrainAccess(
+                Terrain,
+                playerBody,
+                bodies,
+                _dispatcher);
+            var clock = new SurvivalcraftTeleportClock(_dispatcher);
+            var updateLocationId = Interlocked.Decrement(ref s_nextUpdateLocationId);
+            _chunkLoader = new SurvivalcraftChunkLoader(
+                Terrain,
+                updateLocationId,
+                _dispatcher,
+                clock);
+            var playerMover = new SurvivalcraftPlayerMover(Player, _dispatcher);
+            TeleportService = new SafeTeleportService(
+                terrainAccess,
+                _chunkLoader,
+                playerMover,
+                terrainAccess,
+                clock);
+        }
+
+        if (TravelMapRuntimePolicy.CreatesUi(WorkType) && player.PlayerData.IsMainPlayer)
+        {
+            InitializeUi();
+        }
+    }
+
+    public void Update(float dt)
+    {
+        _dispatcher?.Pump();
+        if (_miniMap is null || _settings is null)
         {
             return;
         }
 
-        var bodies = Project.FindSubsystem<SubsystemBodies>(true);
-        var terrainAccess = new SurvivalcraftTerrainAccess(
-            Terrain,
-            playerBody,
-            bodies,
-            _dispatcher);
-        var clock = new SurvivalcraftTeleportClock(_dispatcher);
-        var updateLocationId = Interlocked.Decrement(ref s_nextUpdateLocationId);
-        _chunkLoader = new SurvivalcraftChunkLoader(
-            Terrain,
-            updateLocationId,
-            _dispatcher,
-            clock);
-        var playerMover = new SurvivalcraftPlayerMover(Player, _dispatcher);
-        TeleportService = new SafeTeleportService(
-            terrainAccess,
-            _chunkLoader,
-            playerMover,
-            terrainAccess,
-            clock);
+        _miniMap.IsVisible = _settings.IsMiniMapVisible;
+        UpdateMiniMapPosition();
+        UpdateExploration(dt);
+        UpdateFlush(dt);
+        HandleLargeMapHotkey();
     }
-
-    public void Update(float dt) => _dispatcher?.Pump();
 
     public async Task<TeleportResult> TeleportToSurfaceAsync(
         int x,
@@ -155,6 +192,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             () => _dispatcher?.Dispose(),
             () =>
             {
+                CleanupUi();
                 _lifetimeCancellation.Dispose();
                 base.OnEntityRemoved();
             });
@@ -177,5 +215,382 @@ public sealed class TravelMapComponent : Component, IUpdateable
         Game.NetWork.WorkType.Server => TravelMapWorkType.Server,
         Game.NetWork.WorkType.Client => TravelMapWorkType.Client,
         _ => throw new InvalidOperationException($"Unsupported Survivalcraft work type: {workType}."),
+    };
+
+    private void InitializeUi()
+    {
+        var appRoot = Engine.Storage.GetSystemPath("app:/SurvivalcraftTravelMap");
+        var legacySettingsPath = Engine.Storage.GetSystemPath("app:/GPSSetting.xml");
+        _settingsStore = new TravelMapSettingsStore(appRoot, legacySettingsPath);
+        _settings = _settingsStore.LoadAsync(_lifetimeCancellation.Token)
+            .GetAwaiter()
+            .GetResult();
+
+        var gameInfo = Project.FindSubsystem<SubsystemGameInfo>(true);
+        var worldIdentifier = $"{gameInfo.DirectoryName}:{gameInfo.WorldSeed}:{WorkType}";
+        var worldDirectory = Path.Combine(appRoot, "worlds", WorldKey.ForLocal(worldIdentifier));
+        _tileStore = new ExplorationTileStore(Path.Combine(worldDirectory, "tiles"));
+        _waypointRepository = new WaypointRepository(worldDirectory);
+        _waypointRepository.LoadAsync(_lifetimeCancellation.Token).GetAwaiter().GetResult();
+        _waypoints = _waypointRepository.GetAll();
+
+        TryCreateExplorationRecorder();
+        var pixelSource = new TileStoreMapPixelSource(_tileStore);
+        _miniMap = new MiniMapRenderer(
+            pixelSource,
+            _settings,
+            GetPlayerPose,
+            () => _waypoints,
+            GetTerrainBrightness);
+        Player.GuiWidget.Children.Add(_miniMap);
+        UpdateMiniMapPosition();
+
+        _largeMapDialog = new TravelMapDialog(
+            pixelSource,
+            _settings,
+            _settingsStore,
+            GetPlayerPose,
+            () => _waypoints,
+            GetTerrainBrightness,
+            HandleContextActionAsync,
+            ShowMessage);
+    }
+
+    private void TryCreateExplorationRecorder()
+    {
+        if (_tileStore is null || !ModsManager.GetModEntity("SurvivalcraftTravelMap", out var modEntity))
+        {
+            return;
+        }
+
+        try
+        {
+            modEntity.GetAssetsFile("BlockPixelColor.json", stream =>
+            {
+                var sampler = new TerrainMapSampler(new SurvivalcraftTerrainMapSource(Terrain), stream);
+                _explorationRecorder = new ExplorationRecorder(sampler, _tileStore);
+            });
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException)
+        {
+            Engine.Log.Warning($"[TravelMap] Terrain map colors could not be loaded: {exception.Message}");
+        }
+    }
+
+    private void UpdateMiniMapPosition()
+    {
+        if (_miniMap is null || _settings is null)
+        {
+            return;
+        }
+
+        var viewport = Player.GameWidget.ActiveCamera.ViewportSize;
+        var x = MathF.Max(0f, viewport.X - _settings.MiniMapSize - 100f);
+        if (Player.GuiWidget is CanvasWidget canvas)
+        {
+            canvas.SetWidgetPosition(_miniMap, new Engine.Vector2(x, 32f));
+        }
+        else
+        {
+            _miniMap.LayoutTransform = Engine.Matrix.CreateTranslation(x, 32f, 0f);
+        }
+    }
+
+    private void UpdateExploration(float dt)
+    {
+        if (_explorationRecorder is null)
+        {
+            return;
+        }
+
+        var position = Player.ComponentBody.Position;
+        var x = (int)MathF.Floor(position.X);
+        var z = (int)MathF.Floor(position.Z);
+        var moved = x != _lastRecordedX || z != _lastRecordedZ;
+        _stationaryRecordElapsed += MathF.Max(0f, dt);
+        if (!moved && _stationaryRecordElapsed < 0.5f)
+        {
+            return;
+        }
+
+        _lastRecordedX = x;
+        _lastRecordedZ = z;
+        _stationaryRecordElapsed = 0f;
+        var radius = Math.Max(1, SettingsManager.VisibilityRange / 2);
+        _explorationRecorder.RecordVisibleArea(x, z, radius);
+    }
+
+    private void UpdateFlush(float dt)
+    {
+        if (_tileStore is null)
+        {
+            return;
+        }
+
+        if (_flushTask is { IsCompleted: true })
+        {
+            if (_flushTask.IsFaulted)
+            {
+                Engine.Log.Warning($"[TravelMap] Map flush failed: {_flushTask.Exception?.GetBaseException().Message}");
+            }
+
+            _flushTask = null;
+        }
+
+        _flushElapsed += MathF.Max(0f, dt);
+        if (_flushTask is null && _flushElapsed >= (float)_tileStore.FlushInterval.TotalSeconds)
+        {
+            _flushElapsed = 0f;
+            _flushTask = _tileStore.FlushAsync(_lifetimeCancellation.Token);
+        }
+    }
+
+    private void HandleLargeMapHotkey()
+    {
+        if (_largeMapDialog is null || DialogsManager.Dialogs.Contains(_largeMapDialog))
+        {
+            return;
+        }
+
+        var input = Player.GameWidget.Input;
+        var focus = new TravelMapFocusState(
+            HasFocusedTextBox(Player.GuiWidget),
+            HasChatFocus: false,
+            Gui?.ModalPanelWidget is not null || DialogsManager.HasDialogs(Player.GuiWidget));
+        var command = _uiController.HandleOpenHotkey(
+            input.IsKeyDownOnce(Engine.Input.Key.M),
+            focus);
+        if (command.Kind == TravelMapUiCommandKind.OpenLargeMap)
+        {
+            _largeMapDialog.ResetToPlayer();
+            DialogsManager.ShowDialog(Player.GuiWidget, _largeMapDialog);
+            input.Clear();
+        }
+    }
+
+    private async Task<TravelMapActionStatus> HandleContextActionAsync(
+        TravelMapContextAction action,
+        TravelMapContextMenu menu,
+        CancellationToken cancellationToken)
+    {
+        if (_waypointRepository is null)
+        {
+            return TravelMapActionStatus.Failed;
+        }
+
+        switch (action)
+        {
+            case TravelMapContextAction.TeleportNearby:
+            {
+                var target = new Vector3(menu.WorldPosition.X, Player.ComponentBody.Position.Y, menu.WorldPosition.Y);
+                return await RequestSurfaceTravelAsync(target, cancellationToken).ConfigureAwait(false);
+            }
+            case TravelMapContextAction.TeleportToWaypoint:
+            {
+                var waypoint = FindWaypoint(menu.WaypointId);
+                return waypoint is null
+                    ? TravelMapActionStatus.Failed
+                    : await RequestWaypointTravelAsync(waypoint.Position, cancellationToken).ConfigureAwait(false);
+            }
+            case TravelMapContextAction.AddWaypoint:
+            {
+                var x = checked((int)MathF.Floor(menu.WorldPosition.X));
+                var z = checked((int)MathF.Floor(menu.WorldPosition.Y));
+                var y = Terrain.Terrain.GetTopHeight(x, z) + 1;
+                _waypointRepository.Add($"坐标点 {x}, {z}", new Vector3(x + 0.5f, y, z + 0.5f));
+                await SaveWaypointsAsync(cancellationToken).ConfigureAwait(false);
+                return TravelMapActionStatus.Completed;
+            }
+            case TravelMapContextAction.RenameWaypoint:
+            {
+                var waypoint = FindWaypoint(menu.WaypointId);
+                if (waypoint is null)
+                {
+                    return TravelMapActionStatus.Failed;
+                }
+
+                DialogsManager.Promit("重命名坐标点", waypoint.Name, name => _ = RenameWaypointAsync(waypoint.Id, name));
+                return TravelMapActionStatus.Completed;
+            }
+            case TravelMapContextAction.DeleteWaypoint:
+                if (!menu.WaypointId.HasValue || !_waypointRepository.Remove(menu.WaypointId.Value))
+                {
+                    return TravelMapActionStatus.Failed;
+                }
+
+                await SaveWaypointsAsync(cancellationToken).ConfigureAwait(false);
+                return TravelMapActionStatus.Completed;
+            case TravelMapContextAction.Cancel:
+                return TravelMapActionStatus.Cancelled;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(action));
+        }
+    }
+
+    private async Task<TravelMapActionStatus> RequestSurfaceTravelAsync(
+        Vector3 target,
+        CancellationToken cancellationToken)
+    {
+        var router = new TravelMapTeleportRouter(
+            WorkType,
+            async (position, token) =>
+            {
+                var result = await TeleportToSurfaceAsync((int)position.X, (int)position.Z, token).ConfigureAwait(false);
+                return result == TeleportResult.Success
+                    ? TravelMapTeleportDispatchResult.LocalRequested
+                    : TravelMapTeleportDispatchResult.LocalFailed;
+            },
+            ClientTravelCommand);
+        return ToActionStatus(await router.RequestAsync(target, cancellationToken).ConfigureAwait(false));
+    }
+
+    private async Task<TravelMapActionStatus> RequestWaypointTravelAsync(
+        Vector3 target,
+        CancellationToken cancellationToken)
+    {
+        var router = new TravelMapTeleportRouter(
+            WorkType,
+            async (position, token) =>
+            {
+                var result = await TeleportToWaypointAsync(position, token).ConfigureAwait(false);
+                return result == TeleportResult.Success
+                    ? TravelMapTeleportDispatchResult.LocalRequested
+                    : TravelMapTeleportDispatchResult.LocalFailed;
+            },
+            ClientTravelCommand);
+        return ToActionStatus(await router.RequestAsync(target, cancellationToken).ConfigureAwait(false));
+    }
+
+    private Waypoint? FindWaypoint(Guid? id) => id.HasValue
+        ? _waypoints.FirstOrDefault(waypoint => waypoint.Id == id.Value)
+        : null;
+
+    private async Task RenameWaypointAsync(Guid id, string name)
+    {
+        try
+        {
+            if (_waypointRepository is not null && _waypointRepository.Rename(id, name))
+            {
+                await SaveWaypointsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException)
+        {
+            ShowMessage("坐标点名称未保存");
+        }
+    }
+
+    private async Task SaveWaypointsAsync(CancellationToken cancellationToken)
+    {
+        await _waypointRepository!.SaveAsync(cancellationToken).ConfigureAwait(false);
+        _waypoints = _waypointRepository.GetAll();
+    }
+
+    private PlayerMapPose GetPlayerPose()
+    {
+        var position = Player.ComponentBody.Position;
+        var forward = Player.ComponentBody.Matrix.Forward;
+        return new PlayerMapPose(
+            new Vector3(position.X, position.Y, position.Z),
+            MathF.Atan2(forward.X, -forward.Z));
+    }
+
+    private float GetTerrainBrightness() => _settings is { UseDayNightTint: true }
+        ? DayNightBrightness.Calculate(TimeOfDay.TimeOfDay, _settings.NightMinimumBrightness)
+        : 1f;
+
+    private void ShowMessage(string message)
+    {
+        try
+        {
+            _dispatcher?.Invoke(() => Gui?.DisplaySmallMessage(
+                message,
+                Engine.Color.White,
+                blinking: false,
+                playNotificationSound: false));
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private void CleanupUi()
+    {
+        if (_largeMapDialog is not null)
+        {
+            DialogsManager.HideDialog(_largeMapDialog);
+            _largeMapDialog.Dispose();
+            _largeMapDialog = null;
+        }
+
+        if (_miniMap is not null)
+        {
+            _miniMap.ParentWidget?.Children.Remove(_miniMap);
+            _miniMap.Dispose();
+            _miniMap = null;
+        }
+
+        if (_tileStore is not null)
+        {
+            try
+            {
+                _flushTask?.GetAwaiter().GetResult();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException)
+            {
+                Engine.Log.Warning($"[TravelMap] Pending map flush ended early: {exception.Message}");
+            }
+
+            try
+            {
+                _tileStore.FlushAsync().GetAwaiter().GetResult();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Engine.Log.Warning($"[TravelMap] Final map flush failed: {exception.Message}");
+            }
+        }
+
+        if (_settingsStore is not null && _settings is not null)
+        {
+            try
+            {
+                _settingsStore.SaveAsync(_settings).GetAwaiter().GetResult();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Engine.Log.Warning($"[TravelMap] Final settings save failed: {exception.Message}");
+            }
+        }
+    }
+
+    private static bool HasFocusedTextBox(Widget widget)
+    {
+        if (widget is TextBoxWidget { HasFocus: true })
+        {
+            return true;
+        }
+
+        if (widget is ContainerWidget container)
+        {
+            foreach (var child in container.Children)
+            {
+                if (HasFocusedTextBox(child))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static TravelMapActionStatus ToActionStatus(TravelMapTeleportDispatchResult result) => result switch
+    {
+        TravelMapTeleportDispatchResult.LocalRequested => TravelMapActionStatus.Completed,
+        TravelMapTeleportDispatchResult.CommandQueued => TravelMapActionStatus.Completed,
+        TravelMapTeleportDispatchResult.LocalFailed => TravelMapActionStatus.Failed,
+        TravelMapTeleportDispatchResult.Unavailable => TravelMapActionStatus.Unavailable,
+        _ => TravelMapActionStatus.Failed,
     };
 }
