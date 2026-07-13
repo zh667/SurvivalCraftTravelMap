@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - Target exactly `net10.0`; the installed game runtime and original DLL both target .NET 10.0.
+- Engine-independent domain types use `System.Numerics.Vector2/Vector3`; only adapter and UI projects convert to Engine vectors.
 - Resolve game references from MSBuild property `SurvivalcraftDir`, falling back to the repository parent directory.
 - Never commit proprietary game DLLs or the original `34GPSFix.netmod`.
 - Keep `E:/game/SurvivalcraftNet2.4/NetMods/34GPSFix.netmod` byte-for-byte unchanged; expected SHA-256 is `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`.
@@ -80,6 +81,8 @@ tests/SurvivalcraftTravelMap.Tests/
   CoordinateTeleportPackageTests.cs
   LegacyGpsPackageTests.cs
   PackageStructureTests.cs
+  AdapterContractTests.cs
+  TravelMapUiStateTests.cs
 tools/Build-NetMod.ps1
 tools/Verify-Package.ps1
 docs/user-guide.md
@@ -105,7 +108,11 @@ docs/user-guide.md
 - Consumes: game assemblies from `$(SurvivalcraftDir)`.
 - Produces: `TravelMapModLoader : ModLoader`, a compiling solution, and `artifacts/SurvivalcraftTravelMap.netmod`.
 
-- [ ] **Step 1: Write the failing package identity test**
+- [ ] **Step 1: Scaffold only the solution and test harness**
+
+Create the solution, xUnit test project, and `TestPaths` helper without creating the manifest or Mod project. This is test infrastructure, not production behavior. Run `dotnet test` once and expect the empty harness to build successfully.
+
+- [ ] **Step 2: Write the failing package identity test**
 
 ```csharp
 [Fact]
@@ -120,12 +127,12 @@ public void Manifest_has_new_identity_and_no_dependencies()
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [ ] **Step 3: Run the focused test and verify RED**
 
 Run: `dotnet test tests/SurvivalcraftTravelMap.Tests -c Release --filter Manifest_has_new_identity_and_no_dependencies`  
-Expected: FAIL because the project/manifest does not exist.
+Expected: FAIL with `FileNotFoundException` for `src/SurvivalcraftTravelMap/modinfo.json`.
 
-- [ ] **Step 3: Add the solution, project references, manifest, XDB, and minimal loader**
+- [ ] **Step 4: Add project references, manifest, XDB, and minimal loader**
 
 `Directory.Build.props` must define:
 
@@ -142,11 +149,11 @@ Expected: FAIL because the project/manifest does not exist.
 
 The Mod project must reference `Survivalcraft.dll`, `Engine.dll`, `EntitySystem.dll`, `Newtonsoft.Json.dll`, and `LiteNetLib.dll` with `Private=false`. `TravelMapModLoader.__ModInitialize()` initially registers no packages and performs only the old-package conflict check.
 
-- [ ] **Step 4: Implement deterministic packaging and structural verification**
+- [ ] **Step 5: Implement deterministic packaging and structural verification**
 
 `Build-NetMod.ps1` must build Release, stage only the Mod DLL, manifest, XDB, and Assets, create a ZIP with stable relative paths, and rename it `.netmod`. `Verify-Package.ps1` must reject duplicate entries, game DLLs, package ID `60` strings, `AntiCheatReportPackage`, and files outside the allowlist.
 
-- [ ] **Step 5: Verify GREEN and package**
+- [ ] **Step 6: Verify GREEN and package**
 
 Run:
 
@@ -158,7 +165,7 @@ powershell -ExecutionPolicy Bypass -File tools/Verify-Package.ps1 artifacts/Surv
 
 Expected: all tests PASS; package verification prints `PACKAGE_OK`.
 
-- [ ] **Step 6: Review and commit**
+- [ ] **Step 7: Review and commit**
 
 Specification reviewer checks identity, target framework, conflict behavior, absence of bundled game DLLs, and original hash. Code-quality reviewer checks deterministic paths and PowerShell failure handling.
 
