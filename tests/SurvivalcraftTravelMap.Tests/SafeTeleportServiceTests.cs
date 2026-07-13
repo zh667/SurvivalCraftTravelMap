@@ -243,6 +243,283 @@ public sealed class SafeTeleportServiceTests
     }
 
     [Fact]
+    public async Task Chunk_load_failure_reports_the_exact_stage_and_exception_once()
+    {
+        var context = new TeleportTestContext();
+        var failure = new IOException("chunk load failed");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        context.Chunks.Load = _ => Task.FromException<IChunkLoadLease>(failure);
+        var service = CreateDiagnosticService(context, diagnostics);
+
+        var thrown = await Assert.ThrowsAsync<IOException>(() =>
+            service.TeleportToSurfaceAsync(0, 0, TestContext.Current.CancellationToken));
+
+        Assert.Same(failure, thrown);
+        AssertDiagnostic(diagnostics, TeleportExecutionStage.ChunkLoad, failure);
+    }
+
+    [Fact]
+    public async Task Candidate_search_failure_reports_the_exact_stage_and_exception_once()
+    {
+        var context = new TeleportTestContext();
+        var failure = new InvalidDataException("terrain read failed");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Terrain.ThrowOnReadNumber = 1;
+        context.Terrain.BlockReadException = failure;
+        var service = CreateDiagnosticService(context, diagnostics);
+
+        var thrown = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(failure, thrown);
+        AssertDiagnostic(diagnostics, TeleportExecutionStage.CandidateSearch, failure);
+    }
+
+    [Fact]
+    public async Task Movement_snapshot_failure_reports_without_move_restore_or_sync()
+    {
+        var context = new TeleportTestContext();
+        var failure = new InvalidOperationException("snapshot failed");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var syncCount = 0;
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Mover.CaptureException = failure;
+        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(failure, thrown);
+        AssertDiagnostic(diagnostics, TeleportExecutionStage.MovementSnapshot, failure);
+        Assert.Empty(context.Mover.Movements);
+        Assert.Equal(0, context.Mover.RestoreAttempts);
+        Assert.Equal(0, syncCount);
+    }
+
+    [Fact]
+    public async Task Position_write_failure_reports_after_one_safe_restore_and_without_sync()
+    {
+        var context = new TeleportTestContext();
+        var failure = new InvalidOperationException("position write failed");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var syncCount = 0;
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Mover.MoveException = failure;
+        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(failure, thrown);
+        AssertDiagnostic(diagnostics, TeleportExecutionStage.PositionWrite, failure);
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
+        Assert.Equal(0, syncCount);
+    }
+
+    [Fact]
+    public async Task Post_move_validation_failure_reports_after_one_safe_restore_and_without_sync()
+    {
+        var context = new TeleportTestContext();
+        var failure = new InvalidOperationException("post-move validation failed");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var syncCount = 0;
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Clock.WaitForUpdate = _ => throw failure;
+        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(failure, thrown);
+        AssertDiagnostic(diagnostics, TeleportExecutionStage.PostMoveValidation, failure);
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
+        Assert.Equal(0, syncCount);
+    }
+
+    [Fact]
+    public async Task Rollback_failure_reports_the_rollback_stage_and_public_exception_once()
+    {
+        var context = new TeleportTestContext();
+        var originalFailure = new InvalidOperationException("post-move validation failed");
+        var restoreFailure = new IOException("restore failed");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Clock.WaitForUpdate = _ => throw originalFailure;
+        context.Mover.RestoreException = restoreFailure;
+        var service = CreateDiagnosticService(context, diagnostics);
+
+        var thrown = await Assert.ThrowsAsync<TeleportRollbackException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(originalFailure, thrown.OriginalFailure);
+        Assert.Same(restoreFailure, thrown.RestoreFailure);
+        AssertDiagnostic(diagnostics, TeleportExecutionStage.Rollback, thrown);
+    }
+
+    [Fact]
+    public async Task Position_sync_failure_rolls_back_reports_once_and_never_returns_success()
+    {
+        var context = new TeleportTestContext();
+        var failure = new InvalidOperationException("position sync failed");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var syncAttempts = 0;
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        var service = CreateDiagnosticService(
+            context,
+            diagnostics,
+            () =>
+            {
+                syncAttempts++;
+                throw failure;
+            });
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(failure, thrown);
+        AssertDiagnostic(diagnostics, TeleportExecutionStage.PositionSync, failure);
+        Assert.Equal(1, syncAttempts);
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
+    }
+
+    [Fact]
+    public async Task Cancellation_produces_no_diagnostic_even_after_a_successful_restore()
+    {
+        var context = new TeleportTestContext();
+        using var cancellation = new CancellationTokenSource();
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Clock.WaitForUpdate = token =>
+        {
+            cancellation.Cancel();
+            return Task.FromCanceled(token);
+        };
+        var service = CreateDiagnosticService(context, diagnostics);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.TeleportToWaypointAsync(new Vector3(0f, 65f, 0f), cancellation.Token));
+
+        Assert.Empty(diagnostics);
+        Assert.Single(context.Mover.RestoredSnapshots);
+    }
+
+    [Fact]
+    public async Task Unsafe_post_move_result_rolls_back_without_an_internal_diagnostic_or_sync()
+    {
+        var context = new TeleportTestContext();
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var syncCount = 0;
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Clock.WaitForUpdate = _ =>
+        {
+            context.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Lava);
+            return Task.CompletedTask;
+        };
+        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+
+        var result = await service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.RolledBack, result);
+        Assert.Empty(diagnostics);
+        Assert.Equal(ExpectedSafeRollback(context.Mover), Assert.Single(context.Mover.RestoredSnapshots));
+        Assert.Equal(1, context.Mover.RestoreAttempts);
+        Assert.Equal(0, syncCount);
+    }
+
+    [Fact]
+    public async Task Successful_surface_and_waypoint_transactions_each_sync_exactly_once()
+    {
+        foreach (var useSurface in new[] { true, false })
+        {
+            var context = new TeleportTestContext();
+            var diagnostics = new List<TeleportFailureDiagnostic>();
+            var syncCount = 0;
+            context.Terrain.SetSafeFeet(0, 65, 0);
+            var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+
+            var result = useSurface
+                ? await service.TeleportToSurfaceAsync(0, 0, TestContext.Current.CancellationToken)
+                : await service.TeleportToWaypointAsync(
+                    new Vector3(0f, 65f, 0f),
+                    TestContext.Current.CancellationToken);
+
+            Assert.Equal(TeleportResult.Success, result);
+            Assert.Equal(1, syncCount);
+            Assert.Empty(diagnostics);
+        }
+    }
+
+    [Fact]
+    public async Task Diagnostic_callback_failure_never_replaces_the_original_teleport_exception()
+    {
+        var context = new TeleportTestContext();
+        var teleportFailure = new InvalidOperationException("position write failed");
+        var reporterFailure = new IOException("reporter failed");
+        var reportAttempts = 0;
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        context.Mover.MoveException = teleportFailure;
+        var service = new SafeTeleportService(
+            context.Terrain,
+            context.Chunks,
+            context.Mover,
+            context.Collisions,
+            context.Clock,
+            static () => { },
+            _ =>
+            {
+                reportAttempts++;
+                throw reporterFailure;
+            });
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
+
+        Assert.Same(teleportFailure, thrown);
+        Assert.Equal(1, reportAttempts);
+    }
+
+    [Fact]
+    public async Task Missing_callbacks_are_treated_as_no_ops()
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(0, 65, 0);
+        var service = new SafeTeleportService(
+            context.Terrain,
+            context.Chunks,
+            context.Mover,
+            context.Collisions,
+            context.Clock,
+            null!,
+            null!);
+
+        var result = await service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Success, result);
+    }
+
+    [Fact]
     public async Task Equal_distance_candidates_prefer_the_one_with_safer_surroundings()
     {
         var context = new TeleportTestContext();
@@ -927,6 +1204,29 @@ public sealed class SafeTeleportServiceTests
             context.Collisions,
             context.Clock,
             onPositionCommitted);
+
+    private static SafeTeleportService CreateDiagnosticService(
+        TeleportTestContext context,
+        List<TeleportFailureDiagnostic> diagnostics,
+        Action? onPositionCommitted = null) =>
+        new(
+            context.Terrain,
+            context.Chunks,
+            context.Mover,
+            context.Collisions,
+            context.Clock,
+            onPositionCommitted ?? (static () => { }),
+            diagnostics.Add);
+
+    private static void AssertDiagnostic(
+        List<TeleportFailureDiagnostic> diagnostics,
+        TeleportExecutionStage expectedStage,
+        Exception expectedException)
+    {
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(expectedStage, diagnostic.Stage);
+        Assert.Same(expectedException, diagnostic.Exception);
+    }
 }
 
 internal sealed class TeleportTestContext
@@ -963,6 +1263,8 @@ internal sealed class FakeTeleportTerrain : ITerrainAccess
 
     internal int? ThrowOnReadNumber { get; set; }
 
+    internal Exception? BlockReadException { get; set; }
+
     internal Action<int>? OnBlockReadNumber { get; set; }
 
     internal List<(int X, int Y, int Z)> BlockReads { get; } = [];
@@ -988,7 +1290,7 @@ internal sealed class FakeTeleportTerrain : ITerrainAccess
         OnBlockReadNumber?.Invoke(_blockReadCount);
         if (_blockReadCount == ThrowOnReadNumber)
         {
-            throw new InvalidOperationException("terrain failed");
+            throw BlockReadException ?? new InvalidOperationException("terrain failed");
         }
 
         return _blocks.GetValueOrDefault((x, y, z), TeleportBlockKind.Air);
@@ -1076,6 +1378,10 @@ internal sealed class FakePlayerMover : IPlayerMover
 
     internal Action? OnMove { get; set; }
 
+    internal Exception? CaptureException { get; set; }
+
+    internal Exception? MoveException { get; set; }
+
     internal Action? OnRestore { get; set; }
 
     internal Exception? RestoreException { get; set; }
@@ -1083,12 +1389,22 @@ internal sealed class FakePlayerMover : IPlayerMover
     public PlayerMovementSnapshot CaptureSnapshot()
     {
         CaptureCount++;
+        if (CaptureException is not null)
+        {
+            throw CaptureException;
+        }
+
         return Snapshot;
     }
 
     public void Move(PlayerMovementSnapshot movement)
     {
         Movements.Add(movement);
+        if (MoveException is not null)
+        {
+            throw MoveException;
+        }
+
         OnMove?.Invoke();
     }
 

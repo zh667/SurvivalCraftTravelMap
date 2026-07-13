@@ -13,6 +13,7 @@ public sealed class SafeTeleportService
     private readonly IEntityCollisionQuery _collisionQuery;
     private readonly ITeleportClock _clock;
     private readonly Action _onPositionCommitted;
+    private readonly Action<TeleportFailureDiagnostic> _reportFailure;
     private int _transactionActive;
 
     public SafeTeleportService(
@@ -27,7 +28,8 @@ public sealed class SafeTeleportService
             playerMover,
             collisionQuery,
             clock,
-            static () => { })
+            static () => { },
+            static _ => { })
     {
     }
 
@@ -38,6 +40,25 @@ public sealed class SafeTeleportService
         IEntityCollisionQuery collisionQuery,
         ITeleportClock clock,
         Action onPositionCommitted)
+        : this(
+            terrain,
+            chunkLoader,
+            playerMover,
+            collisionQuery,
+            clock,
+            onPositionCommitted,
+            static _ => { })
+    {
+    }
+
+    public SafeTeleportService(
+        ITerrainAccess terrain,
+        IChunkLoader chunkLoader,
+        IPlayerMover playerMover,
+        IEntityCollisionQuery collisionQuery,
+        ITeleportClock clock,
+        Action onPositionCommitted,
+        Action<TeleportFailureDiagnostic> reportFailure)
     {
         ArgumentNullException.ThrowIfNull(terrain);
         ArgumentNullException.ThrowIfNull(chunkLoader);
@@ -49,8 +70,8 @@ public sealed class SafeTeleportService
         _playerMover = playerMover;
         _collisionQuery = collisionQuery;
         _clock = clock;
-        _onPositionCommitted = onPositionCommitted
-            ?? throw new ArgumentNullException(nameof(onPositionCommitted));
+        _onPositionCommitted = onPositionCommitted ?? (static () => { });
+        _reportFailure = reportFailure ?? (static _ => { });
     }
 
     public async Task<TeleportResult> TeleportToSurfaceAsync(
@@ -64,9 +85,15 @@ public sealed class SafeTeleportService
             return TeleportResult.Busy;
         }
 
+        var trace = new TeleportExecutionTrace();
         try
         {
-            return await TeleportToSurfaceCoreAsync(x, z, cancellationToken).ConfigureAwait(false);
+            return await TeleportToSurfaceCoreAsync(x, z, cancellationToken, trace).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ReportFailure(trace, exception);
+            throw;
         }
         finally
         {
@@ -77,13 +104,16 @@ public sealed class SafeTeleportService
     private async Task<TeleportResult> TeleportToSurfaceCoreAsync(
         int x,
         int z,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TeleportExecutionTrace trace)
     {
+        trace.Stage = TeleportExecutionStage.CandidateSearch;
         if (!IsColumnInWorld(x, z, cancellationToken))
         {
             return TeleportResult.OutOfWorld;
         }
 
+        trace.Stage = TeleportExecutionStage.ChunkLoad;
         var chunkLease = await LoadChunksAsync(x, z, cancellationToken).ConfigureAwait(false);
         if (chunkLease is null)
         {
@@ -92,6 +122,7 @@ public sealed class SafeTeleportService
 
         using (chunkLease)
         {
+            trace.Stage = TeleportExecutionStage.CandidateSearch;
             TeleportCandidate? best = null;
             var bestScore = int.MinValue;
             long currentDistance = -1;
@@ -103,7 +134,7 @@ public sealed class SafeTeleportService
                 {
                     if (best.HasValue)
                     {
-                        return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
+                        return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
                     }
 
                     currentDistance = distance;
@@ -136,7 +167,7 @@ public sealed class SafeTeleportService
 
             if (best.HasValue)
             {
-                return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
+                return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
             }
 
             return TeleportResult.NoSafePosition;
@@ -153,9 +184,15 @@ public sealed class SafeTeleportService
             return TeleportResult.Busy;
         }
 
+        var trace = new TeleportExecutionTrace();
         try
         {
-            return await TeleportToWaypointCoreAsync(xyz, cancellationToken).ConfigureAwait(false);
+            return await TeleportToWaypointCoreAsync(xyz, cancellationToken, trace).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ReportFailure(trace, exception);
+            throw;
         }
         finally
         {
@@ -165,8 +202,10 @@ public sealed class SafeTeleportService
 
     private async Task<TeleportResult> TeleportToWaypointCoreAsync(
         Vector3 xyz,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TeleportExecutionTrace trace)
     {
+        trace.Stage = TeleportExecutionStage.CandidateSearch;
         if (!TryFloorToInt(xyz.X, out var x)
             || !TryFloorToInt(xyz.Y, out var y)
             || !TryFloorToInt(xyz.Z, out var z)
@@ -176,6 +215,7 @@ public sealed class SafeTeleportService
             return TeleportResult.OutOfWorld;
         }
 
+        trace.Stage = TeleportExecutionStage.ChunkLoad;
         var chunkLease = await LoadChunksAsync(x, z, cancellationToken).ConfigureAwait(false);
         if (chunkLease is null)
         {
@@ -184,6 +224,7 @@ public sealed class SafeTeleportService
 
         using (chunkLease)
         {
+            trace.Stage = TeleportExecutionStage.CandidateSearch;
             TeleportCandidate? best = null;
             (int Safety, int VerticalCloseness) bestScore = (int.MinValue, int.MinValue);
             long currentDistance = -1;
@@ -195,7 +236,7 @@ public sealed class SafeTeleportService
                 {
                     if (best.HasValue)
                     {
-                        return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
+                        return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
                     }
 
                     currentDistance = distance;
@@ -217,7 +258,7 @@ public sealed class SafeTeleportService
 
             if (best.HasValue)
             {
-                return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
+                return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
             }
 
             return TeleportResult.NoSafePosition;
@@ -427,10 +468,12 @@ public sealed class SafeTeleportService
 
     private async Task<TeleportResult> MoveTransactionallyAsync(
         TeleportCandidate candidate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TeleportExecutionTrace trace)
     {
         var feetY = candidate.Y!.Value;
         cancellationToken.ThrowIfCancellationRequested();
+        trace.Stage = TeleportExecutionStage.MovementSnapshot;
         var snapshot = CaptureSnapshot(cancellationToken);
         var movement = snapshot with
         {
@@ -444,8 +487,10 @@ public sealed class SafeTeleportService
 
         try
         {
+            trace.Stage = TeleportExecutionStage.PositionWrite;
             _playerMover.Move(movement);
             cancellationToken.ThrowIfCancellationRequested();
+            trace.Stage = TeleportExecutionStage.PostMoveValidation;
             await _clock.WaitForNextUpdateAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (!IsSafe(candidate, cancellationToken))
@@ -453,12 +498,16 @@ public sealed class SafeTeleportService
                 throw new UnsafePostMoveValidationException();
             }
 
+            trace.Stage = TeleportExecutionStage.PositionSync;
             _onPositionCommitted();
             return TeleportResult.Success;
         }
         catch (Exception originalFailure)
         {
+            var originalStage = trace.Stage;
+            trace.Stage = TeleportExecutionStage.Rollback;
             RestoreOrThrow(CreateSafeRollbackSnapshot(snapshot), originalFailure);
+            trace.Stage = originalStage;
             cancellationToken.ThrowIfCancellationRequested();
             if (originalFailure is UnsafePostMoveValidationException)
             {
@@ -467,6 +516,18 @@ public sealed class SafeTeleportService
 
             ExceptionDispatchInfo.Capture(originalFailure).Throw();
             throw;
+        }
+    }
+
+    private void ReportFailure(TeleportExecutionTrace trace, Exception exception)
+    {
+        try
+        {
+            _reportFailure(new TeleportFailureDiagnostic(trace.Stage, exception));
+        }
+        catch
+        {
+            // Diagnostics must never replace the teleport failure being reported.
         }
     }
 
@@ -633,4 +694,9 @@ public sealed class SafeTeleportService
     }
 
     private sealed class UnsafePostMoveValidationException : Exception;
+
+    private sealed class TeleportExecutionTrace
+    {
+        internal TeleportExecutionStage Stage { get; set; } = TeleportExecutionStage.CandidateSearch;
+    }
 }
