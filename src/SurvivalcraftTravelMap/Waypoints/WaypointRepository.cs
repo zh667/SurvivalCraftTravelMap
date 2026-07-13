@@ -1,11 +1,30 @@
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SurvivalcraftTravelMap.Persistence;
 
+[assembly: InternalsVisibleTo("SurvivalcraftTravelMap.Tests")]
+
 namespace SurvivalcraftTravelMap.Waypoints;
+
+internal interface IWaypointRepositoryFileAccess
+{
+    bool FileExists(string path);
+
+    bool DirectoryExists(string path);
+
+    Task<byte[]> ReadAllBytesAsync(string path, CancellationToken cancellationToken);
+
+    Task ReplaceAsync(
+        string path,
+        Func<Stream, CancellationToken, Task> writeAsync,
+        CancellationToken cancellationToken);
+
+    void Move(string sourcePath, string destinationPath);
+}
 
 public sealed class WaypointRepository
 {
@@ -23,15 +42,24 @@ public sealed class WaypointRepository
     private readonly object _sync = new();
     private readonly string _filePath;
     private readonly SemaphoreSlim _fileLock;
+    private readonly IWaypointRepositoryFileAccess _fileAccess;
     private List<Waypoint> _waypoints = [];
     private bool _isReadOnly;
+    private bool _isLoading;
     private string _readOnlyError = string.Empty;
 
     public WaypointRepository(string directory)
+        : this(directory, PhysicalWaypointRepositoryFileAccess.Instance)
+    {
+    }
+
+    internal WaypointRepository(string directory, IWaypointRepositoryFileAccess fileAccess)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        ArgumentNullException.ThrowIfNull(fileAccess);
         _filePath = Path.GetFullPath(Path.Combine(directory, FileName));
         _fileLock = FileLocks.GetOrAdd(_filePath, static _ => new SemaphoreSlim(1, 1));
+        _fileAccess = fileAccess;
     }
 
     public bool IsReadOnly
@@ -115,15 +143,16 @@ public sealed class WaypointRepository
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         await _fileLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        BeginLoad();
         try
         {
-            if (!File.Exists(_filePath))
+            if (!_fileAccess.FileExists(_filePath))
             {
                 ReplaceWritableState([]);
                 return;
             }
 
-            var json = await File.ReadAllBytesAsync(_filePath, cancellationToken).ConfigureAwait(false);
+            var json = await _fileAccess.ReadAllBytesAsync(_filePath, cancellationToken).ConfigureAwait(false);
             JsonDocument document;
             try
             {
@@ -170,49 +199,41 @@ public sealed class WaypointRepository
                     EnterReadOnly(schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     return;
                 }
-            }
 
-            try
-            {
-                var persisted = JsonSerializer.Deserialize<PersistedRepository>(json, SerializerOptions)
-                    ?? throw new JsonException("The waypoint repository is empty.");
-                var loaded = ValidateAndConvert(
-                    persisted.Waypoints
-                    ?? throw new JsonException("The waypoint list cannot be null."));
-                ReplaceWritableState(loaded);
-            }
-            catch (JsonException)
-            {
-                ResetAfterCorruption(cancellationToken);
-            }
-            catch (InvalidDataException)
-            {
-                ResetAfterCorruption(cancellationToken);
+                try
+                {
+                    ReplaceWritableState(ParseWaypoints(document.RootElement));
+                }
+                catch (InvalidDataException)
+                {
+                    ResetAfterCorruption(cancellationToken);
+                }
             }
         }
         finally
         {
+            EndLoad();
             _fileLock.Release();
         }
     }
 
     public async Task SaveAsync(CancellationToken cancellationToken = default)
     {
-        PersistedRepository persisted;
-        lock (_sync)
-        {
-            EnsureWritable();
-            persisted = new PersistedRepository
-            {
-                SchemaVersion = CurrentSchemaVersion,
-                Waypoints = _waypoints.Select(PersistedWaypoint.FromWaypoint).ToArray(),
-            };
-        }
-
         await _fileLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await AtomicFile.ReplaceAsync(
+            PersistedRepository persisted;
+            lock (_sync)
+            {
+                EnsureWritable();
+                persisted = new PersistedRepository
+                {
+                    SchemaVersion = CurrentSchemaVersion,
+                    Waypoints = _waypoints.Select(PersistedWaypoint.FromWaypoint).ToArray(),
+                };
+            }
+
+            await _fileAccess.ReplaceAsync(
                 _filePath,
                 (stream, token) => JsonSerializer.SerializeAsync(
                     stream,
@@ -254,49 +275,108 @@ public sealed class WaypointRepository
         return position;
     }
 
-    private static List<Waypoint> ValidateAndConvert(PersistedWaypoint[] persistedWaypoints)
+    private static List<Waypoint> ParseWaypoints(JsonElement root)
     {
-        var waypoints = new List<Waypoint>(persistedWaypoints.Length);
+        var persistedWaypoints = GetRequiredProperty(root, "waypoints", JsonValueKind.Array);
+        var waypoints = new List<Waypoint>(persistedWaypoints.GetArrayLength());
         var ids = new HashSet<Guid>();
-        foreach (var persisted in persistedWaypoints)
+        foreach (var persisted in persistedWaypoints.EnumerateArray())
         {
-            if (persisted.Id == Guid.Empty || !ids.Add(persisted.Id))
+            var idElement = GetRequiredProperty(persisted, "id", JsonValueKind.String);
+            if (!idElement.TryGetGuid(out var id) || id == Guid.Empty || !ids.Add(id))
             {
                 throw new InvalidDataException("Waypoint IDs must be non-empty and unique.");
             }
 
             string name;
-            Vector3 position;
             try
             {
-                name = NormalizeName(persisted.Name);
-                position = ValidatePosition(new Vector3(persisted.X, persisted.Y, persisted.Z));
+                name = NormalizeName(
+                    GetRequiredProperty(persisted, "name", JsonValueKind.String).GetString()
+                    ?? throw new InvalidDataException("Waypoint names cannot be null."));
             }
             catch (ArgumentException exception)
             {
-                throw new InvalidDataException("The waypoint repository contains invalid data.", exception);
+                throw new InvalidDataException("The waypoint repository contains an invalid name.", exception);
             }
 
-            if (persisted.CreatedAt == default)
+            var position = new Vector3(
+                GetRequiredFiniteSingle(persisted, "x"),
+                GetRequiredFiniteSingle(persisted, "y"),
+                GetRequiredFiniteSingle(persisted, "z"));
+            var createdAtElement = GetRequiredProperty(
+                persisted,
+                "createdAt",
+                JsonValueKind.String);
+            if (!createdAtElement.TryGetDateTimeOffset(out var createdAt) || createdAt == default)
             {
-                throw new InvalidDataException("Waypoint creation times must be present.");
+                throw new InvalidDataException("Waypoint creation times must be valid.");
             }
 
             waypoints.Add(new Waypoint(
-                persisted.Id,
+                id,
                 name,
                 position,
-                persisted.CreatedAt.ToUniversalTime()));
+                createdAt.ToUniversalTime()));
         }
 
         return waypoints;
     }
 
+    private static JsonElement GetRequiredProperty(
+        JsonElement parent,
+        string propertyName,
+        JsonValueKind expectedKind)
+    {
+        if (parent.ValueKind != JsonValueKind.Object
+            || !parent.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != expectedKind)
+        {
+            throw new InvalidDataException(
+                $"Required waypoint property '{propertyName}' must be {expectedKind}.");
+        }
+
+        return property;
+    }
+
+    private static float GetRequiredFiniteSingle(JsonElement parent, string propertyName)
+    {
+        var property = GetRequiredProperty(parent, propertyName, JsonValueKind.Number);
+        if (!property.TryGetSingle(out var value) || !float.IsFinite(value))
+        {
+            throw new InvalidDataException(
+                $"Waypoint coordinate '{propertyName}' must be a finite single-precision number.");
+        }
+
+        return value;
+    }
+
     private void EnsureWritable()
     {
+        if (_isLoading)
+        {
+            throw new InvalidOperationException("The waypoint repository is loading.");
+        }
+
         if (_isReadOnly)
         {
             throw new InvalidOperationException(_readOnlyError);
+        }
+    }
+
+    private void BeginLoad()
+    {
+        lock (_sync)
+        {
+            _isLoading = true;
+        }
+    }
+
+    private void EndLoad()
+    {
+        lock (_sync)
+        {
+            _isLoading = false;
         }
     }
 
@@ -330,12 +410,14 @@ public sealed class WaypointRepository
     private void IsolateCorruptFile()
     {
         var corruptPath = _filePath + ".corrupt";
-        for (var suffix = 1; File.Exists(corruptPath) || Directory.Exists(corruptPath); suffix++)
+        for (var suffix = 1;
+             _fileAccess.FileExists(corruptPath) || _fileAccess.DirectoryExists(corruptPath);
+             suffix++)
         {
             corruptPath = _filePath + $".corrupt.{suffix}";
         }
 
-        File.Move(_filePath, corruptPath);
+        _fileAccess.Move(_filePath, corruptPath);
     }
 
     private sealed class PersistedRepository
@@ -344,7 +426,7 @@ public sealed class WaypointRepository
         public int SchemaVersion { get; init; }
 
         [JsonPropertyName("waypoints")]
-        public PersistedWaypoint[]? Waypoints { get; init; } = [];
+        public PersistedWaypoint[] Waypoints { get; init; } = [];
     }
 
     private sealed class PersistedWaypoint
@@ -377,4 +459,29 @@ public sealed class WaypointRepository
             CreatedAt = waypoint.CreatedAt,
         };
     }
+}
+
+internal sealed class PhysicalWaypointRepositoryFileAccess : IWaypointRepositoryFileAccess
+{
+    public static PhysicalWaypointRepositoryFileAccess Instance { get; } = new();
+
+    private PhysicalWaypointRepositoryFileAccess()
+    {
+    }
+
+    public bool FileExists(string path) => File.Exists(path);
+
+    public bool DirectoryExists(string path) => Directory.Exists(path);
+
+    public Task<byte[]> ReadAllBytesAsync(string path, CancellationToken cancellationToken) =>
+        File.ReadAllBytesAsync(path, cancellationToken);
+
+    public Task ReplaceAsync(
+        string path,
+        Func<Stream, CancellationToken, Task> writeAsync,
+        CancellationToken cancellationToken) =>
+        AtomicFile.ReplaceAsync(path, writeAsync, cancellationToken);
+
+    public void Move(string sourcePath, string destinationPath) =>
+        File.Move(sourcePath, destinationPath);
 }

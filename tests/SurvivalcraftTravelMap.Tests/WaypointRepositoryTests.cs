@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using System.Text.Json;
+using SurvivalcraftTravelMap.Persistence;
 using SurvivalcraftTravelMap.Waypoints;
 using Xunit;
 
@@ -98,6 +99,21 @@ public sealed class WaypointRepositoryTests : IDisposable
     }
 
     [Fact]
+    public void Rename_changes_only_the_trimmed_name()
+    {
+        var repository = CreateRepository();
+        var original = repository.Add("original", new Vector3(1.25f, -2.5f, 3.75f));
+
+        Assert.True(repository.Rename(original.Id, "  renamed  "));
+
+        var renamed = Assert.Single(repository.GetAll());
+        Assert.Equal(original.Id, renamed.Id);
+        Assert.Equal("renamed", renamed.Name);
+        Assert.Equal(original.Position, renamed.Position);
+        Assert.Equal(original.CreatedAt, renamed.CreatedAt);
+    }
+
+    [Fact]
     public void GetAll_returns_a_snapshot_that_cannot_be_mutated_or_changed_by_later_writes()
     {
         var repository = CreateRepository();
@@ -179,6 +195,24 @@ public sealed class WaypointRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Second_load_after_corruption_does_not_isolate_again()
+    {
+        await File.WriteAllTextAsync(
+            FilePath,
+            "not json",
+            TestContext.Current.CancellationToken);
+        var repository = CreateRepository();
+
+        await repository.LoadAsync(TestContext.Current.CancellationToken);
+        await repository.LoadAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty(repository.GetAll());
+        Assert.Equal(
+            [FilePath + ".corrupt"],
+            Directory.EnumerateFiles(_directory, "waypoints.json.corrupt*"));
+    }
+
+    [Fact]
     public async Task Unknown_schema_is_read_only_and_never_rewrites_the_file()
     {
         const string unknownJson = """
@@ -219,6 +253,93 @@ public sealed class WaypointRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Save_waiting_behind_load_rechecks_read_only_state_before_writing()
+    {
+        const string unknownJson = "{\"schemaVersion\":2,\"waypoints\":[]}";
+        await File.WriteAllTextAsync(FilePath, unknownJson, TestContext.Current.CancellationToken);
+        var fileAccess = new ControlledReadFileAccess();
+        var repository = new WaypointRepository(_directory, fileAccess);
+
+        var load = repository.LoadAsync(TestContext.Current.CancellationToken);
+        await fileAccess.ReadStarted.WaitAsync(TestContext.Current.CancellationToken);
+        var save = repository.SaveAsync(TestContext.Current.CancellationToken);
+        fileAccess.AllowRead();
+
+        await load;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => save);
+        Assert.Equal(unknownJson, await File.ReadAllTextAsync(
+            FilePath,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData("add")]
+    [InlineData("rename")]
+    [InlineData("remove")]
+    public async Task Crud_during_active_load_is_rejected_instead_of_silently_lost(string operation)
+    {
+        var seed = CreateRepository();
+        seed.Add("disk", Vector3.Zero);
+        await seed.SaveAsync(TestContext.Current.CancellationToken);
+        var fileAccess = new ControlledReadFileAccess();
+        var repository = new WaypointRepository(_directory, fileAccess);
+        var memoryWaypoint = repository.Add("memory", Vector3.One);
+
+        var load = repository.LoadAsync(TestContext.Current.CancellationToken);
+        await fileAccess.ReadStarted.WaitAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => ApplyCrud(
+                repository,
+                memoryWaypoint.Id,
+                operation));
+            Assert.Equal(memoryWaypoint, Assert.Single(repository.GetAll()));
+        }
+        finally
+        {
+            fileAccess.AllowRead();
+            await load;
+        }
+    }
+
+    [Fact]
+    public async Task Cancelled_load_clears_active_load_state()
+    {
+        var seed = CreateRepository();
+        seed.Add("disk", Vector3.Zero);
+        await seed.SaveAsync(TestContext.Current.CancellationToken);
+        var fileAccess = new ControlledReadFileAccess();
+        var repository = new WaypointRepository(_directory, fileAccess);
+        using var cancellation = new CancellationTokenSource();
+
+        var load = repository.LoadAsync(cancellation.Token);
+        await fileAccess.ReadStarted.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.Throws<InvalidOperationException>(() => repository.Add("blocked", Vector3.One));
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => load);
+
+        Assert.Equal("after cancellation", repository.Add("after cancellation", Vector3.One).Name);
+    }
+
+    [Fact]
+    public async Task Failed_load_clears_active_load_state()
+    {
+        var seed = CreateRepository();
+        seed.Add("disk", Vector3.Zero);
+        await seed.SaveAsync(TestContext.Current.CancellationToken);
+        var fileAccess = new ControlledReadFileAccess();
+        var repository = new WaypointRepository(_directory, fileAccess);
+
+        var load = repository.LoadAsync(TestContext.Current.CancellationToken);
+        await fileAccess.ReadStarted.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.Throws<InvalidOperationException>(() => repository.Add("blocked", Vector3.One));
+        fileAccess.FailRead(new IOException("Controlled read failure."));
+        await Assert.ThrowsAsync<IOException>(() => load);
+
+        Assert.Equal("after failure", repository.Add("after failure", Vector3.One).Name);
+    }
+
+    [Fact]
     public async Task Invalid_schema_one_data_is_isolated_as_corrupt()
     {
         await File.WriteAllTextAsync(
@@ -231,6 +352,49 @@ public sealed class WaypointRepositoryTests : IDisposable
 
         Assert.Empty(repository.GetAll());
         Assert.True(File.Exists(FilePath + ".corrupt"));
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"name\":\"point\",\"x\":1,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"x\":1,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":2,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":2,\"z\":3}]}")]
+    public async Task Schema_one_missing_required_properties_is_isolated(string json)
+    {
+        await AssertSchemaOneIsolatedAsync(json);
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":{}}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[5]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":123,\"name\":\"point\",\"x\":1,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":[],\"x\":1,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":\"1\",\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":null,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":2,\"z\":false,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":2,\"z\":3,\"createdAt\":123}]}")]
+    public async Task Schema_one_wrong_property_types_are_isolated(string json)
+    {
+        await AssertSchemaOneIsolatedAsync(json);
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"one\",\"x\":1,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"},{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"two\",\"x\":4,\"y\":5,\"z\":6,\"createdAt\":\"2026-07-13T13:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"not-a-guid\",\"name\":\"point\",\"x\":1,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":2,\"z\":3,\"createdAt\":\"not-a-time\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":\"NaN\",\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":\"Infinity\",\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":2,\"z\":\"-Infinity\",\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1e9999,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":NaN,\"y\":2,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":Infinity,\"z\":3,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    [InlineData("{\"schemaVersion\":1,\"waypoints\":[{\"id\":\"7a5033db-6c69-4777-9529-5b3d97597a2e\",\"name\":\"point\",\"x\":1,\"y\":2,\"z\":-Infinity,\"createdAt\":\"2026-07-13T12:00:00Z\"}]}")]
+    public async Task Schema_one_invalid_values_are_isolated(string json)
+    {
+        await AssertSchemaOneIsolatedAsync(json);
     }
 
     [Fact]
@@ -294,6 +458,25 @@ public sealed class WaypointRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Concurrent_loads_and_save_use_one_lock_order_without_deadlock()
+    {
+        var seed = CreateRepository();
+        seed.Add("persisted", Vector3.One);
+        await seed.SaveAsync(TestContext.Current.CancellationToken);
+        var firstLoad = CreateRepository();
+        var secondLoad = CreateRepository();
+
+        await Task.WhenAll(
+                firstLoad.LoadAsync(TestContext.Current.CancellationToken),
+                secondLoad.LoadAsync(TestContext.Current.CancellationToken),
+                seed.SaveAsync(TestContext.Current.CancellationToken))
+            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Single(firstLoad.GetAll());
+        Assert.Single(secondLoad.GetAll());
+    }
+
+    [Fact]
     public async Task Waypoint_name_is_data_and_never_controls_the_storage_path()
     {
         var repository = CreateRepository();
@@ -305,6 +488,80 @@ public sealed class WaypointRepositoryTests : IDisposable
     }
 
     private WaypointRepository CreateRepository() => new(_directory);
+
+    private async Task AssertSchemaOneIsolatedAsync(string json)
+    {
+        await File.WriteAllTextAsync(FilePath, json, TestContext.Current.CancellationToken);
+        var repository = CreateRepository();
+
+        await repository.LoadAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty(repository.GetAll());
+        Assert.False(File.Exists(FilePath));
+        Assert.Single(Directory.EnumerateFiles(_directory, "waypoints.json.corrupt*"));
+    }
+
+    private static void ApplyCrud(WaypointRepository repository, Guid id, string operation)
+    {
+        switch (operation)
+        {
+            case "add":
+                repository.Add("added", Vector3.One);
+                break;
+            case "rename":
+                repository.Rename(id, "renamed");
+                break;
+            case "remove":
+                repository.Remove(id);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
+        }
+    }
+
+    private sealed class ControlledReadFileAccess : IWaypointRepositoryFileAccess
+    {
+        private readonly TaskCompletionSource _readStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _continueRead = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private Exception? _readException;
+
+        public Task ReadStarted => _readStarted.Task;
+
+        public bool FileExists(string path) => File.Exists(path);
+
+        public bool DirectoryExists(string path) => Directory.Exists(path);
+
+        public async Task<byte[]> ReadAllBytesAsync(string path, CancellationToken cancellationToken)
+        {
+            _readStarted.TrySetResult();
+            await _continueRead.Task.WaitAsync(cancellationToken);
+            if (_readException is not null)
+            {
+                throw _readException;
+            }
+
+            return await File.ReadAllBytesAsync(path, cancellationToken);
+        }
+
+        public Task ReplaceAsync(
+            string path,
+            Func<Stream, CancellationToken, Task> writeAsync,
+            CancellationToken cancellationToken) =>
+            AtomicFile.ReplaceAsync(path, writeAsync, cancellationToken);
+
+        public void Move(string sourcePath, string destinationPath) =>
+            File.Move(sourcePath, destinationPath);
+
+        public void AllowRead() => _continueRead.TrySetResult();
+
+        public void FailRead(Exception exception)
+        {
+            _readException = exception;
+            _continueRead.TrySetResult();
+        }
+    }
 
     public void Dispose()
     {
