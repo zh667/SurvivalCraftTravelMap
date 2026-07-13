@@ -1,4 +1,5 @@
 using System.Numerics;
+using Game;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Teleport;
 using Xunit;
@@ -7,6 +8,19 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class AdapterContractTests
 {
+    private sealed class BooleanFieldFixture
+    {
+        private bool PrivateBoolean = true;
+
+        public bool PublicBoolean = true;
+
+        public static bool StaticBoolean = true;
+
+        public int NonBoolean = 1;
+
+        public bool ReadPrivateBoolean() => PrivateBoolean;
+    }
+
     public static TheoryData<SurvivalcraftBlockMetadata, TeleportBlockKind> BlockKinds => new()
     {
         { new(IsAir: true), TeleportBlockKind.Air },
@@ -177,6 +191,60 @@ public sealed class AdapterContractTests
         Assert.False(facade.Movement.IsFalling);
         Assert.False(facade.Movement.HasPendingFallDamage);
         Assert.Null(facade.Movement.NativeState);
+    }
+
+    [Theory]
+    [InlineData(nameof(BooleanFieldFixture.PublicBoolean), true)]
+    [InlineData("PrivateBoolean", false)]
+    public void Player_field_binding_resolves_public_and_private_instance_boolean_fields(
+        string name,
+        bool isPublic)
+    {
+        var field = SurvivalcraftPlayerFacade.GetRequiredBooleanInstanceField(
+            typeof(BooleanFieldFixture),
+            name);
+
+        Assert.Equal(isPublic, field.IsPublic);
+        Assert.False(field.IsStatic);
+        Assert.Equal(typeof(bool), field.FieldType);
+    }
+
+    [Fact]
+    public void Player_field_binding_rejects_a_missing_field()
+    {
+        Assert.Throws<MissingFieldException>(() =>
+            SurvivalcraftPlayerFacade.GetRequiredBooleanInstanceField(
+                typeof(BooleanFieldFixture),
+                "MissingBoolean"));
+    }
+
+    [Theory]
+    [InlineData(nameof(BooleanFieldFixture.StaticBoolean))]
+    [InlineData(nameof(BooleanFieldFixture.NonBoolean))]
+    public void Player_field_binding_rejects_static_and_non_boolean_fields(string name)
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            SurvivalcraftPlayerFacade.GetRequiredBooleanInstanceField(
+                typeof(BooleanFieldFixture),
+                name));
+    }
+
+    [Fact]
+    public void Player_field_binding_matches_the_real_game_movement_fields()
+    {
+        var falling = SurvivalcraftPlayerFacade.GetRequiredBooleanInstanceField(
+            typeof(ComponentLocomotion),
+            "m_falling");
+        var wasStanding = SurvivalcraftPlayerFacade.GetRequiredBooleanInstanceField(
+            typeof(ComponentHealth),
+            "m_wasStanding");
+
+        Assert.False(falling.IsPublic);
+        Assert.True(wasStanding.IsPublic);
+        Assert.False(falling.IsStatic);
+        Assert.False(wasStanding.IsStatic);
+        Assert.Equal(typeof(bool), falling.FieldType);
+        Assert.Equal(typeof(bool), wasStanding.FieldType);
     }
 
     [Fact]

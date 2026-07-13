@@ -120,8 +120,12 @@ public static class SurvivalcraftMovementStateCodec
 
 internal sealed class SurvivalcraftPlayerFacade : ISurvivalcraftPlayerFacade
 {
-    private static readonly FieldInfo FallingField = GetRequiredField(typeof(ComponentLocomotion), "m_falling");
-    private static readonly FieldInfo WasStandingField = GetRequiredField(typeof(ComponentHealth), "m_wasStanding");
+    private static readonly FieldInfo FallingField = GetRequiredBooleanInstanceField(
+        typeof(ComponentLocomotion),
+        "m_falling");
+    private static readonly FieldInfo WasStandingField = GetRequiredBooleanInstanceField(
+        typeof(ComponentHealth),
+        "m_wasStanding");
 
     private readonly ComponentBody _body;
     private readonly ComponentHealth _health;
@@ -177,9 +181,25 @@ internal sealed class SurvivalcraftPlayerFacade : ISurvivalcraftPlayerFacade
         WasStandingField.SetValue(_health, state.WasStanding);
     });
 
-    private static FieldInfo GetRequiredField(Type type, string name) =>
-        type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new MissingFieldException(type.FullName, name);
+    internal static FieldInfo GetRequiredBooleanInstanceField(Type type, string name)
+    {
+        const BindingFlags flags = BindingFlags.Instance
+            | BindingFlags.Public
+            | BindingFlags.NonPublic;
+        var field = type.GetField(name, flags)
+            ?? type.GetField(
+                name,
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(type.FullName, name);
+        if (field.IsStatic || field.FieldType != typeof(bool))
+        {
+            throw new InvalidOperationException(
+                $"Field {type.FullName}.{name} must be an instance Boolean field; " +
+                $"actual type={field.FieldType.FullName}, static={field.IsStatic}.");
+        }
+
+        return field;
+    }
 
     private static System.Numerics.Vector3 ToNumerics(Engine.Vector3 value) =>
         new(value.X, value.Y, value.Z);
