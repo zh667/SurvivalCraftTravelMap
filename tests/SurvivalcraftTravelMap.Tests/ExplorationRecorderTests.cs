@@ -7,6 +7,84 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public async Task Flush_interleaved_with_recording_does_not_clear_later_pixel_writes()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource();
+        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
+        var store = new ExplorationTileStore(directory.Path);
+        var alreadyDirty = store.GetOrLoad(0, 0);
+        alreadyDirty.SetPixel(10, 10, new Rgba32(9, 9, 9, 255));
+        store.MarkDirty(alreadyDirty);
+        var recorder = new ExplorationRecorder(sampler, store);
+        var recording = Task.Run(
+            () => recorder.RecordVisibleArea(centerX: 1, centerZ: 1, radius: 1),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        await recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
+        for (var z = 0; z <= 2; z++)
+        {
+            for (var x = 0; x <= 2; x++)
+            {
+                Assert.True(reloaded.TryGetPixel(x, z, out _), $"Expected persisted pixel ({x}, {z}).");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Flush_interleaving_followed_by_sampler_failure_keeps_each_written_tile_dirty()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource(throwAtSample: 4);
+        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
+        var store = new ExplorationTileStore(directory.Path);
+        var alreadyDirty = store.GetOrLoad(0, 0);
+        alreadyDirty.SetPixel(10, 10, new Rgba32(9, 9, 9, 255));
+        store.MarkDirty(alreadyDirty);
+        var recorder = new ExplorationRecorder(sampler, store);
+        var recording = Task.Run(
+            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloadedStore = new ExplorationTileStore(directory.Path);
+        var firstTile = reloadedStore.GetOrLoad(0, 0);
+        Assert.True(firstTile.TryGetPixel(62, 62, out _));
+        Assert.True(firstTile.TryGetPixel(63, 62, out _));
+        Assert.True(reloadedStore.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
+    }
+
+    [Fact]
     public async Task Visible_square_crossing_63_63_updates_and_marks_only_four_touched_tiles_dirty()
     {
         using var directory = new TemporaryDirectory();
@@ -56,5 +134,47 @@ public sealed class ExplorationRecorderTests
         Assert.Throws<ArgumentOutOfRangeException>(
             () => recorder.RecordVisibleArea(centerX: 0, centerZ: 0, radius: -1));
         Assert.Empty(source.SampledColumns);
+    }
+}
+
+internal sealed class BlockingSecondSampleTerrainSource(int? throwAtSample = null)
+    : ITerrainMapSource, IDisposable
+{
+    private int _sampleCount;
+
+    internal ManualResetEventSlim SecondSampleStarted { get; } = new(initialState: false);
+
+    internal ManualResetEventSlim AllowSecondSample { get; } = new(initialState: false);
+
+    public int GetTopHeight(int x, int z)
+    {
+        var sample = Interlocked.Increment(ref _sampleCount);
+        if (sample == 2)
+        {
+            SecondSampleStarted.Set();
+            if (!AllowSecondSample.Wait(TimeSpan.FromSeconds(10)))
+            {
+                throw new TimeoutException("The test did not release the blocked terrain sample.");
+            }
+        }
+
+        if (sample == throwAtSample)
+        {
+            throw new InvalidOperationException("Deterministic terrain sampling failure.");
+        }
+
+        return 64;
+    }
+
+    public int GetContent(int x, int y, int z) => 1;
+
+    public int GetSeasonalTemperature(int x, int z) => 8;
+
+    public int GetSeasonalHumidity(int x, int z) => 8;
+
+    public void Dispose()
+    {
+        AllowSecondSample.Dispose();
+        SecondSampleStarted.Dispose();
     }
 }

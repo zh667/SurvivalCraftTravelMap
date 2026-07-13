@@ -22,31 +22,39 @@ public sealed class ExplorationRecorder(
         var maximumX = checked(centerX + radius);
         var minimumZ = checked(centerZ - radius);
         var maximumZ = checked(centerZ + radius);
-        var touchedTiles = new HashSet<(int X, int Z)>();
+        var touchedTiles = new HashSet<MapTile>();
 
-        for (var z = minimumZ; ; z++)
+        try
         {
-            for (var x = minimumX; ; x++)
+            for (var z = minimumZ; ; z++)
             {
-                var color = _sampler.Sample(x, z);
-                var coordinate = TileCoordinate.FromWorld(x, z);
-                var tile = _tileStore.GetOrLoad(coordinate.TileX, coordinate.TileZ);
-                if (touchedTiles.Add((coordinate.TileX, coordinate.TileZ)))
+                for (var x = minimumX; ; x++)
                 {
-                    _tileStore.MarkDirty(tile);
+                    var color = _sampler.Sample(x, z);
+                    var coordinate = TileCoordinate.FromWorld(x, z);
+                    var tile = _tileStore.GetOrLoad(coordinate.TileX, coordinate.TileZ);
+                    tile.SetPixel(coordinate.LocalX, coordinate.LocalZ, color);
+                    touchedTiles.Add(tile);
+
+                    if (x == maximumX)
+                    {
+                        break;
+                    }
                 }
 
-                tile.SetPixel(coordinate.LocalX, coordinate.LocalZ, color);
-
-                if (x == maximumX)
+                if (z == maximumZ)
                 {
                     break;
                 }
             }
-
-            if (z == maximumZ)
+        }
+        finally
+        {
+            // Mark after the last successful mutation. If recording or sampling fails,
+            // every tile with completed writes still advances its generation exactly once.
+            foreach (var tile in touchedTiles)
             {
-                break;
+                _tileStore.MarkDirty(tile);
             }
         }
     }
