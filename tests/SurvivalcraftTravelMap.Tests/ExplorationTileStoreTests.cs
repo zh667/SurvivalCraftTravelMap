@@ -98,6 +98,38 @@ public sealed class ExplorationTileStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Concurrent_flushes_are_serialized_without_sharing_a_temp_file()
+    {
+        var store = new ExplorationTileStore(_directory, capacity: 2);
+        var tile = store.GetOrLoad(0, 0);
+        var random = new Random(1729);
+        for (var z = 0; z < MapTile.Size; z++)
+        {
+            for (var x = 0; x < MapTile.Size; x++)
+            {
+                tile.SetPixel(
+                    x,
+                    z,
+                    new Rgba32(
+                        (byte)random.Next(256),
+                        (byte)random.Next(256),
+                        (byte)random.Next(256),
+                        (byte)random.Next(256)));
+            }
+        }
+
+        store.MarkDirty(tile);
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var first = store.FlushAsync(cancellationToken);
+        var second = store.FlushAsync(cancellationToken);
+        await Task.WhenAll(first, second);
+
+        Assert.Empty(Directory.EnumerateFiles(_directory, "*.tmp"));
+        Assert.True(File.Exists(Path.Combine(_directory, "0_0.sctm")));
+    }
+
+    [Fact]
     public void Defaults_are_a_five_second_flush_interval_and_128_tiles()
     {
         var store = new ExplorationTileStore(_directory);

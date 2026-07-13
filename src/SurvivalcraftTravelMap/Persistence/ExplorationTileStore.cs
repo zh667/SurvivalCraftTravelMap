@@ -5,6 +5,7 @@ namespace SurvivalcraftTravelMap.Persistence;
 public sealed class ExplorationTileStore
 {
     private readonly object _sync = new();
+    private readonly SemaphoreSlim _flushGate = new(1, 1);
     private readonly string _directory;
     private readonly Dictionary<TileKey, CacheEntry> _cache = [];
     private readonly LinkedList<TileKey> _lru = [];
@@ -75,43 +76,51 @@ public sealed class ExplorationTileStore
 
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {
-        List<PendingWrite> pendingWrites;
-        lock (_sync)
+        await _flushGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            pendingWrites = _cache
-                .Where(pair => pair.Value.IsDirty)
-                .Select(pair => new PendingWrite(
-                    pair.Key,
-                    pair.Value.Tile,
-                    pair.Value.Tile.CreateSnapshot(),
-                    pair.Value.Generation))
-                .ToList();
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        foreach (var pending in pendingWrites)
-        {
-            var path = GetPath(pending.Key);
-            await AtomicFile.ReplaceAsync(
-                path,
-                (stream, _) =>
-                {
-                    TileCodec.Write(stream, pending.Snapshot);
-                    return Task.CompletedTask;
-                },
-                cancellationToken).ConfigureAwait(false);
-
+            List<PendingWrite> pendingWrites;
             lock (_sync)
             {
-                if (_cache.TryGetValue(pending.Key, out var entry)
-                    && ReferenceEquals(entry.Tile, pending.Original)
-                    && entry.Generation == pending.Generation)
-                {
-                    entry.IsDirty = false;
-                }
-
-                TrimCleanEntries();
+                pendingWrites = _cache
+                    .Where(pair => pair.Value.IsDirty)
+                    .Select(pair => new PendingWrite(
+                        pair.Key,
+                        pair.Value.Tile,
+                        pair.Value.Tile.CreateSnapshot(),
+                        pair.Value.Generation))
+                    .ToList();
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var pending in pendingWrites)
+            {
+                var path = GetPath(pending.Key);
+                await AtomicFile.ReplaceAsync(
+                    path,
+                    (stream, _) =>
+                    {
+                        TileCodec.Write(stream, pending.Snapshot);
+                        return Task.CompletedTask;
+                    },
+                    cancellationToken).ConfigureAwait(false);
+
+                lock (_sync)
+                {
+                    if (_cache.TryGetValue(pending.Key, out var entry)
+                        && ReferenceEquals(entry.Tile, pending.Original)
+                        && entry.Generation == pending.Generation)
+                    {
+                        entry.IsDirty = false;
+                    }
+
+                    TrimCleanEntries();
+                }
+            }
+        }
+        finally
+        {
+            _flushGate.Release();
         }
     }
 
