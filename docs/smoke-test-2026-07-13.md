@@ -19,7 +19,7 @@
 | Release 单元/集成测试 | PASS（自动） | `dotnet test SurvivalcraftTravelMap.sln --configuration Release --no-restore`：414/414 通过。 |
 | 警告视为错误构建 | PASS（自动） | `dotnet build SurvivalcraftTravelMap.sln --configuration Release --no-restore -warnaserror`：0 warnings / 0 errors。 |
 | XDB 单次注入 | PASS（自动） | `PackageStructureTests.Final_xdb_injects_exactly_one_travel_map_component_with_new_guids` 校验 Player 只有一个 `TravelMap` 成员、一个组件模板和全新 GUID。 |
-| 封包 allowlist/身份/资源 | PASS（自动） | `Build-NetMod.ps1` 后 `Verify-Package.ps1` 输出 `PACKAGE_OK`；包中精确包含 DLL、manifest、XDB 和 5 个指定资源。干净 HEAD 连续两次构建的包与 DLL 均逐字节一致；最终候选包 SHA-256：`26D174BD30492700B11A1DC0AA5E2E3306C57DD95F8C4C7297581191798D5D5A`；包内 DLL SHA-256：`08E5F1AA55FE6C8E5B8AFF1268E41F3D7B1F8FDBC770A4F965A981CA2044B621`。DLL informational version 固定为 `1.0.0`，不含当前或父提交 SHA。 |
+| 封包 allowlist/身份/资源 | PASS（自动） | `Build-NetMod.ps1` 后 `Verify-Package.ps1` 输出 `PACKAGE_OK`；包中精确包含 DLL、manifest、XDB 和 5 个指定资源。禁用 SourceLink 提交输入后，干净 HEAD 连续两次构建的包与 DLL 均逐字节一致；最终候选包 SHA-256：`6AF2115B59AA55EE9844551A7E3C4C2DBE04F7858D81D8D5DB3BDC13681F88FB`；包内 DLL SHA-256：`30EC1BA76D8C2AA7E436FA781D3A6D4FEF60B5964A6B5C79FFA474CD944682B2`。DLL informational version 固定为 `1.0.0`，不含当前或父提交 SHA。 |
 | 项目自有地图调色表 | PASS（自动） | `Generate-BlockPalette.ps1` 不读取旧文件，以确定性 HSV 算法和游戏公开 block Index 常用颜色覆盖生成 257 项；字节可复现测试通过。新 SHA-256：`E03B7EC6F4DAE056A1213CD01FED7F4A0CFA845A1FAE63385403BC96077A81C7`，不同于旧文件。 |
 | 协议注册 | PASS（自动） | 测试反射程序集并确认只有 IPackage 41/61，无 60；61 冲突时回滚 41。 |
 | 34GPSFix 冲突门禁 | PASS（自动） | 启动策略测试只查询 `34GPSFix`，冲突时注册调用为 0；组件 Load 在玩家运行时初始化前再次门禁。 |
