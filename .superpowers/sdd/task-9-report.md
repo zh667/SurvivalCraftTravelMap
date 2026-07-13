@@ -25,7 +25,7 @@ The original `E:\game\SurvivalcraftNet2.4\NetMods\34GPSFix.netmod` was inspected
 - Added strict bounded decoding: the standalone codec enforces a 512-byte maximum payload and exact consumption/trailing rejection; production shared-stream decoding consumes only the current fixed message shape. Both paths enforce 256-byte result text, strict UTF-8, exact modes/kinds/results, finite and protocol-bounded coordinates, and nonzero request IDs.
 - Added server capability settings, independently controlling surface and waypoint travel, persisted at `app:/SurvivalcraftTravelMap/server-settings.json`. Missing or corrupt configuration falls back safely to enabled defaults; corrupt files are isolated. Schema versions greater than 1 are never interpreted or overwritten, activate safe defaults read-only, and emit one runtime warning.
 - Added peer-bound server sessions, in-flight and completed replay protection, serial request ordering with UInt32 wrap support, wrong-peer rejection, concurrent duplicate rejection, and disconnect cancellation/cleanup.
-- Added an exact production binding lease that verifies the connected `Client` object, `PlayerData.Client`, `ComponentPlayer`, player GUID, client ID, and session token before execution and again before response delivery. Entity removal cancels the bound operation, allowing `SafeTeleportService` to roll back before the stale result is suppressed.
+- Added an exact production binding lease that separately carries the selected `TravelMapComponent.Player` reference and verifies that `source.PlayerData.ComponentPlayer` is that exact object, along with the connected `Client`, `PlayerData.Client`, player GUID, client ID, and session token. The same selected reference is revalidated before execution, after the result, and immediately before response delivery. Entity removal cancels the bound operation, allowing `SafeTeleportService` to roll back before the stale result is suppressed.
 - Added a non-queueing transaction gate inside each player's `SafeTeleportService`. ID 41, ID 61, local, and future callers therefore share one full prevalidation/move/update/revalidation/rollback boundary; overlapping work is rejected immediately and cancellation or exceptions always release the gate.
 - Added a client session with capability discovery, five-second response deadlines, late/wrong-peer response rejection, request-ID wrap handling, and one unsupported/timeout notification per session.
 - Wired both packages through the game's real `IPackage`, `PackageManager.RegisterPackage`, `NetNode.QueuePackage`, `ProjectNet`, `Client`, and player-component boundaries. Registration installs only IDs 41 and 61; a conflict produces an ID-specific message and rolls back any earlier Task 9 registration instead of leaving a half-registered pair.
@@ -50,14 +50,15 @@ Task 9 was developed in red/green slices:
 7. The independent review reproduced the real shared-reader failure with an actual compressed `PackageStreamWriter.Data()`/`PackageStreamReader` batch: ID 41 consumed ID 61 and failed on trailing bytes. Production `ReadData` now parses directly from the shared reader and fourteen package-position tests cover every message kind, adjacent 41/61 packages, early oversized-length rejection, and following sentinels.
 8. A concurrent different-ID test showed requests 12 and 13 could enter one player's mover together. The per-service non-queueing gate then passed ID 41↔ID 61 overlap in both directions, cancellation/exception release, and independent-player concurrency tests.
 9. Binding and settings remediation were test-first: stale/same-GUID replacement clients, token changes, player swaps, disconnect-during-operation, future schema preservation, absent/zero/null/malformed schema, null switches, unknown fields, stale temporary files, and failed atomic writes are covered.
+10. The third review exposed a lookup-to-bind race where the current player reference could self-validate after replacement. A same-GUID/different-`ComponentPlayer` regression failed before the binding carried the independently selected player reference, then passed after exact-reference admission and continuous revalidation were added.
 
-Final suite: 372 passing tests, zero failures.
+Final suite: 373 passing tests, zero failures.
 
 ## Verification
 
 ```text
 dotnet test tests/SurvivalcraftTravelMap.Tests/SurvivalcraftTravelMap.Tests.csproj -c Release --no-restore
-Passed: 372, Failed: 0, Skipped: 0
+Passed: 373, Failed: 0, Skipped: 0
 
 dotnet build src/SurvivalcraftTravelMap/SurvivalcraftTravelMap.csproj -c Release --no-restore -p:TreatWarningsAsErrors=true
 0 warnings, 0 errors

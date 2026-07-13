@@ -27,14 +27,17 @@ internal sealed class TravelMapBoundPeer
 {
     private readonly Func<TravelMapPeerState> _currentState;
     private readonly TravelMapPeerState _boundState;
+    private readonly object _expectedPlayer;
 
     private TravelMapBoundPeer(
         Func<TravelMapPeerState> currentState,
         TravelMapPeerState boundState,
+        object expectedPlayer,
         CancellationToken operationToken)
     {
         _currentState = currentState;
         _boundState = boundState;
+        _expectedPlayer = expectedPlayer;
         OperationToken = operationToken;
         Identity = $"{boundState.ClientId}:{boundState.ClientPlayerGuid:N}:{boundState.TokenId:N}";
     }
@@ -54,7 +57,7 @@ internal sealed class TravelMapBoundPeer
 
             try
             {
-                return Matches(_currentState(), _boundState);
+                return Matches(_currentState(), _boundState, _expectedPlayer);
             }
             catch
             {
@@ -65,9 +68,11 @@ internal sealed class TravelMapBoundPeer
 
     internal static TravelMapBoundPeer? TryCreate(
         Func<TravelMapPeerState> currentState,
+        object expectedPlayer,
         CancellationToken operationToken)
     {
         ArgumentNullException.ThrowIfNull(currentState);
+        ArgumentNullException.ThrowIfNull(expectedPlayer);
         TravelMapPeerState initial;
         try
         {
@@ -78,9 +83,9 @@ internal sealed class TravelMapBoundPeer
             return null;
         }
 
-        return operationToken.IsCancellationRequested || !IsInitiallyValid(initial)
+        return operationToken.IsCancellationRequested || !IsInitiallyValid(initial, expectedPlayer)
             ? null
-            : new TravelMapBoundPeer(currentState, initial, operationToken);
+            : new TravelMapBoundPeer(currentState, initial, expectedPlayer, operationToken);
     }
 
     internal static TravelMapBoundPeer? TryCreate(
@@ -90,7 +95,7 @@ internal sealed class TravelMapBoundPeer
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(player);
-        return TryCreate(() => Capture(source, player), operationToken);
+        return TryCreate(() => Capture(source, player), player, operationToken);
     }
 
     private static TravelMapPeerState Capture(Client source, ComponentPlayer player)
@@ -108,16 +113,21 @@ internal sealed class TravelMapBoundPeer
             source.IsConnected);
     }
 
-    private static bool IsInitiallyValid(TravelMapPeerState state) =>
+    private static bool IsInitiallyValid(TravelMapPeerState state, object expectedPlayer) =>
         state.Client is not null
         && state.PlayerData is not null
         && state.Player is not null
         && state.IsConnected
         && ReferenceEquals(state.OwnerClient, state.Client)
+        && ReferenceEquals(state.Player, expectedPlayer)
         && state.ClientPlayerGuid == state.PlayerGuid;
 
-    private static bool Matches(TravelMapPeerState current, TravelMapPeerState bound) =>
-        IsInitiallyValid(current)
+    private static bool Matches(
+        TravelMapPeerState current,
+        TravelMapPeerState bound,
+        object expectedPlayer) =>
+        IsInitiallyValid(current, expectedPlayer)
+        && ReferenceEquals(bound.Player, expectedPlayer)
         && ReferenceEquals(current.Client, bound.Client)
         && ReferenceEquals(current.OwnerClient, bound.Client)
         && ReferenceEquals(current.PlayerData, bound.PlayerData)

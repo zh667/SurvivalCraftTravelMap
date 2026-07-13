@@ -17,7 +17,7 @@ public sealed class TravelMapPeerBindingTests
         var token = Guid.NewGuid();
         var current = ValidState(client, playerData, player, playerGuid, token);
         using var removed = new CancellationTokenSource();
-        var binding = TravelMapBoundPeer.TryCreate(() => current, removed.Token);
+        var binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token);
 
         Assert.NotNull(binding);
         Assert.True(binding.IsCurrent);
@@ -61,19 +61,49 @@ public sealed class TravelMapPeerBindingTests
             {
                 OwnerClient = new object(),
             },
+            player,
             CancellationToken.None));
         Assert.Null(TravelMapBoundPeer.TryCreate(
             () => ValidState(client, playerData, player, playerGuid, token) with
             {
                 PlayerGuid = Guid.NewGuid(),
             },
+            player,
             CancellationToken.None));
         Assert.Null(TravelMapBoundPeer.TryCreate(
             () => ValidState(client, playerData, player, playerGuid, token) with
             {
                 IsConnected = false,
             },
+            player,
             CancellationToken.None));
+    }
+
+    [Fact]
+    public void Lookup_to_bind_swap_with_same_guid_rejects_the_nonselected_player_before_execution()
+    {
+        var client = new object();
+        var playerData = new object();
+        var selectedPlayer = new object();
+        var replacementPlayer = new object();
+        var playerGuid = Guid.NewGuid();
+        var token = Guid.NewGuid();
+        var current = ValidState(client, playerData, selectedPlayer, playerGuid, token);
+        var selectedDuringLookup = current.Player;
+        current = ValidState(client, playerData, replacementPlayer, playerGuid, token);
+        var executorCalls = 0;
+
+        var binding = TravelMapBoundPeer.TryCreate(
+            () => current,
+            selectedDuringLookup!,
+            CancellationToken.None);
+        if (binding is not null)
+        {
+            executorCalls++;
+        }
+
+        Assert.Null(binding);
+        Assert.Equal(0, executorCalls);
     }
 
     [Fact]
@@ -86,7 +116,7 @@ public sealed class TravelMapPeerBindingTests
         var token = Guid.NewGuid();
         var current = ValidState(client, playerData, player, playerGuid, token);
         using var removed = new CancellationTokenSource();
-        var binding = TravelMapBoundPeer.TryCreate(() => current, removed.Token)!;
+        var binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token)!;
         var executor = new CancelAwareExecutor();
         using var session = new CoordinateTeleportServerSession(
             binding.Identity,
