@@ -114,6 +114,98 @@ public sealed class CoordinateTeleportPackageTests
 
         Assert.Throws<InvalidDataException>(() => new CoordinateTeleportPackage().ReadData(reader));
     }
+
+    [Fact]
+    public async Task Response_creation_failure_is_diagnosed_mapped_and_sent_when_binding_remains_current()
+    {
+        var failure = new InvalidOperationException("result reporting failed x741");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var sent = new List<CoordinateTeleportMessage>();
+        var fallback = CoordinateTeleportMessage.Result(71, CoordinateTeleportResultCode.InternalError);
+        using var scope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("remote", 71, "SurfaceRequest"));
+
+        await CoordinateTeleportResponseBoundary.ExecuteAsync(
+            () => Task.FromException<CoordinateTeleportMessage?>(failure),
+            static () => true,
+            sent.Add,
+            () => fallback,
+            diagnostics.Add);
+
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(TeleportExecutionStage.ProtocolDispatch, diagnostic.Stage);
+        Assert.Same(failure, diagnostic.Exception);
+        Assert.True(TeleportDiagnosticContext.HasReportedFailure);
+        Assert.Equal(fallback, Assert.Single(sent));
+    }
+
+    [Fact]
+    public async Task Response_send_failure_is_diagnosed_then_rethrown_for_observation()
+    {
+        var failure = new IOException("queue failed x852");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var response = CoordinateTeleportMessage.Result(72, CoordinateTeleportResultCode.InternalError);
+        using var scope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("remote", 72, "WaypointRequest"));
+
+        var thrown = await Assert.ThrowsAsync<IOException>(() =>
+            CoordinateTeleportResponseBoundary.ExecuteAsync(
+                () => Task.FromResult<CoordinateTeleportMessage?>(response),
+                static () => true,
+                _ => throw failure,
+                () => response,
+                diagnostics.Add));
+
+        Assert.Same(failure, thrown);
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(TeleportExecutionStage.ProtocolDispatch, diagnostic.Stage);
+        Assert.Same(failure, diagnostic.Exception);
+        Assert.True(TeleportDiagnosticContext.HasReportedFailure);
+    }
+
+    [Fact]
+    public async Task Binding_current_check_failure_is_diagnosed_then_rethrown_for_observation()
+    {
+        var failure = new InvalidOperationException("binding failed x963");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var response = CoordinateTeleportMessage.Result(73, CoordinateTeleportResultCode.InternalError);
+        using var scope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("remote", 73, "SurfaceRequest"));
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CoordinateTeleportResponseBoundary.ExecuteAsync(
+                () => Task.FromResult<CoordinateTeleportMessage?>(response),
+                () => throw failure,
+                _ => throw new Xunit.Sdk.XunitException("send must not run"),
+                () => response,
+                diagnostics.Add));
+
+        Assert.Same(failure, thrown);
+        Assert.Single(diagnostics);
+        Assert.True(TeleportDiagnosticContext.HasReportedFailure);
+    }
+
+    [Fact]
+    public async Task Response_send_failure_does_not_duplicate_a_deeper_diagnostic()
+    {
+        var failure = new IOException("queue failed after deep report");
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+        var response = CoordinateTeleportMessage.Result(74, CoordinateTeleportResultCode.InternalError);
+        using var scope = TeleportDiagnosticContext.Ensure(
+            new TeleportRequestDiagnosticContext("remote", 74, "WaypointRequest"));
+        TeleportDiagnosticContext.MarkFailureReported();
+
+        var thrown = await Assert.ThrowsAsync<IOException>(() =>
+            CoordinateTeleportResponseBoundary.ExecuteAsync(
+                () => Task.FromResult<CoordinateTeleportMessage?>(response),
+                static () => true,
+                _ => throw failure,
+                () => response,
+                diagnostics.Add));
+
+        Assert.Same(failure, thrown);
+        Assert.Empty(diagnostics);
+    }
 }
 
 public sealed class CoordinateTeleportPackageTestsServerSession

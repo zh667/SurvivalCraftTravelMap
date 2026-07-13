@@ -173,6 +173,7 @@ public sealed class PackageStructureTests
         Assert.Contains("catch (Exception exception)", runtime, StringComparison.Ordinal);
         Assert.Contains("TeleportExecutionStage.ProtocolDispatch", runtime, StringComparison.Ordinal);
         Assert.Contains("!TeleportDiagnosticContext.HasReportedFailure", runtime, StringComparison.Ordinal);
+        Assert.Contains("CoordinateTeleportResponseBoundary.ExecuteAsync", runtime, StringComparison.Ordinal);
         Assert.Contains("TeleportDiagnosticContext.Ensure", package, StringComparison.Ordinal);
         Assert.Contains("TeleportDiagnosticReporter.Report", component, StringComparison.Ordinal);
         Assert.Contains("route={route}, request={request.RequestId}, kind={request.Kind}, result=", reportMethod, StringComparison.Ordinal);

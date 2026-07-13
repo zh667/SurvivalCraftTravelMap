@@ -108,41 +108,29 @@ internal static class TravelMapNetworkRuntime
             return;
         }
 
-        CoordinateTeleportMessage response;
         TravelMapBoundPeer? binding = null;
-        try
-        {
-            var component = source.PlayerData?.ComponentPlayer?.Entity
-                .FindComponent<TravelMapComponent>(false);
-            binding = component?.TryBindNetworkPeer(source);
-            if (component is null || binding is null)
+        await CoordinateTeleportResponseBoundary.ExecuteAsync(
+            async () =>
             {
-                return;
-            }
+                var component = source.PlayerData?.ComponentPlayer?.Entity
+                    .FindComponent<TravelMapComponent>(false);
+                binding = component?.TryBindNetworkPeer(source);
+                if (component is null || binding is null)
+                {
+                    return null;
+                }
 
-            response = await component.HandleCoordinateServerAsync(
-                binding,
-                package.Message,
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            if (!TeleportDiagnosticContext.HasReportedFailure)
-            {
-                TeleportDiagnosticReporter.Report(new TeleportFailureDiagnostic(
-                    TeleportExecutionStage.ProtocolDispatch,
-                    exception));
-            }
-
-            response = CoordinateTeleportMessage.Result(
+                return await component.HandleCoordinateServerAsync(
+                    binding,
+                    package.Message,
+                    CancellationToken.None).ConfigureAwait(false);
+            },
+            () => binding is not null && binding.IsCurrent,
+            response => netNode.QueuePackage(new CoordinateTeleportPackage(response) { To = source }),
+            () => CoordinateTeleportMessage.Result(
                 package.Message.RequestId,
-                CoordinateTeleportResultCode.InternalError);
-        }
-
-        if (binding is not null && binding.IsCurrent)
-        {
-            netNode.QueuePackage(new CoordinateTeleportPackage(response) { To = source });
-        }
+                CoordinateTeleportResultCode.InternalError),
+            TeleportDiagnosticReporter.Report).ConfigureAwait(false);
     }
 
     private static void Observe(Task task)
@@ -355,6 +343,10 @@ internal static class LegacyInvitationTeleportExecution
         {
             return formatResult(await executor(cancellationToken).ConfigureAwait(false));
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             if (!TeleportDiagnosticContext.HasReportedFailure)
@@ -376,6 +368,77 @@ internal static class LegacyInvitationTeleportExecution
             }
 
             return FailureResponse;
+        }
+    }
+}
+
+internal static class CoordinateTeleportResponseBoundary
+{
+    internal static async Task ExecuteAsync(
+        Func<Task<CoordinateTeleportMessage?>> createResponse,
+        Func<bool> isBindingCurrent,
+        Action<CoordinateTeleportMessage> sendResponse,
+        Func<CoordinateTeleportMessage> createFailureResponse,
+        Action<TeleportFailureDiagnostic> reportFailure)
+    {
+        ArgumentNullException.ThrowIfNull(createResponse);
+        ArgumentNullException.ThrowIfNull(isBindingCurrent);
+        ArgumentNullException.ThrowIfNull(sendResponse);
+        ArgumentNullException.ThrowIfNull(createFailureResponse);
+        ArgumentNullException.ThrowIfNull(reportFailure);
+
+        CoordinateTeleportMessage? response;
+        try
+        {
+            response = await createResponse().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            ReportProtocolDispatchIfNeeded(exception, reportFailure);
+            response = createFailureResponse();
+        }
+
+        if (response is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (isBindingCurrent())
+            {
+                sendResponse(response);
+            }
+        }
+        catch (Exception exception)
+        {
+            ReportProtocolDispatchIfNeeded(exception, reportFailure);
+            throw;
+        }
+    }
+
+    private static void ReportProtocolDispatchIfNeeded(
+        Exception exception,
+        Action<TeleportFailureDiagnostic> reportFailure)
+    {
+        if (TeleportDiagnosticContext.HasReportedFailure)
+        {
+            return;
+        }
+
+        try
+        {
+            reportFailure(new TeleportFailureDiagnostic(
+                TeleportExecutionStage.ProtocolDispatch,
+                exception));
+        }
+        catch
+        {
+            // A diagnostic sink must not replace the protocol failure.
+        }
+        finally
+        {
+            TeleportDiagnosticContext.MarkFailureReported();
         }
     }
 }

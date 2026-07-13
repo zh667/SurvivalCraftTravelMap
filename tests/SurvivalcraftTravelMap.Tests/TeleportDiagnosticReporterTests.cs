@@ -57,6 +57,48 @@ public sealed class TeleportDiagnosticReporterTests
     }
 
     [Fact]
+    public void Formatter_redacts_numbers_adjacent_to_identifiers_without_changing_type_or_method_names()
+    {
+        var exception = CaptureAdjacentNumberException();
+
+        var formatted = TeleportDiagnosticReporter.FormatFailure(
+            new TeleportRequestDiagnosticContext("remote", 91, "WaypointRequest"),
+            new TeleportFailureDiagnostic(TeleportExecutionStage.CandidateSearch, exception));
+
+        Assert.Contains(typeof(CoordinateFailure123Exception).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(nameof(ThrowAdjacentCoordinate123), formatted, StringComparison.Ordinal);
+        Assert.Contains("x<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("y_<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("z`<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("scientific<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("signed<number>", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("x123456789", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("y_987654321", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("z`314159", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("scientific1e3", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("signed-2.5E-4", formatted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Formatter_includes_every_aggregate_exception_branch_with_redaction()
+    {
+        var exception = CaptureAggregateException();
+
+        var formatted = TeleportDiagnosticReporter.FormatFailure(
+            new TeleportRequestDiagnosticContext("host", 92, "SurfaceRequest"),
+            new TeleportFailureDiagnostic(TeleportExecutionStage.ProtocolDispatch, exception));
+
+        Assert.Contains(typeof(AggregateException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(ArgumentException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(ApplicationException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(FormatException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("aggregate999", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("first111", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("second222", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("nested333", formatted, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Matching_nested_scopes_share_the_reported_flag()
     {
         var context = new TeleportRequestDiagnosticContext("remote", 11, "SurfaceRequest");
@@ -160,4 +202,57 @@ public sealed class TeleportDiagnosticReporterTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowInnerCoordinateException() =>
         throw new ArgumentException("inner target 314159 -271828 0.000125 +9.5E-7");
+
+    private static Exception CaptureAdjacentNumberException()
+    {
+        try
+        {
+            ThrowAdjacentCoordinate123();
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Unreachable.");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowAdjacentCoordinate123() =>
+        throw new CoordinateFailure123Exception(
+            "targets x123456789 y_987654321 z`314159 scientific1e3 signed-2.5E-4");
+
+    private static Exception CaptureAggregateException()
+    {
+        var first = CaptureException(
+            static () => throw new ArgumentException("first111"));
+        var nested = CaptureException(
+            static () => throw new FormatException("nested333"));
+        var second = CaptureException(
+            () => throw new ApplicationException("second222", nested));
+        try
+        {
+            throw new AggregateException("aggregate999", first, second);
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static Exception CaptureException(Action throwException)
+    {
+        try
+        {
+            throwException();
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Unreachable.");
+    }
+
+    private sealed class CoordinateFailure123Exception(string message) : Exception(message);
 }

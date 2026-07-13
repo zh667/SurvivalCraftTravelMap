@@ -134,10 +134,17 @@ internal static partial class TeleportDiagnosticReporter
             .Append(", message=")
             .Append(RedactNumbers(exception.Message))
             .Append(", stack=")
-            .Append(RedactNumbers(exception.StackTrace ?? "none"))
+            .Append(RedactStackTrace(exception.StackTrace ?? "none"))
             .Append('.');
 
-        if (exception.InnerException is { } inner)
+        if (exception is AggregateException aggregate)
+        {
+            foreach (var inner in aggregate.InnerExceptions)
+            {
+                AppendException(builder, inner, "inner-exception");
+            }
+        }
+        else if (exception.InnerException is { } inner)
         {
             AppendException(builder, inner, "inner-exception");
         }
@@ -145,8 +152,52 @@ internal static partial class TeleportDiagnosticReporter
 
     private static string RedactNumbers(string value) => NumberLiteral().Replace(value, "<number>");
 
+    private static string RedactStackTrace(string stackTrace)
+    {
+        var builder = new StringBuilder(stackTrace.Length);
+        var lineStart = 0;
+        while (lineStart < stackTrace.Length)
+        {
+            var lineEnd = lineStart;
+            while (lineEnd < stackTrace.Length && stackTrace[lineEnd] is not ('\r' or '\n'))
+            {
+                lineEnd++;
+            }
+
+            AppendRedactedStackLine(builder, stackTrace[lineStart..lineEnd]);
+            while (lineEnd < stackTrace.Length && stackTrace[lineEnd] is '\r' or '\n')
+            {
+                builder.Append(stackTrace[lineEnd++]);
+            }
+
+            lineStart = lineEnd;
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AppendRedactedStackLine(StringBuilder builder, string line)
+    {
+        if (line.AsSpan().TrimStart().StartsWith("at ", StringComparison.Ordinal))
+        {
+            var sourceIndex = line.IndexOf(" in ", StringComparison.Ordinal);
+            if (sourceIndex < 0)
+            {
+                builder.Append(line);
+                return;
+            }
+
+            var sourceStart = sourceIndex + " in ".Length;
+            builder.Append(line.AsSpan(0, sourceStart));
+            builder.Append(RedactNumbers(line[sourceStart..]));
+            return;
+        }
+
+        builder.Append(RedactNumbers(line));
+    }
+
     [GeneratedRegex(
-        @"(?<![\p{L}\p{N}_`])[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
+        @"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
         RegexOptions.CultureInvariant)]
     private static partial Regex NumberLiteral();
 }

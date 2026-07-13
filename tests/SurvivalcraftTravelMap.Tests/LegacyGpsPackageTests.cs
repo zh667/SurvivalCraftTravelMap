@@ -97,6 +97,24 @@ public sealed class LegacyGpsPackageTests
     }
 
     [Fact]
+    public async Task Invitation_execution_boundary_propagates_cancellation_without_a_diagnostic()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var diagnostics = new List<TeleportFailureDiagnostic>();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            LegacyInvitationTeleportExecution.ExecuteAsync(
+                _ => Task.FromCanceled<TeleportResult>(cancellation.Token),
+                static _ => "unexpected success",
+                diagnostics.Add,
+                cancellation.Token));
+
+        Assert.Empty(diagnostics);
+        Assert.Null(TeleportDiagnosticContext.Current);
+    }
+
+    [Fact]
     public void Network_ReadData_consumes_only_ID41_payload_from_shared_package_reader()
     {
         var first = LegacyGpsCodec.Serialize(LegacyGpsMessage.TeleportAllow(true));
