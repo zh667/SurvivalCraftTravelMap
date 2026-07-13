@@ -87,14 +87,18 @@ try {
         [IO.Compression.ZipArchiveMode]::Create,
         $false)
     $fixedTimestamp = [DateTimeOffset]::new(2000, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
-    $files = Get-ChildItem -LiteralPath $stageRoot -Recurse -File |
-        Sort-Object { $_.FullName.Substring($stageRoot.Length).Replace("\", "/") }
-
-    foreach ($file in $files) {
+    $relativePaths = [Collections.Generic.List[string]]::new()
+    foreach ($file in Get-ChildItem -LiteralPath $stageRoot -Recurse -File) {
         $relativePath = $file.FullName.Substring($stageRoot.Length).TrimStart("\", "/").Replace("\", "/")
+        $relativePaths.Add($relativePath)
+    }
+    $relativePaths.Sort([StringComparer]::Ordinal)
+
+    foreach ($relativePath in $relativePaths) {
         $entry = $archive.CreateEntry($relativePath, [IO.Compression.CompressionLevel]::Optimal)
         $entry.LastWriteTime = $fixedTimestamp
-        $inputStream = $file.OpenRead()
+        $inputPath = Join-Path $stageRoot $relativePath.Replace("/", [IO.Path]::DirectorySeparatorChar)
+        $inputStream = [IO.File]::OpenRead($inputPath)
         $entryStream = $entry.Open()
         try {
             $inputStream.CopyTo($entryStream)
