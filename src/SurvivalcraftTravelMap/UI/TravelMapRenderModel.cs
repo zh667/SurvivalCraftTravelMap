@@ -21,6 +21,11 @@ public static class TravelMapPalette
 
 public interface IExploredMapPixelSource
 {
+    IExploredMapReadSession BeginReadSession();
+}
+
+public interface IExploredMapReadSession : IDisposable
+{
     bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color);
 }
 
@@ -53,21 +58,125 @@ public readonly record struct MapOverlayState(
     IReadOnlyList<Waypoint> Waypoints,
     bool ShowCoordinates);
 
-public sealed class TileStoreMapPixelSource(ExplorationTileStore store) : IExploredMapPixelSource
+internal interface IMapTileProvider
 {
-    private readonly ExplorationTileStore _store = store ?? throw new ArgumentNullException(nameof(store));
+    MapTile GetOrLoad(int tileX, int tileZ);
+}
 
-    public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
+public sealed class TileStoreMapPixelSource : IExploredMapPixelSource
+{
+    private readonly object _sync = new();
+    private readonly IMapTileProvider _provider;
+    private readonly int _snapshotCapacity;
+    private readonly Dictionary<(int X, int Z), SnapshotCacheEntry> _snapshotCache = [];
+    private readonly LinkedList<(int X, int Z)> _snapshotLru = [];
+
+    public TileStoreMapPixelSource(ExplorationTileStore store, int snapshotCapacity = 128)
+        : this(new StoreTileProvider(store), snapshotCapacity)
     {
-        var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
-        return _store.GetOrLoad(coordinate.TileX, coordinate.TileZ)
-            .TryGetPixel(coordinate.LocalX, coordinate.LocalZ, out color);
+    }
+
+    internal TileStoreMapPixelSource(IMapTileProvider provider, int snapshotCapacity = 128)
+    {
+        _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+        if (snapshotCapacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(snapshotCapacity));
+        }
+
+        _snapshotCapacity = snapshotCapacity;
+    }
+
+    internal long SnapshotCloneCount { get; private set; }
+
+    public IExploredMapReadSession BeginReadSession() => new ReadSession(this);
+
+    private MapTileSnapshot GetSnapshot(int tileX, int tileZ)
+    {
+        var tile = _provider.GetOrLoad(tileX, tileZ);
+        var key = (tileX, tileZ);
+        lock (_sync)
+        {
+            if (_snapshotCache.TryGetValue(key, out var cached)
+                && ReferenceEquals(cached.Tile, tile)
+                && cached.Version == tile.Version)
+            {
+                Touch(cached);
+                return cached.Snapshot;
+            }
+
+            var captured = tile.CreateVersionedSnapshot();
+            SnapshotCloneCount++;
+            if (cached is not null)
+            {
+                _snapshotLru.Remove(cached.Node);
+                _snapshotCache.Remove(key);
+            }
+
+            var node = _snapshotLru.AddFirst(key);
+            _snapshotCache.Add(key, new SnapshotCacheEntry(tile, captured.Version, captured.Snapshot, node));
+            while (_snapshotCache.Count > _snapshotCapacity)
+            {
+                var last = _snapshotLru.Last!;
+                _snapshotCache.Remove(last.Value);
+                _snapshotLru.RemoveLast();
+            }
+
+            return captured.Snapshot;
+        }
+    }
+
+    private void Touch(SnapshotCacheEntry entry)
+    {
+        _snapshotLru.Remove(entry.Node);
+        _snapshotLru.AddFirst(entry.Node);
+    }
+
+    private sealed class ReadSession(TileStoreMapPixelSource source) : IExploredMapReadSession
+    {
+        private readonly Dictionary<(int X, int Z), MapTileSnapshot> _tiles = [];
+
+        public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
+        {
+            var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
+            var key = (coordinate.TileX, coordinate.TileZ);
+            if (!_tiles.TryGetValue(key, out var snapshot))
+            {
+                snapshot = source.GetSnapshot(key.TileX, key.TileZ);
+                _tiles.Add(key, snapshot);
+            }
+
+            return snapshot.TryGetPixel(coordinate.LocalX, coordinate.LocalZ, out color);
+        }
+
+        public void Dispose() => _tiles.Clear();
+    }
+
+    private sealed class StoreTileProvider(ExplorationTileStore store) : IMapTileProvider
+    {
+        private readonly ExplorationTileStore _store = store ?? throw new ArgumentNullException(nameof(store));
+
+        public MapTile GetOrLoad(int tileX, int tileZ) => _store.GetOrLoad(tileX, tileZ);
+    }
+
+    private sealed class SnapshotCacheEntry(
+        MapTile tile,
+        long version,
+        MapTileSnapshot snapshot,
+        LinkedListNode<(int X, int Z)> node)
+    {
+        public MapTile Tile { get; } = tile;
+        public long Version { get; } = version;
+        public MapTileSnapshot Snapshot { get; } = snapshot;
+        public LinkedListNode<(int X, int Z)> Node { get; } = node;
     }
 }
 
 public static class TravelMapRenderModel
 {
-    public static void RenderTerrain(
+    public const int MaximumTerrainSamplesPerFrame = 262_144;
+
+    public static MapRenderStatistics RenderTerrain(
         IExploredMapPixelSource source,
         MapTransform transform,
         float brightness,
@@ -80,34 +189,82 @@ public static class TravelMapRenderModel
             throw new ArgumentOutOfRangeException(nameof(transform));
         }
 
-        var tint = Math.Clamp(float.IsFinite(brightness) ? brightness : 1f, 0f, 1f);
-        var topLeft = transform.ScreenToWorld(Vector2.Zero);
-        var bottomRight = transform.ScreenToWorld(transform.ViewportSize);
-        var minimumX = checked((int)MathF.Floor(MathF.Min(topLeft.X, bottomRight.X)));
-        var maximumX = checked((int)MathF.Ceiling(MathF.Max(topLeft.X, bottomRight.X)));
-        var minimumZ = checked((int)MathF.Floor(MathF.Min(topLeft.Y, bottomRight.Y)));
-        var maximumZ = checked((int)MathF.Ceiling(MathF.Max(topLeft.Y, bottomRight.Y)));
-
-        for (var z = minimumZ; z <= maximumZ; z++)
+        if (!float.IsFinite(transform.ViewportSize.X)
+            || !float.IsFinite(transform.ViewportSize.Y)
+            || transform.ViewportSize.X <= 0f
+            || transform.ViewportSize.Y <= 0f)
         {
-            for (var x = minimumX; x <= maximumX; x++)
+            return default;
+        }
+
+        var tint = Math.Clamp(float.IsFinite(brightness) ? brightness : 1f, 0f, 1f);
+        var halfWorldWidth = (double)transform.ViewportSize.X * transform.BlocksPerPixel / 2d;
+        var halfWorldHeight = (double)transform.ViewportSize.Y * transform.BlocksPerPixel / 2d;
+        var minimumX = Math.Max((double)int.MinValue, (double)transform.Center.X - halfWorldWidth);
+        var maximumX = Math.Min((double)int.MaxValue, (double)transform.Center.X + halfWorldWidth);
+        var minimumZ = Math.Max((double)int.MinValue, (double)transform.Center.Y - halfWorldHeight);
+        var maximumZ = Math.Min((double)int.MaxValue, (double)transform.Center.Y + halfWorldHeight);
+        if (minimumX > maximumX || minimumZ > maximumZ)
+        {
+            return default;
+        }
+
+        var stride = CalculateAlignedStride(minimumX, maximumX, minimumZ, maximumZ);
+        var startX = (long)Math.Ceiling(minimumX / stride);
+        var endX = (long)Math.Floor(maximumX / stride);
+        var startZ = (long)Math.Ceiling(minimumZ / stride);
+        var endZ = (long)Math.Floor(maximumZ / stride);
+        if (startX > endX || startZ > endZ)
+        {
+            return default;
+        }
+
+        var columns = endX - startX + 1;
+        var rows = endZ - startZ + 1;
+        var totalSamples = columns * rows;
+        var queries = 0;
+        var primitives = 0;
+        long processed = 0;
+        using var session = source.BeginReadSession();
+        for (var zIndex = startZ; zIndex <= endZ; zIndex++)
+        {
+            var z = checked((int)(zIndex * stride));
+            for (var xIndex = startX; xIndex <= endX; xIndex++)
             {
-                if (!source.TryGetExploredPixel(x, z, out var color))
+                var x = checked((int)(xIndex * stride));
+                processed++;
+                queries++;
+                if (!session.TryGetExploredPixel(x, z, out var color))
                 {
                     continue;
                 }
 
                 var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
-                var screenMaximum = transform.WorldToScreen(new Vector2(x + 1f, z + 1f));
+                var screenMaximum = transform.WorldToScreen(new Vector2((double)x + 1d > int.MaxValue ? x : x + 1, (double)z + 1d > int.MaxValue ? z : z + 1));
                 sink.TerrainCell(new MapTerrainCell(
                     x,
                     z,
                     Vector2.Min(screenMinimum, screenMaximum),
                     Vector2.Max(screenMinimum, screenMaximum),
                     TintTerrain(color, tint)));
-                EmitBoundaryEdges(source, transform, sink, x, z, screenMinimum, screenMaximum);
+                primitives++;
+                if (stride == 1)
+                {
+                    EmitBoundaryEdges(
+                        session,
+                        sink,
+                        x,
+                        z,
+                        screenMinimum,
+                        screenMaximum,
+                        totalSamples - processed,
+                        ref queries,
+                        ref primitives);
+                }
             }
         }
+
+        return new MapRenderStatistics(queries, primitives, stride);
     }
 
     public static void RenderOverlays(MapOverlayState state, ITravelMapRenderSink sink)
@@ -150,46 +307,78 @@ public static class TravelMapRenderModel
         color.A);
 
     private static void EmitBoundaryEdges(
-        IExploredMapPixelSource source,
-        MapTransform transform,
+        IExploredMapReadSession source,
         ITravelMapRenderSink sink,
         int x,
         int z,
         Vector2 screenMinimum,
-        Vector2 screenMaximum)
+        Vector2 screenMaximum,
+        long remainingTerrainSamples,
+        ref int queries,
+        ref int primitives)
     {
         var minimum = Vector2.Min(screenMinimum, screenMaximum);
         var maximum = Vector2.Max(screenMinimum, screenMaximum);
-        if (!source.TryGetExploredPixel(x, z - 1, out _))
+        TryEmitBoundary(source, sink, x, z, x, z > int.MinValue ? z - 1 : z, minimum, new Vector2(maximum.X, minimum.Y), remainingTerrainSamples, ref queries, ref primitives);
+        TryEmitBoundary(source, sink, x, z, x < int.MaxValue ? x + 1 : x, z, new Vector2(maximum.X, minimum.Y), maximum, remainingTerrainSamples, ref queries, ref primitives);
+        TryEmitBoundary(source, sink, x, z, x, z < int.MaxValue ? z + 1 : z, new Vector2(minimum.X, maximum.Y), maximum, remainingTerrainSamples, ref queries, ref primitives);
+        TryEmitBoundary(source, sink, x, z, x > int.MinValue ? x - 1 : x, z, minimum, new Vector2(minimum.X, maximum.Y), remainingTerrainSamples, ref queries, ref primitives);
+    }
+
+    private static void TryEmitBoundary(
+        IExploredMapReadSession source,
+        ITravelMapRenderSink sink,
+        int x,
+        int z,
+        int neighborX,
+        int neighborZ,
+        Vector2 start,
+        Vector2 end,
+        long remainingTerrainSamples,
+        ref int queries,
+        ref int primitives)
+    {
+        if (neighborX == x && neighborZ == z)
         {
-            sink.ExplorationBoundary(new MapBoundaryEdge(
-                minimum,
-                new Vector2(maximum.X, minimum.Y),
-                TravelMapPalette.SurveyCyan));
+            return;
         }
 
-        if (!source.TryGetExploredPixel(x + 1, z, out _))
+        if ((long)queries + remainingTerrainSamples >= MaximumTerrainSamplesPerFrame)
         {
-            sink.ExplorationBoundary(new MapBoundaryEdge(
-                new Vector2(maximum.X, minimum.Y),
-                maximum,
-                TravelMapPalette.SurveyCyan));
+            return;
         }
 
-        if (!source.TryGetExploredPixel(x, z + 1, out _))
+        queries++;
+        if (!source.TryGetExploredPixel(neighborX, neighborZ, out _)
+            && (long)primitives + remainingTerrainSamples < MaximumTerrainSamplesPerFrame)
         {
-            sink.ExplorationBoundary(new MapBoundaryEdge(
-                new Vector2(minimum.X, maximum.Y),
-                maximum,
-                TravelMapPalette.SurveyCyan));
-        }
-
-        if (!source.TryGetExploredPixel(x - 1, z, out _))
-        {
-            sink.ExplorationBoundary(new MapBoundaryEdge(
-                minimum,
-                new Vector2(minimum.X, maximum.Y),
-                TravelMapPalette.SurveyCyan));
+            sink.ExplorationBoundary(new MapBoundaryEdge(start, end, TravelMapPalette.SurveyCyan));
+            primitives++;
         }
     }
+
+    private static int CalculateAlignedStride(
+        double minimumX,
+        double maximumX,
+        double minimumZ,
+        double maximumZ)
+    {
+        var stride = 1;
+        while (true)
+        {
+            var columns = Math.Floor(maximumX / stride) - Math.Ceiling(minimumX / stride) + 1d;
+            var rows = Math.Floor(maximumZ / stride) - Math.Ceiling(minimumZ / stride) + 1d;
+            if (columns <= 0d || rows <= 0d || columns * rows <= MaximumTerrainSamplesPerFrame)
+            {
+                return stride;
+            }
+
+            stride = checked(stride * 2);
+        }
+    }
+}
+
+public readonly record struct MapRenderStatistics(int PixelQueries, int PrimitiveCount, int WorldStride)
+{
+    public int TerrainPrimitives => PrimitiveCount;
 }

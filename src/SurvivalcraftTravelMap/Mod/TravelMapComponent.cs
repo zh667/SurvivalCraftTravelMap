@@ -78,6 +78,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private IReadOnlyList<Waypoint> _waypoints = Array.Empty<Waypoint>();
     private MiniMapRenderer? _miniMap;
     private TravelMapDialog? _largeMapDialog;
+    private TrackedUiActionRunner? _uiActions;
     private Task? _flushTask;
     private int _lastRecordedX = int.MinValue;
     private int _lastRecordedZ = int.MinValue;
@@ -219,6 +220,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void InitializeUi()
     {
+        _uiActions = new TrackedUiActionRunner(_ => ShowMessage("地图操作未能完成"));
         var appRoot = Engine.Storage.GetSystemPath("app:/SurvivalcraftTravelMap");
         var legacySettingsPath = Engine.Storage.GetSystemPath("app:/GPSSetting.xml");
         _settingsStore = new TravelMapSettingsStore(appRoot, legacySettingsPath);
@@ -227,11 +229,30 @@ public sealed class TravelMapComponent : Component, IUpdateable
             .GetResult();
 
         var gameInfo = Project.FindSubsystem<SubsystemGameInfo>(true);
-        var worldIdentifier = $"{gameInfo.DirectoryName}:{gameInfo.WorldSeed}:{WorkType}";
-        var worldDirectory = Path.Combine(appRoot, "worlds", WorldKey.ForLocal(worldIdentifier));
-        _tileStore = new ExplorationTileStore(Path.Combine(worldDirectory, "tiles"));
-        _waypointRepository = new WaypointRepository(worldDirectory);
-        _waypointRepository.LoadAsync(_lifetimeCancellation.Token).GetAwaiter().GetResult();
+        var serverHost = CommonLib.Net.Server?.Peer?.Address?.ToString()
+            ?? CommonLib.Net.Server?.IPPoint?.Address.ToString();
+        var serverPort = CommonLib.Net.Server?.Peer?.Port
+            ?? CommonLib.Net.Server?.IPPoint?.Port;
+        var identity = new TravelMapStorageIdentityInput(
+            WorkType,
+            appRoot,
+            gameInfo.DirectoryName,
+            serverHost,
+            serverPort,
+            gameInfo.DirectoryName,
+            Player.PlayerData.PlayerGUID);
+        if (!TravelMapStorageIdentity.TryResolve(identity, out var storage, out var identityError))
+        {
+            Engine.Log.Warning($"[TravelMap] Persistence disabled: {identityError}");
+            ShowMessage("缺少可靠的世界或玩家身份，旅行地图持久化已禁用");
+            return;
+        }
+
+        _tileStore = new ExplorationTileStore(Path.Combine(storage!.Directory, "tiles"));
+        _waypointRepository = new WaypointRepository(storage.Directory);
+        var waypointLoadOutcome = _waypointRepository.LoadAsync(_lifetimeCancellation.Token)
+            .GetAwaiter()
+            .GetResult();
         _waypoints = _waypointRepository.GetAll();
 
         TryCreateExplorationRecorder();
@@ -254,6 +275,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
             GetTerrainBrightness,
             HandleContextActionAsync,
             ShowMessage);
+        if (waypointLoadOutcome == WaypointLoadOutcome.CorruptIsolated)
+        {
+            ShowMessage("坐标点文件已损坏，已隔离并使用空列表");
+        }
     }
 
     private void TryCreateExplorationRecorder()
@@ -353,10 +378,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         var input = Player.GameWidget.Input;
-        var focus = new TravelMapFocusState(
+        var chat = Player.GameWidget.messageWidget;
+        var focus = TravelMapInputFocusEvaluator.Evaluate(new TravelMapInputFocusSignals(
             HasFocusedTextBox(Player.GuiWidget),
-            HasChatFocus: false,
-            Gui?.ModalPanelWidget is not null || DialogsManager.HasDialogs(Player.GuiWidget));
+            chat?.IsVisible == true,
+            chat?.EditText?.HasFocus == true,
+            Gui?.ModalPanelWidget is not null || DialogsManager.HasDialogs(Player.GuiWidget)));
         var command = _uiController.HandleOpenHotkey(
             input.IsKeyDownOnce(Engine.Input.Key.M),
             focus);
@@ -409,7 +436,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     return TravelMapActionStatus.Failed;
                 }
 
-                DialogsManager.Promit("重命名坐标点", waypoint.Name, name => _ = RenameWaypointAsync(waypoint.Id, name));
+                DialogsManager.Promit(
+                    "重命名坐标点",
+                    waypoint.Name,
+                    name => _uiActions?.TryRun(_ => RenameWaypointAsync(waypoint.Id, name)));
                 return TravelMapActionStatus.Completed;
             }
             case TravelMapContextAction.DeleteWaypoint:
@@ -482,8 +512,17 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private async Task SaveWaypointsAsync(CancellationToken cancellationToken)
     {
-        await _waypointRepository!.SaveAsync(cancellationToken).ConfigureAwait(false);
-        _waypoints = _waypointRepository.GetAll();
+        try
+        {
+            _waypoints = await WaypointPersistence.SaveOrReloadAsync(
+                _waypointRepository!,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _waypoints = _waypointRepository!.GetAll();
+            throw;
+        }
     }
 
     private PlayerMapPose GetPlayerPose()
@@ -516,6 +555,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void CleanupUi()
     {
+        var uiActions = _uiActions;
+        uiActions?.Dispose();
+        _uiActions = null;
+        var shutdownClock = System.Diagnostics.Stopwatch.StartNew();
+        var shutdownLimit = TimeSpan.FromSeconds(2);
+        TimeSpan RemainingTime() => shutdownClock.Elapsed >= shutdownLimit
+            ? TimeSpan.Zero
+            : shutdownLimit - shutdownClock.Elapsed;
+        static void ReportShutdownFailure(Exception exception) =>
+            Engine.Log.Warning($"[TravelMap] Shutdown operation failed: {exception.Message}");
         if (_largeMapDialog is not null)
         {
             DialogsManager.HideDialog(_largeMapDialog);
@@ -532,35 +581,38 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         if (_tileStore is not null)
         {
-            try
+            var pendingFlushCompleted = _flushTask is null
+                || BoundedTaskObserver.ObserveWithin(
+                    _flushTask,
+                    RemainingTime(),
+                    ReportShutdownFailure);
+            if (pendingFlushCompleted && RemainingTime() > TimeSpan.Zero)
             {
-                _flushTask?.GetAwaiter().GetResult();
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException)
-            {
-                Engine.Log.Warning($"[TravelMap] Pending map flush ended early: {exception.Message}");
-            }
-
-            try
-            {
-                _tileStore.FlushAsync().GetAwaiter().GetResult();
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                Engine.Log.Warning($"[TravelMap] Final map flush failed: {exception.Message}");
+                using var flushCancellation = new CancellationTokenSource(RemainingTime());
+                BoundedTaskObserver.ObserveWithin(
+                    _tileStore.FlushAsync(flushCancellation.Token),
+                    RemainingTime(),
+                    ReportShutdownFailure);
             }
         }
 
-        if (_settingsStore is not null && _settings is not null)
+        if (_settingsStore is not null
+            && _settings is not null
+            && RemainingTime() > TimeSpan.Zero)
         {
-            try
-            {
-                _settingsStore.SaveAsync(_settings).GetAwaiter().GetResult();
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                Engine.Log.Warning($"[TravelMap] Final settings save failed: {exception.Message}");
-            }
+            using var settingsCancellation = new CancellationTokenSource(RemainingTime());
+            BoundedTaskObserver.ObserveWithin(
+                _settingsStore.SaveAsync(_settings, settingsCancellation.Token),
+                RemainingTime(),
+                ReportShutdownFailure);
+        }
+
+        if (uiActions is not null && RemainingTime() > TimeSpan.Zero)
+        {
+            BoundedTaskObserver.ObserveWithin(
+                uiActions.WhenIdleAsync(),
+                RemainingTime(),
+                ReportShutdownFailure);
         }
     }
 

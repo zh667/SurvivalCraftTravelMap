@@ -183,7 +183,7 @@ public sealed class WaypointRepositoryTests : IDisposable
             TestContext.Current.CancellationToken);
         var repository = CreateRepository();
 
-        await repository.LoadAsync(TestContext.Current.CancellationToken);
+        var outcome = await repository.LoadAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(repository.GetAll());
         Assert.False(repository.IsReadOnly);
@@ -192,6 +192,7 @@ public sealed class WaypointRepositoryTests : IDisposable
             FilePath + ".corrupt",
             TestContext.Current.CancellationToken));
         Assert.True(File.Exists(FilePath + ".corrupt.1"));
+        Assert.Equal(WaypointLoadOutcome.CorruptIsolated, outcome);
     }
 
     [Fact]
@@ -203,13 +204,15 @@ public sealed class WaypointRepositoryTests : IDisposable
             TestContext.Current.CancellationToken);
         var repository = CreateRepository();
 
-        await repository.LoadAsync(TestContext.Current.CancellationToken);
-        await repository.LoadAsync(TestContext.Current.CancellationToken);
+        var firstOutcome = await repository.LoadAsync(TestContext.Current.CancellationToken);
+        var secondOutcome = await repository.LoadAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(repository.GetAll());
         Assert.Equal(
             [FilePath + ".corrupt"],
             Directory.EnumerateFiles(_directory, "waypoints.json.corrupt*"));
+        Assert.Equal(WaypointLoadOutcome.CorruptIsolated, firstOutcome);
+        Assert.Equal(WaypointLoadOutcome.Missing, secondOutcome);
     }
 
     [Fact]
@@ -528,6 +531,24 @@ public sealed class WaypointRepositoryTests : IDisposable
         Assert.Equal(original, await File.ReadAllBytesAsync(
             FilePath,
             TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Failed_coordinated_save_reloads_the_last_persisted_state()
+    {
+        var repository = CreateRepository();
+        repository.Add("persisted", Vector3.Zero);
+        await repository.SaveAsync(TestContext.Current.CancellationToken);
+        repository.Add("not saved", Vector3.One);
+        Directory.CreateDirectory(FilePath + ".tmp");
+
+        var exception = await Record.ExceptionAsync(
+            () => WaypointPersistence.SaveOrReloadAsync(
+                repository,
+                TestContext.Current.CancellationToken));
+
+        Assert.True(exception is IOException or UnauthorizedAccessException);
+        Assert.Collection(repository.GetAll(), waypoint => Assert.Equal("persisted", waypoint.Name));
     }
 
     [Fact]

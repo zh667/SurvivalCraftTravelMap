@@ -10,6 +10,14 @@ using SurvivalcraftTravelMap.Persistence;
 
 namespace SurvivalcraftTravelMap.Waypoints;
 
+public enum WaypointLoadOutcome
+{
+    Loaded,
+    Missing,
+    CorruptIsolated,
+    UnsupportedReadOnly,
+}
+
 internal interface IWaypointRepositoryFileAccess
 {
     bool FileExists(string path);
@@ -140,7 +148,7 @@ public sealed class WaypointRepository
         }
     }
 
-    public async Task LoadAsync(CancellationToken cancellationToken = default)
+    public async Task<WaypointLoadOutcome> LoadAsync(CancellationToken cancellationToken = default)
     {
         BeginLoad();
         var fileLockAcquired = false;
@@ -152,7 +160,7 @@ public sealed class WaypointRepository
             if (!_fileAccess.FileExists(_filePath))
             {
                 ReplaceWritableState([]);
-                return;
+                return WaypointLoadOutcome.Missing;
             }
 
             var json = await _fileAccess.ReadAllBytesAsync(_filePath, cancellationToken).ConfigureAwait(false);
@@ -164,7 +172,7 @@ public sealed class WaypointRepository
             catch (JsonException)
             {
                 ResetAfterCorruption(cancellationToken);
-                return;
+                return WaypointLoadOutcome.CorruptIsolated;
             }
 
             using (document)
@@ -177,30 +185,30 @@ public sealed class WaypointRepository
                 catch (InvalidOperationException)
                 {
                     ResetAfterCorruption(cancellationToken);
-                    return;
+                    return WaypointLoadOutcome.CorruptIsolated;
                 }
                 catch (KeyNotFoundException)
                 {
                     ResetAfterCorruption(cancellationToken);
-                    return;
+                    return WaypointLoadOutcome.CorruptIsolated;
                 }
 
                 if (schemaElement.ValueKind != JsonValueKind.Number)
                 {
                     ResetAfterCorruption(cancellationToken);
-                    return;
+                    return WaypointLoadOutcome.CorruptIsolated;
                 }
 
                 if (!schemaElement.TryGetInt32(out var schemaVersion))
                 {
                     EnterReadOnly(schemaElement.GetRawText());
-                    return;
+                    return WaypointLoadOutcome.UnsupportedReadOnly;
                 }
 
                 if (schemaVersion != CurrentSchemaVersion)
                 {
                     EnterReadOnly(schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                    return;
+                    return WaypointLoadOutcome.UnsupportedReadOnly;
                 }
 
                 try
@@ -210,7 +218,10 @@ public sealed class WaypointRepository
                 catch (InvalidDataException)
                 {
                     ResetAfterCorruption(cancellationToken);
+                    return WaypointLoadOutcome.CorruptIsolated;
                 }
+
+                return WaypointLoadOutcome.Loaded;
             }
         }
         finally

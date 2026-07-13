@@ -85,7 +85,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         {
             Text = "小地图尺寸",
             Color = SnowText,
-            FontScale = 0.78f,
+            FontScale = TravelMapTypography.SecondaryLabelScale,
             Size = new Vector2(380f, 30f),
         };
         Children.Add(sizeLabel);
@@ -180,7 +180,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         {
             Text = labelText,
             Color = SnowText,
-            FontScale = 0.72f,
+            FontScale = TravelMapTypography.SecondaryLabelScale,
             Size = new Vector2(160f, 36f),
         };
         row.Children.Add(label);

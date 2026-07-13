@@ -35,6 +35,8 @@ public sealed class TravelMapDialog : Dialog
     private readonly Func<PlayerMapPose> _playerPose;
     private readonly Action<string> _notify;
     private readonly TravelMapContextActionHandler _actionHandler;
+    private readonly TrackedUiActionRunner _actionRunner;
+    private readonly TrackedUiActionRunner _persistenceRunner;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly RectangleWidget _background;
     private readonly CanvasWidget _mapHost;
@@ -68,6 +70,8 @@ public sealed class TravelMapDialog : Dialog
         _playerPose = playerPose ?? throw new ArgumentNullException(nameof(playerPose));
         _actionHandler = actionHandler ?? throw new ArgumentNullException(nameof(actionHandler));
         _notify = notify ?? throw new ArgumentNullException(nameof(notify));
+        _actionRunner = new TrackedUiActionRunner(_ => _notify("地图操作未能完成"));
+        _persistenceRunner = new TrackedUiActionRunner(_ => _notify("大地图比例未能保存，本次会话将保留当前值"));
 
         _background = new RectangleWidget
         {
@@ -113,7 +117,7 @@ public sealed class TravelMapDialog : Dialog
         _scaleLabel = new LabelWidget
         {
             Color = SurveyCyan,
-            FontScale = 0.72f,
+            FontScale = TravelMapTypography.SecondaryLabelScale,
             Size = new Vector2(250f, 44f),
             TextAnchor = Engine.Graphics.TextAnchor.VerticalCenter,
         };
@@ -286,7 +290,11 @@ public sealed class TravelMapDialog : Dialog
                 }
                 else if (_activeMenu is not null)
                 {
-                    _ = ExecuteActionAsync(item.Action, _activeMenu);
+                    var menu = _activeMenu;
+                    if (!_actionRunner.TryRun(token => ExecuteActionAsync(item.Action, menu, token)))
+                    {
+                        _notify("另一项地图操作仍在执行");
+                    }
                 }
 
                 break;
@@ -296,6 +304,8 @@ public sealed class TravelMapDialog : Dialog
 
     public override void Dispose()
     {
+        _actionRunner.Dispose();
+        _persistenceRunner.Dispose();
         _lifetime.Cancel();
         _lifetime.Dispose();
         base.Dispose();
@@ -359,12 +369,15 @@ public sealed class TravelMapDialog : Dialog
         _contextCard.IsVisible = true;
     }
 
-    private async Task ExecuteActionAsync(TravelMapContextAction action, TravelMapContextMenu menu)
+    private async Task ExecuteActionAsync(
+        TravelMapContextAction action,
+        TravelMapContextMenu menu,
+        CancellationToken cancellationToken)
     {
         HideContextMenu();
         try
         {
-            var result = await _actionHandler(action, menu, _lifetime.Token).ConfigureAwait(false);
+            var result = await _actionHandler(action, menu, cancellationToken).ConfigureAwait(false);
             if (result == TravelMapActionStatus.Unavailable)
             {
                 _notify("联机旅行命令将在 Task 9 协议启用后可用");
@@ -405,14 +418,14 @@ public sealed class TravelMapDialog : Dialog
         }
 
         _scaleSavePending = false;
-        _ = PersistScaleAsync();
+        _persistenceRunner.TryRun(PersistScaleAsync);
     }
 
-    private async Task PersistScaleAsync()
+    private async Task PersistScaleAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await _settingsStore.SaveAsync(_settings, _lifetime.Token).ConfigureAwait(false);
+            await _settingsStore.SaveAsync(_settings, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {

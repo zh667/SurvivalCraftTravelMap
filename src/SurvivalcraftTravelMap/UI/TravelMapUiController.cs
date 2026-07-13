@@ -4,6 +4,11 @@ using SurvivalcraftTravelMap.Waypoints;
 
 namespace SurvivalcraftTravelMap.UI;
 
+public static class TravelMapTypography
+{
+    public const float SecondaryLabelScale = 0.8f;
+}
+
 public readonly record struct TravelMapFocusState(
     bool HasTextFocus,
     bool HasChatFocus,
@@ -12,6 +17,20 @@ public readonly record struct TravelMapFocusState(
     public static TravelMapFocusState Clear { get; } = new(false, false, false);
 
     public bool AllowsMapHotkey => !HasTextFocus && !HasChatFocus && !HasModalFocus;
+}
+
+public readonly record struct TravelMapInputFocusSignals(
+    bool HasFocusedTextBox,
+    bool IsChatVisible,
+    bool HasFocusedChatTextBox,
+    bool HasModalCapture);
+
+public static class TravelMapInputFocusEvaluator
+{
+    public static TravelMapFocusState Evaluate(TravelMapInputFocusSignals signals) => new(
+        signals.HasFocusedTextBox,
+        signals.IsChatVisible && signals.HasFocusedChatTextBox,
+        signals.HasModalCapture);
 }
 
 public enum TravelMapUiCommandKind

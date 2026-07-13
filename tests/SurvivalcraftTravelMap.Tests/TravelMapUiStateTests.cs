@@ -11,6 +11,37 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapUiStateTests
 {
+    [Fact]
+    public void Secondary_label_scale_meets_the_readability_floor()
+    {
+        Assert.True(TravelMapTypography.SecondaryLabelScale >= 0.8f);
+    }
+
+    [Theory]
+    [InlineData(true, false, false, false, true, false, false)]
+    [InlineData(false, true, true, false, false, true, false)]
+    [InlineData(false, true, false, false, false, false, false)]
+    [InlineData(false, false, false, true, false, false, true)]
+    public void Focus_evaluator_maps_real_input_signals(
+        bool textBoxFocused,
+        bool chatVisible,
+        bool chatTextFocused,
+        bool modalCapture,
+        bool expectedText,
+        bool expectedChat,
+        bool expectedModal)
+    {
+        var focus = TravelMapInputFocusEvaluator.Evaluate(new TravelMapInputFocusSignals(
+            textBoxFocused,
+            chatVisible,
+            chatTextFocused,
+            modalCapture));
+
+        Assert.Equal(expectedText, focus.HasTextFocus);
+        Assert.Equal(expectedChat, focus.HasChatFocus);
+        Assert.Equal(expectedModal, focus.HasModalFocus);
+    }
+
     private readonly TravelMapUiController _controller = new();
 
     [Theory]
@@ -368,14 +399,24 @@ public sealed class TravelMapTeleportRouterTests
 
 internal sealed class RecordingPixelSource(Func<int, int, Rgba32?> pixel) : IExploredMapPixelSource
 {
+    private readonly Func<int, int, Rgba32?> _pixel = pixel;
     public List<(int X, int Z)> Requested { get; } = [];
 
-    public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
+    public IExploredMapReadSession BeginReadSession() => new Session(this);
+
+    private sealed class Session(RecordingPixelSource source) : IExploredMapReadSession
     {
-        Requested.Add((worldX, worldZ));
-        var result = pixel(worldX, worldZ);
-        color = result ?? default;
-        return result.HasValue;
+        public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
+        {
+            source.Requested.Add((worldX, worldZ));
+            var result = source._pixel(worldX, worldZ);
+            color = result ?? default;
+            return result.HasValue;
+        }
+
+        public void Dispose()
+        {
+        }
     }
 }
 

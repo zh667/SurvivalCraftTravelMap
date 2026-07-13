@@ -64,10 +64,24 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public MapTransform Transform { get; set; } = new(NVector2.Zero, 1f, NVector2.One);
 
-    public bool IsExplored(NVector2 worldPosition) => _pixelSource.TryGetExploredPixel(
-        checked((int)MathF.Floor(worldPosition.X)),
-        checked((int)MathF.Floor(worldPosition.Y)),
-        out _);
+    public bool IsExplored(NVector2 worldPosition)
+    {
+        if (!float.IsFinite(worldPosition.X)
+            || !float.IsFinite(worldPosition.Y)
+            || worldPosition.X < int.MinValue
+            || worldPosition.X > int.MaxValue
+            || worldPosition.Y < int.MinValue
+            || worldPosition.Y > int.MaxValue)
+        {
+            return false;
+        }
+
+        using var session = _pixelSource.BeginReadSession();
+        return session.TryGetExploredPixel(
+            (int)MathF.Floor(worldPosition.X),
+            (int)MathF.Floor(worldPosition.Y),
+            out _);
+    }
 
     public Waypoint? HitWaypoint(NVector2 localPosition, float hitRadius = 12f)
     {
