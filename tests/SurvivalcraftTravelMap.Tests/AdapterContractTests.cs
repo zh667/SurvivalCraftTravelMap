@@ -299,6 +299,32 @@ public sealed class AdapterContractTests
         Assert.Equal(default, facade.Movement);
     }
 
+    [Fact]
+    public async Task Disposing_during_a_claimed_pump_fails_the_write_before_dispose_returns()
+    {
+        using var disposeMarked = new ManualResetEventSlim();
+        Task? disposal = null;
+        GameUpdateDispatcher? dispatcher = null;
+        dispatcher = new GameUpdateDispatcher(
+            afterPumpClaimed: () =>
+            {
+                disposal = Task.Run(dispatcher!.Dispose, TestContext.Current.CancellationToken);
+                Assert.True(disposeMarked.Wait(TimeSpan.FromSeconds(5)));
+            },
+            afterDisposeMarked: disposeMarked.Set);
+        var writes = 0;
+        var worker = Task.Run(
+            () => dispatcher.Invoke(() => writes++),
+            TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
+
+        dispatcher.Pump();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => worker);
+        await disposal!;
+        Assert.Equal(0, writes);
+    }
+
     [Theory]
     [InlineData(TravelMapWorkType.Local, true, true, true)]
     [InlineData(TravelMapWorkType.Server, false, true, false)]

@@ -8,7 +8,20 @@ public sealed class GameUpdateDispatcher : IDisposable
     private readonly Queue<IQueuedWork> _work = [];
     private readonly List<NextUpdateWaiter> _nextUpdateWaiters = [];
     private readonly int _updateThreadId = Environment.CurrentManagedThreadId;
+    private readonly Action? _afterPumpClaimed;
+    private readonly Action? _afterDisposeMarked;
+    private int _activePumpCount;
     private bool _disposed;
+
+    public GameUpdateDispatcher()
+    {
+    }
+
+    internal GameUpdateDispatcher(Action? afterPumpClaimed, Action? afterDisposeMarked)
+    {
+        _afterPumpClaimed = afterPumpClaimed;
+        _afterDisposeMarked = afterDisposeMarked;
+    }
 
     public int PendingCount
     {
@@ -73,7 +86,6 @@ public sealed class GameUpdateDispatcher : IDisposable
 
     public void Pump()
     {
-        ThrowIfDisposed();
         if (Environment.CurrentManagedThreadId != _updateThreadId)
         {
             throw new InvalidOperationException("Game update work must be pumped by the owning update thread.");
@@ -83,40 +95,80 @@ public sealed class GameUpdateDispatcher : IDisposable
         NextUpdateWaiter[] waiters;
         lock (_sync)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             work = _work.ToArray();
             _work.Clear();
             waiters = _nextUpdateWaiters.ToArray();
             _nextUpdateWaiters.Clear();
+            _activePumpCount++;
         }
 
-        foreach (var waiter in waiters)
+        try
         {
-            waiter.Registration.Dispose();
-            waiter.Completion.TrySetResult();
-        }
+            _afterPumpClaimed?.Invoke();
+            var disposeException = new ObjectDisposedException(nameof(GameUpdateDispatcher));
+            foreach (var waiter in waiters)
+            {
+                waiter.Registration.Dispose();
+                if (IsDisposed())
+                {
+                    waiter.Completion.TrySetException(disposeException);
+                }
+                else
+                {
+                    waiter.Completion.TrySetResult();
+                }
+            }
 
-        foreach (var item in work)
+            foreach (var item in work)
+            {
+                if (IsDisposed())
+                {
+                    item.Fail(disposeException);
+                }
+                else
+                {
+                    item.Execute();
+                }
+            }
+        }
+        finally
         {
-            item.Execute();
+            lock (_sync)
+            {
+                _activePumpCount--;
+                Monitor.PulseAll(_sync);
+            }
         }
     }
 
     public void Dispose()
     {
-        IQueuedWork[] work;
-        NextUpdateWaiter[] waiters;
+        IQueuedWork[] work = [];
+        NextUpdateWaiter[] waiters = [];
+        var marked = false;
+        var waitForActivePump = false;
         lock (_sync)
         {
-            if (_disposed)
+            if (!_disposed)
             {
-                return;
+                _disposed = true;
+                marked = true;
+                work = _work.ToArray();
+                _work.Clear();
+                waiters = _nextUpdateWaiters.ToArray();
+                _nextUpdateWaiters.Clear();
             }
 
-            _disposed = true;
-            work = _work.ToArray();
-            _work.Clear();
-            waiters = _nextUpdateWaiters.ToArray();
-            _nextUpdateWaiters.Clear();
+            // A queued action may dispose reentrantly on the update thread. It cannot wait for
+            // its own Pump; Pump observes the disposed flag and fails the remaining claimed work.
+            waitForActivePump = _activePumpCount > 0
+                && Environment.CurrentManagedThreadId != _updateThreadId;
+        }
+
+        if (marked)
+        {
+            _afterDisposeMarked?.Invoke();
         }
 
         var exception = new ObjectDisposedException(nameof(GameUpdateDispatcher));
@@ -129,6 +181,25 @@ public sealed class GameUpdateDispatcher : IDisposable
         foreach (var item in work)
         {
             item.Fail(exception);
+        }
+
+        if (waitForActivePump)
+        {
+            lock (_sync)
+            {
+                while (_activePumpCount > 0)
+                {
+                    Monitor.Wait(_sync);
+                }
+            }
+        }
+    }
+
+    private bool IsDisposed()
+    {
+        lock (_sync)
+        {
+            return _disposed;
         }
     }
 
