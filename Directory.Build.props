@@ -3,6 +3,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
-    <SurvivalcraftDir Condition="'$(SurvivalcraftDir)' == ''">$(MSBuildThisFileDirectory)..\</SurvivalcraftDir>
+    <SurvivalcraftDir Condition="'$(SurvivalcraftDir)' == '' and Exists('$(MSBuildThisFileDirectory)..\Survivalcraft.dll')">$(MSBuildThisFileDirectory)..\</SurvivalcraftDir>
+    <SurvivalcraftDir Condition="'$(SurvivalcraftDir)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\Survivalcraft.dll')">$(MSBuildThisFileDirectory)..\..\..\</SurvivalcraftDir>
   </PropertyGroup>
 </Project>

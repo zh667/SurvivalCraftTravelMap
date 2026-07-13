@@ -22,7 +22,7 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
-    public void Shared_build_configuration_targets_net10_and_defaults_game_directory()
+    public void Shared_build_configuration_targets_net10_and_detects_game_directories()
     {
         var document = XDocument.Load(TestPaths.BuildProps);
         var properties = document.Descendants("PropertyGroup").Elements().ToList();
@@ -30,9 +30,50 @@ public sealed class PackageStructureTests
         Assert.Equal("net10.0", properties.Single(e => e.Name == "TargetFramework").Value);
         Assert.Equal("latest", properties.Single(e => e.Name == "LangVersion").Value);
         Assert.Equal("enable", properties.Single(e => e.Name == "Nullable").Value);
-        var gameDirectory = properties.Single(e => e.Name == "SurvivalcraftDir");
-        Assert.Equal("'$(SurvivalcraftDir)' == ''", gameDirectory.Attribute("Condition")?.Value);
-        Assert.Equal("$(MSBuildThisFileDirectory)..\\", gameDirectory.Value);
+        var gameDirectories = properties.Where(e => e.Name == "SurvivalcraftDir").ToList();
+        Assert.Equal(2, gameDirectories.Count);
+        Assert.All(
+            gameDirectories,
+            element => Assert.StartsWith(
+                "'$(SurvivalcraftDir)' == '' and Exists(",
+                element.Attribute("Condition")?.Value,
+                StringComparison.Ordinal));
+        Assert.Contains(
+            gameDirectories,
+            element => element.Value == "$(MSBuildThisFileDirectory)..\\");
+        Assert.Contains(
+            gameDirectories,
+            element => element.Value == "$(MSBuildThisFileDirectory)..\\..\\..\\");
+    }
+
+    [Fact]
+    public void Shared_build_configuration_resolves_an_existing_game_directory()
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            WorkingDirectory = TestPaths.RepositoryRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("msbuild");
+        startInfo.ArgumentList.Add(TestPaths.ModProject);
+        startInfo.ArgumentList.Add("-nologo");
+        startInfo.ArgumentList.Add("-getProperty:SurvivalcraftDir");
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Could not start dotnet msbuild.");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        Assert.Equal(0, process.ExitCode);
+        var gameDirectory = standardOutput.Trim();
+        Assert.True(
+            File.Exists(Path.Combine(gameDirectory, "Survivalcraft.dll")),
+            $"Resolved game directory '{gameDirectory}' does not contain Survivalcraft.dll. {standardError}");
     }
 
     [Fact]
