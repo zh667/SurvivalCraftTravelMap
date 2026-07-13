@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>SurvivalcraftTravelMap</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Survivalcraft">
+      <HintPath>$(SurvivalcraftDir)Survivalcraft.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Engine">
+      <HintPath>$(SurvivalcraftDir)Engine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EntitySystem">
+      <HintPath>$(SurvivalcraftDir)EntitySystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(SurvivalcraftDir)Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="LiteNetLib">
+      <HintPath>$(SurvivalcraftDir)LiteNetLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
