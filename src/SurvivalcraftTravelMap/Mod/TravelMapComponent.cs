@@ -83,11 +83,14 @@ public static class TravelMapRuntimePolicy
 
 public sealed class TravelMapComponent : Component, IUpdateable
 {
+    private const int MaximumChunkAttemptsPerFrame = 4;
     private static int s_nextUpdateLocationId = -1_000_000;
     private static readonly CoordinateTeleportFutureSchemaWarningGate ServerSettingsWarningGate = new();
     private static readonly TravelMapSettingsFutureSchemaWarningGate SettingsWarningGate = new();
 
     private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();
+    private readonly HashSet<(TerrainChunkCoordinate Chunk, string ErrorSignature)> _explorationFailureWarnings = [];
     private readonly TravelMapUiController _uiController = new();
     private readonly IdempotentTravelMapCleanup _runtimeCleanup;
     private GameUpdateDispatcher? _dispatcher;
@@ -111,9 +114,6 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private TrackedUiActionRunner? _networkActions;
     private TeleportPanelWidget? _teleportPanel;
     private BevelledButtonWidget? _teleportPanelButton;
-    private int _lastRecordedX = int.MinValue;
-    private int _lastRecordedZ = int.MinValue;
-    private float _stationaryRecordElapsed;
     private float _flushElapsed;
     private bool _explorationPressureWarningShown;
     private bool _isActive;
@@ -142,7 +142,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     public Action<TravelMapClientTravelCommand>? ClientTravelCommand { get; set; }
 
-    public UpdateOrder UpdateOrder => UpdateOrder.Default;
+    public UpdateOrder UpdateOrder => UpdateOrder.Views;
 
     public override void Load(ValuesDictionary valuesDictionary, IdToEntityMap idToEntityMap)
     {
@@ -192,6 +192,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         UpdateInvitationUi();
+        UpdateExploration();
         if (_miniMap is null || _settings is null)
         {
             return;
@@ -199,7 +200,6 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         _miniMap.IsVisible = _settings.IsMiniMapVisible;
         UpdateMiniMapPosition();
-        UpdateExploration(dt);
         UpdateFlush(dt);
         HandleLargeMapHotkey();
     }
@@ -797,7 +797,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         CommonLib.Net.QueuePackage(new LegacyGpsPackage(message));
     }
 
-    private void UpdateExploration(float dt)
+    private void UpdateExploration()
     {
         if (_explorationRecorder is null)
         {
@@ -807,22 +807,32 @@ public sealed class TravelMapComponent : Component, IUpdateable
         var position = Player.ComponentBody.Position;
         var x = (int)MathF.Floor(position.X);
         var z = (int)MathF.Floor(position.Z);
-        var moved = x != _lastRecordedX || z != _lastRecordedZ;
-        _stationaryRecordElapsed += MathF.Max(0f, dt);
-        if (!moved && _stationaryRecordElapsed < 0.5f)
+        _explorationScheduler.ObservePlayerPosition(x, z);
+        var pendingChunks = _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame);
+        foreach (var chunk in pendingChunks)
         {
-            return;
-        }
-
-        _lastRecordedX = x;
-        _lastRecordedZ = z;
-        _stationaryRecordElapsed = 0f;
-        var radius = Math.Max(1, SettingsManager.VisibilityRange / 2);
-        var result = _explorationRecorder.RecordVisibleArea(x, z, radius);
-        if (result == ExplorationRecordResult.Pressure && !_explorationPressureWarningShown)
-        {
-            _explorationPressureWarningShown = true;
-            ShowMessage("地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存");
+            try
+            {
+                var result = _explorationRecorder.RecordChunk(chunk);
+                if (result == ExplorationRecordResult.Recorded)
+                {
+                    _explorationScheduler.MarkCompleted(chunk);
+                }
+                else if (result == ExplorationRecordResult.Pressure && !_explorationPressureWarningShown)
+                {
+                    _explorationPressureWarningShown = true;
+                    ShowMessage("地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存");
+                }
+            }
+            catch (Exception exception)
+            {
+                var errorSignature = $"{exception.GetType().FullName}: {exception.Message}";
+                if (_explorationFailureWarnings.Add((chunk, errorSignature)))
+                {
+                    Engine.Log.Warning(
+                        $"[TravelMap] Terrain chunk ({chunk.X}, {chunk.Z}) exploration failed: {errorSignature}");
+                }
+            }
         }
     }
 
@@ -1098,6 +1108,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private void CleanupRuntimeResources()
     {
         _isActive = false;
+        _explorationScheduler.Clear();
+        _explorationFailureWarnings.Clear();
         RunCleanupStep(() => _lifetimeCancellation.Cancel());
         RunCleanupStep(() =>
         {

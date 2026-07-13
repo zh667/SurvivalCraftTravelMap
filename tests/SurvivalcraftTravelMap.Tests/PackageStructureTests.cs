@@ -213,6 +213,77 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
+    public void Component_drives_entered_chunk_exploration_after_terrain_views_every_update()
+    {
+        var source = File.ReadAllText(TestPaths.Component);
+        var update = ExtractBraceBlock(source, "public void Update(float dt)");
+        var exploration = ExtractBraceBlock(source, "private void UpdateExploration()");
+        var cleanup = ExtractBraceBlock(source, "private void CleanupRuntimeResources()");
+
+        Assert.Contains("public UpdateOrder UpdateOrder => UpdateOrder.Views;", source, StringComparison.Ordinal);
+        Assert.Contains("private const int MaximumChunkAttemptsPerFrame = 4;", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("UpdateExploration();", update, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateExploration(dt)", update, StringComparison.Ordinal);
+        Assert.True(
+            update.IndexOf("UpdateExploration();", StringComparison.Ordinal)
+            < update.IndexOf("if (_miniMap is null || _settings is null)", StringComparison.Ordinal));
+
+        Assert.Matches(@"var\s+x\s*=\s*\(int\)MathF\.Floor\(position\.X\);", exploration);
+        Assert.Matches(@"var\s+z\s*=\s*\(int\)MathF\.Floor\(position\.Z\);", exploration);
+        Assert.Contains("_explorationScheduler.ObservePlayerPosition(x, z);", exploration, StringComparison.Ordinal);
+        Assert.Contains(
+            "_explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame)",
+            exploration,
+            StringComparison.Ordinal);
+        Assert.Contains("_explorationScheduler.Clear();", cleanup, StringComparison.Ordinal);
+        Assert.Contains("_explorationFailureWarnings.Clear();", cleanup, StringComparison.Ordinal);
+
+        foreach (var legacyReference in new[]
+                 {
+                     "_lastRecordedX",
+                     "_lastRecordedZ",
+                     "_stationaryRecordElapsed",
+                     "SettingsManager.VisibilityRange",
+                     "RecordVisibleArea",
+                 })
+        {
+            Assert.DoesNotContain(legacyReference, source, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Component_attempts_each_pending_chunk_independently_and_completes_only_recorded_chunks()
+    {
+        var source = File.ReadAllText(TestPaths.Component);
+        var exploration = ExtractBraceBlock(source, "private void UpdateExploration()");
+        var attemptLoop = ExtractBraceBlock(exploration, "foreach (var chunk in pendingChunks)");
+        var recordedBranch = ExtractBraceBlock(
+            attemptLoop,
+            "if (result == ExplorationRecordResult.Recorded)");
+        var exceptionHandler = ExtractBraceBlock(attemptLoop, "catch (Exception exception)");
+
+        Assert.Contains("try", attemptLoop, StringComparison.Ordinal);
+        Assert.Contains("_explorationRecorder.RecordChunk(chunk)", attemptLoop, StringComparison.Ordinal);
+        Assert.Contains("_explorationScheduler.MarkCompleted(chunk);", recordedBranch, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(exploration, "MarkCompleted("));
+        Assert.Contains("result == ExplorationRecordResult.Pressure", attemptLoop, StringComparison.Ordinal);
+        Assert.Contains("!_explorationPressureWarningShown", attemptLoop, StringComparison.Ordinal);
+
+        Assert.Contains("exception.GetType().FullName", exceptionHandler, StringComparison.Ordinal);
+        Assert.Contains("exception.Message", exceptionHandler, StringComparison.Ordinal);
+        Assert.Contains("_explorationFailureWarnings.Add((chunk, errorSignature))", exceptionHandler, StringComparison.Ordinal);
+        Assert.Contains("Engine.Log.Warning", exceptionHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("MarkCompleted", exceptionHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("return;", exceptionHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("break;", exceptionHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("throw;", exceptionHandler, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Hud_overlays_are_positioned_in_gui_logical_coordinates()
     {
         var component = File.ReadAllText(TestPaths.Component);
@@ -312,6 +383,108 @@ public sealed class PackageStructureTests
             value => string.Equals(value, "736FC2A9-9B0A-2E00-F7C8-95A4A6811FEE", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "387007A5-9269-1362-A0E7-DFEA4AC68E02", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "B13D2D65-46A7-D038-8111-DE8FCBA58FBC", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ExtractBraceBlock(string source, string anchor)
+    {
+        var anchorIndex = source.IndexOf(anchor, StringComparison.Ordinal);
+        Assert.True(anchorIndex >= 0, $"Could not find source anchor '{anchor}'.");
+        var openingBrace = source.IndexOf('{', anchorIndex + anchor.Length);
+        Assert.True(openingBrace >= 0, $"Could not find opening brace after '{anchor}'.");
+
+        var depth = 0;
+        var inString = false;
+        var inCharacter = false;
+        var inLineComment = false;
+        var inBlockComment = false;
+        var verbatimString = false;
+        for (var index = openingBrace; index < source.Length; index++)
+        {
+            var current = source[index];
+            var next = index + 1 < source.Length ? source[index + 1] : '\0';
+
+            if (inLineComment)
+            {
+                inLineComment = current != '\n';
+                continue;
+            }
+
+            if (inBlockComment)
+            {
+                if (current == '*' && next == '/')
+                {
+                    inBlockComment = false;
+                    index++;
+                }
+
+                continue;
+            }
+
+            if (inString)
+            {
+                if (verbatimString && current == '"' && next == '"')
+                {
+                    index++;
+                }
+                else if (current == '"' && (verbatimString || source[index - 1] != '\\'))
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (inCharacter)
+            {
+                if (current == '\'' && source[index - 1] != '\\')
+                {
+                    inCharacter = false;
+                }
+
+                continue;
+            }
+
+            if (current == '/' && next == '/')
+            {
+                inLineComment = true;
+                index++;
+            }
+            else if (current == '/' && next == '*')
+            {
+                inBlockComment = true;
+                index++;
+            }
+            else if (current == '"')
+            {
+                inString = true;
+                verbatimString = index > 0 && source[index - 1] == '@';
+            }
+            else if (current == '\'')
+            {
+                inCharacter = true;
+            }
+            else if (current == '{')
+            {
+                depth++;
+            }
+            else if (current == '}' && --depth == 0)
+            {
+                return source[openingBrace..(index + 1)];
+            }
+        }
+
+        throw new InvalidDataException($"Could not find closing brace after '{anchor}'.");
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        for (var index = 0; (index = source.IndexOf(value, index, StringComparison.Ordinal)) >= 0; index += value.Length)
+        {
+            count++;
+        }
+
+        return count;
     }
 
     [Fact]
