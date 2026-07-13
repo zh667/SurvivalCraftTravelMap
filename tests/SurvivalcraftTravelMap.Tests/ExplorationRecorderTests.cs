@@ -7,6 +7,388 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public async Task Ready_chunk_writes_all_256_cells_once_and_releases_its_mutation_lease()
+    {
+        using var directory = new TemporaryDirectory();
+        var expected = new Rgba32(10, 20, 30, 255);
+        var source = new FakeTerrainMapSource(defaultContent: 1);
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var recorder = CreateRecorder(source, store, expected);
+        var chunk = new TerrainChunkCoordinate(-1, 5);
+        var tile = store.GetOrLoad(-1, 1);
+        var versionBefore = tile.Version;
+
+        var result = recorder.RecordChunk(chunk);
+
+        Assert.Equal(ExplorationRecordResult.Recorded, result);
+        Assert.Equal(versionBefore + 1, tile.Version);
+        AssertRegion(tile, localX: 48, localZ: 16, expected);
+        Assert.False(tile.TryGetPixel(47, 16, out _));
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+        store.GetOrLoad(9, 9);
+        var reloaded = store.GetOrLoad(-1, 1);
+        Assert.NotSame(tile, reloaded);
+        AssertRegion(reloaded, localX: 48, localZ: 16, expected);
+    }
+
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public void Not_ready_or_transparent_chunk_returns_NotReady_without_requesting_mutation(
+        bool isReady,
+        int content)
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        using (var blocker = store.AcquireMutation(9, 9))
+        {
+            blocker.Tile.SetPixel(3, 4, new Rgba32(91, 92, 93, 255));
+        }
+
+        var blockerTile = store.GetOrLoad(9, 9);
+        var blockerState = CaptureState(blockerTile);
+        var source = new FakeTerrainMapSource(defaultContent: content, isReady: isReady);
+        var recorder = new ExplorationRecorder(
+            new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData()),
+            store);
+
+        var result = recorder.RecordChunk(new TerrainChunkCoordinate(0, 0));
+
+        Assert.Equal(ExplorationRecordResult.NotReady, result);
+        Assert.False(store.ContainsKnownTile(0, 0));
+        Assert.Equal(1, store.Diagnostics.CachedTileCount);
+        Assert.Equal(blockerState, CaptureState(blockerTile));
+    }
+
+    [Fact]
+    public void Storage_pressure_is_reported_after_sampling_without_mutating_old_data()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        using (var blocker = store.AcquireMutation(9, 9))
+        {
+            blocker.Tile.SetPixel(3, 4, new Rgba32(91, 92, 93, 255));
+        }
+
+        var blockerTile = store.GetOrLoad(9, 9);
+        var blockerState = CaptureState(blockerTile);
+        var source = new FakeTerrainMapSource(defaultContent: 1);
+        var recorder = CreateRecorder(source, store, new Rgba32(10, 20, 30, 255));
+
+        var result = recorder.RecordChunk(new TerrainChunkCoordinate(0, 0));
+
+        Assert.Equal(ExplorationRecordResult.Pressure, result);
+        Assert.Equal(TerrainChunkCoordinate.PixelCount, source.SampledColumns.Count);
+        Assert.False(store.ContainsKnownTile(0, 0));
+        Assert.Equal(1, store.Diagnostics.CachedTileCount);
+        Assert.Equal(blockerState, CaptureState(blockerTile));
+    }
+
+    [Fact]
+    public async Task Sampler_exception_propagates_without_mutation_and_leaves_no_tile_pinned()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var tile = store.GetOrLoad(0, 0);
+        tile.SetPixel(15, 15, new Rgba32(91, 92, 93, 255));
+        store.MarkDirty(tile);
+        var before = CaptureState(tile);
+        var recorder = CreateRecorder(
+            new ThrowingTerrainMapSource(throwAtSample: 4),
+            store,
+            new Rgba32(10, 20, 30, 255));
+
+        var exception = Assert.Throws<TerrainSamplingException>(
+            () => recorder.RecordChunk(new TerrainChunkCoordinate(0, 0)));
+
+        Assert.Equal("sample 4", exception.Message);
+        Assert.Equal(before, CaptureState(tile));
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+        store.GetOrLoad(9, 9);
+        var reloaded = store.GetOrLoad(0, 0);
+        Assert.NotSame(tile, reloaded);
+        Assert.Equal(before.Explored, CaptureState(reloaded).Explored);
+        Assert.Equal(before.Colors, CaptureState(reloaded).Colors);
+    }
+
+    [Fact]
+    public void Re_recording_overwrites_every_color_and_repairs_partial_transparent_legacy_region()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path);
+        var tile = store.GetOrLoad(0, 0);
+        var oldOpaque = new Rgba32(101, 102, 103, 255);
+        var oldTransparent = new Rgba32(201, 202, 203, 0);
+        for (var z = 16; z < 32; z++)
+        {
+            for (var x = 32; x < 48; x++)
+            {
+                if (((x + z) % 3) == 0)
+                {
+                    tile.SetPixel(x, z, oldOpaque);
+                }
+                else if (((x + z) % 3) == 1)
+                {
+                    tile.SetPixel(x, z, oldTransparent);
+                }
+            }
+        }
+
+        store.MarkDirty(tile);
+        var versionBefore = tile.Version;
+        var expected = new Rgba32(11, 22, 33, 255);
+        var recorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1),
+            store,
+            expected);
+
+        var result = recorder.RecordChunk(new TerrainChunkCoordinate(2, 1));
+
+        Assert.Equal(ExplorationRecordResult.Recorded, result);
+        Assert.Equal(versionBefore + 1, tile.Version);
+        AssertRegion(tile, localX: 32, localZ: 16, expected);
+    }
+
+    [Fact]
+    public void Negative_tile_quadrants_use_0_16_32_48_offsets_and_each_chunk_stays_in_one_tile()
+    {
+        using var directory = new TemporaryDirectory();
+        var expected = new Rgba32(10, 20, 30, 255);
+        var store = new ExplorationTileStore(directory.Path);
+        var recorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1),
+            store,
+            expected);
+
+        for (var quadrantZ = 0; quadrantZ < 4; quadrantZ++)
+        {
+            for (var quadrantX = 0; quadrantX < 4; quadrantX++)
+            {
+                var result = recorder.RecordChunk(
+                    new TerrainChunkCoordinate(-4 + quadrantX, -8 + quadrantZ));
+
+                Assert.Equal(ExplorationRecordResult.Recorded, result);
+                Assert.Equal(1, store.Diagnostics.KnownTileCount);
+                Assert.True(store.ContainsKnownTile(-1, -2));
+                var tile = store.GetOrLoad(-1, -2);
+                AssertRegion(
+                    tile,
+                    localX: quadrantX * TerrainChunkCoordinate.Size,
+                    localZ: quadrantZ * TerrainChunkCoordinate.Size,
+                    expected);
+            }
+        }
+
+        var completedTile = store.GetOrLoad(-1, -2);
+        Assert.Equal(16, completedTile.Version);
+        for (var z = 0; z < MapTile.Size; z++)
+        {
+            for (var x = 0; x < MapTile.Size; x++)
+            {
+                Assert.True(completedTile.TryGetPixel(x, z, out var actual));
+                Assert.Equal(expected, actual);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Mutation_survives_concurrent_flush_and_trim_pressure_at_low_capacity()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource();
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var existing = store.GetOrLoad(0, 0);
+        existing.SetPixel(63, 63, new Rgba32(91, 92, 93, 255));
+        store.MarkDirty(existing);
+        var recorder = CreateRecorder(source, store, new Rgba32(10, 20, 30, 255));
+        var recording = Task.Run(
+            () => recorder.RecordChunk(new TerrainChunkCoordinate(0, 0)),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+            store.GetOrLoad(9, 9);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        Assert.Equal(
+            ExplorationRecordResult.Recorded,
+            await recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
+        AssertRegion(reloaded, 0, 0, new Rgba32(10, 20, 30, 255));
+    }
+
+    [Fact]
+    public async Task Sampler_exception_survives_concurrent_flush_and_trim_without_partial_pixels()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource(throwAtSample: 4);
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var existing = store.GetOrLoad(0, 0);
+        var oldColor = new Rgba32(91, 92, 93, 255);
+        existing.SetPixel(15, 15, oldColor);
+        store.MarkDirty(existing);
+        var recorder = CreateRecorder(source, store, new Rgba32(10, 20, 30, 255));
+        var recording = Task.Run(
+            () => recorder.RecordChunk(new TerrainChunkCoordinate(0, 0)),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+            store.GetOrLoad(9, 9);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        var exception = await Assert.ThrowsAsync<TerrainSamplingException>(
+            () => recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.Equal("sample 4", exception.Message);
+
+        var reloaded = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
+        Assert.True(reloaded.TryGetPixel(15, 15, out var actual));
+        Assert.Equal(oldColor, actual);
+        Assert.False(reloaded.TryGetPixel(0, 0, out _));
+        Assert.False(reloaded.TryGetPixel(1, 0, out _));
+        Assert.False(reloaded.TryGetPixel(2, 0, out _));
+    }
+
+    [Fact]
+    public async Task Low_capacity_recording_persists_each_completed_chunk()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
+        var store = new ExplorationTileStore(directory.Path, capacity: 4);
+        var recorder = CreateRecorder(source, store, new Rgba32(10, 20, 30, 255));
+
+        Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(new TerrainChunkCoordinate(0, 0)));
+        Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(new TerrainChunkCoordinate(4, 0)));
+        Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(new TerrainChunkCoordinate(0, 4)));
+        Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(new TerrainChunkCoordinate(4, 4)));
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            ["0_0.sctm", "0_1.sctm", "1_0.sctm", "1_1.sctm"],
+            Directory.GetFiles(directory.Path, "*.sctm")
+                .Select(path => Path.GetFileName(path)!)
+                .Order()
+                .ToArray());
+    }
+
+    [Fact]
+    public async Task Low_capacity_sampler_failure_preserves_its_exception_and_existing_data()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new ThrowingTerrainMapSource(throwAtSample: 4);
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var existing = store.GetOrLoad(0, 0);
+        var oldColor = new Rgba32(91, 92, 93, 255);
+        existing.SetPixel(15, 15, oldColor);
+        store.MarkDirty(existing);
+        var recorder = CreateRecorder(source, store, new Rgba32(10, 20, 30, 255));
+
+        var exception = Assert.Throws<TerrainSamplingException>(
+            () => recorder.RecordChunk(new TerrainChunkCoordinate(0, 0)));
+        Assert.Equal("sample 4", exception.Message);
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
+        Assert.True(reloaded.TryGetPixel(15, 15, out var actual));
+        Assert.Equal(oldColor, actual);
+        Assert.False(reloaded.TryGetPixel(0, 0, out _));
+        Assert.False(reloaded.TryGetPixel(1, 0, out _));
+        Assert.False(reloaded.TryGetPixel(2, 0, out _));
+    }
+
+    [Fact]
+    public async Task Flush_interleaved_with_recording_does_not_clear_later_chunk_write()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource();
+        var store = new ExplorationTileStore(directory.Path);
+        var alreadyDirty = store.GetOrLoad(0, 0);
+        alreadyDirty.SetPixel(63, 63, new Rgba32(9, 9, 9, 255));
+        store.MarkDirty(alreadyDirty);
+        var recorder = CreateRecorder(source, store, new Rgba32(10, 20, 30, 255));
+        var recording = Task.Run(
+            () => recorder.RecordChunk(new TerrainChunkCoordinate(0, 0)),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        Assert.Equal(
+            ExplorationRecordResult.Recorded,
+            await recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
+        AssertRegion(reloaded, 0, 0, new Rgba32(10, 20, 30, 255));
+    }
+
+    [Fact]
+    public async Task Flush_interleaving_followed_by_sampler_failure_keeps_existing_tile_unchanged()
+    {
+        using var directory = new TemporaryDirectory();
+        using var source = new BlockingSecondSampleTerrainSource(throwAtSample: 4);
+        var store = new ExplorationTileStore(directory.Path);
+        var alreadyDirty = store.GetOrLoad(0, 0);
+        var oldColor = new Rgba32(91, 92, 93, 255);
+        alreadyDirty.SetPixel(15, 15, oldColor);
+        store.MarkDirty(alreadyDirty);
+        var recorder = CreateRecorder(source, store, new Rgba32(10, 20, 30, 255));
+        var recording = Task.Run(
+            () => recorder.RecordChunk(new TerrainChunkCoordinate(0, 0)),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.True(source.SecondSampleStarted.Wait(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+            await store.FlushAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            source.AllowSecondSample.Set();
+        }
+
+        await Assert.ThrowsAsync<TerrainSamplingException>(
+            () => recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloaded = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
+        Assert.True(reloaded.TryGetPixel(15, 15, out var actual));
+        Assert.Equal(oldColor, actual);
+        Assert.False(reloaded.TryGetPixel(0, 0, out _));
+    }
+
+    [Fact]
     public void Unavailable_or_transparent_column_is_not_explored_and_a_later_valid_sample_fills_it()
     {
         using var directory = new TemporaryDirectory();
@@ -49,194 +431,6 @@ public sealed class ExplorationRecorderTests
         Assert.Equal(ExplorationRecordResult.Recorded, first);
         Assert.Equal(ExplorationRecordResult.Pressure, pressure);
         Assert.Equal(1, store.Diagnostics.CachedTileCount);
-    }
-    [Fact]
-    public async Task Mutation_survives_concurrent_flush_and_trim_pressure_at_low_capacity()
-    {
-        using var directory = new TemporaryDirectory();
-        using var source = new BlockingSecondSampleTerrainSource();
-        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 4);
-        var recorder = new ExplorationRecorder(sampler, store);
-        var recording = Task.Run(
-            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
-            TestContext.Current.CancellationToken);
-
-        try
-        {
-            Assert.True(source.SecondSampleStarted.Wait(
-                TimeSpan.FromSeconds(5),
-                TestContext.Current.CancellationToken));
-            await store.FlushAsync(TestContext.Current.CancellationToken);
-            store.GetOrLoad(9, 9);
-        }
-        finally
-        {
-            source.AllowSecondSample.Set();
-        }
-
-        await recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-        await store.FlushAsync(TestContext.Current.CancellationToken);
-
-        var reloaded = new ExplorationTileStore(directory.Path);
-        Assert.True(reloaded.GetOrLoad(0, 0).TryGetPixel(63, 62, out _));
-        Assert.True(reloaded.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
-    }
-
-    [Fact]
-    public async Task Sampler_exception_survives_concurrent_flush_and_trim_and_keeps_successful_pixels()
-    {
-        using var directory = new TemporaryDirectory();
-        using var source = new BlockingSecondSampleTerrainSource(throwAtSample: 4);
-        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 4);
-        var recorder = new ExplorationRecorder(sampler, store);
-        var recording = Task.Run(
-            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
-            TestContext.Current.CancellationToken);
-
-        try
-        {
-            Assert.True(source.SecondSampleStarted.Wait(
-                TimeSpan.FromSeconds(5),
-                TestContext.Current.CancellationToken));
-            await store.FlushAsync(TestContext.Current.CancellationToken);
-            store.GetOrLoad(9, 9);
-        }
-        finally
-        {
-            source.AllowSecondSample.Set();
-        }
-
-        var exception = await Assert.ThrowsAsync<TerrainSamplingException>(
-            () => recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
-        Assert.Equal("sample 4", exception.Message);
-        await store.FlushAsync(TestContext.Current.CancellationToken);
-
-        var reloaded = new ExplorationTileStore(directory.Path);
-        var firstTile = reloaded.GetOrLoad(0, 0);
-        Assert.True(firstTile.TryGetPixel(62, 62, out _));
-        Assert.True(firstTile.TryGetPixel(63, 62, out _));
-        Assert.True(reloaded.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
-    }
-
-    [Fact]
-    public async Task Low_capacity_recording_pins_every_touched_tile_until_it_is_dirty()
-    {
-        using var directory = new TemporaryDirectory();
-        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
-        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 4);
-        var recorder = new ExplorationRecorder(sampler, store);
-
-        recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1);
-        await store.FlushAsync(TestContext.Current.CancellationToken);
-
-        Assert.Equal(
-            ["0_0.sctm", "0_1.sctm", "1_0.sctm", "1_1.sctm"],
-            Directory.GetFiles(directory.Path, "*.sctm")
-                .Select(path => Path.GetFileName(path)!)
-                .Order()
-                .ToArray());
-    }
-
-    [Fact]
-    public async Task Low_capacity_sampler_failure_preserves_its_exception_and_every_successful_pixel()
-    {
-        using var directory = new TemporaryDirectory();
-        var source = new ThrowingTerrainMapSource(throwAtSample: 4);
-        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 4);
-        var recorder = new ExplorationRecorder(sampler, store);
-
-        var exception = Assert.Throws<TerrainSamplingException>(
-            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1));
-        Assert.Equal("sample 4", exception.Message);
-        await store.FlushAsync(TestContext.Current.CancellationToken);
-
-        var reloadedStore = new ExplorationTileStore(directory.Path);
-        var firstTile = reloadedStore.GetOrLoad(0, 0);
-        Assert.True(firstTile.TryGetPixel(62, 62, out _));
-        Assert.True(firstTile.TryGetPixel(63, 62, out _));
-        Assert.True(reloadedStore.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
-    }
-
-    [Fact]
-    public async Task Flush_interleaved_with_recording_does_not_clear_later_pixel_writes()
-    {
-        using var directory = new TemporaryDirectory();
-        using var source = new BlockingSecondSampleTerrainSource();
-        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path);
-        var alreadyDirty = store.GetOrLoad(0, 0);
-        alreadyDirty.SetPixel(10, 10, new Rgba32(9, 9, 9, 255));
-        store.MarkDirty(alreadyDirty);
-        var recorder = new ExplorationRecorder(sampler, store);
-        var recording = Task.Run(
-            () => recorder.RecordVisibleArea(centerX: 1, centerZ: 1, radius: 1),
-            TestContext.Current.CancellationToken);
-
-        try
-        {
-            Assert.True(source.SecondSampleStarted.Wait(
-                TimeSpan.FromSeconds(5),
-                TestContext.Current.CancellationToken));
-            await store.FlushAsync(TestContext.Current.CancellationToken);
-        }
-        finally
-        {
-            source.AllowSecondSample.Set();
-        }
-
-        await recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-        await store.FlushAsync(TestContext.Current.CancellationToken);
-
-        var reloaded = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
-        for (var z = 0; z <= 2; z++)
-        {
-            for (var x = 0; x <= 2; x++)
-            {
-                Assert.True(reloaded.TryGetPixel(x, z, out _), $"Expected persisted pixel ({x}, {z}).");
-            }
-        }
-    }
-
-    [Fact]
-    public async Task Flush_interleaving_followed_by_sampler_failure_keeps_each_written_tile_dirty()
-    {
-        using var directory = new TemporaryDirectory();
-        using var source = new BlockingSecondSampleTerrainSource(throwAtSample: 4);
-        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path);
-        var alreadyDirty = store.GetOrLoad(0, 0);
-        alreadyDirty.SetPixel(10, 10, new Rgba32(9, 9, 9, 255));
-        store.MarkDirty(alreadyDirty);
-        var recorder = new ExplorationRecorder(sampler, store);
-        var recording = Task.Run(
-            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
-            TestContext.Current.CancellationToken);
-
-        try
-        {
-            Assert.True(source.SecondSampleStarted.Wait(
-                TimeSpan.FromSeconds(5),
-                TestContext.Current.CancellationToken));
-            await store.FlushAsync(TestContext.Current.CancellationToken);
-        }
-        finally
-        {
-            source.AllowSecondSample.Set();
-        }
-
-        await Assert.ThrowsAsync<TerrainSamplingException>(
-            () => recording.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
-        await store.FlushAsync(TestContext.Current.CancellationToken);
-
-        var reloadedStore = new ExplorationTileStore(directory.Path);
-        var firstTile = reloadedStore.GetOrLoad(0, 0);
-        Assert.True(firstTile.TryGetPixel(62, 62, out _));
-        Assert.True(firstTile.TryGetPixel(63, 62, out _));
-        Assert.True(reloadedStore.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
     }
 
     [Fact]
@@ -289,6 +483,51 @@ public sealed class ExplorationRecorderTests
         Assert.Throws<ArgumentOutOfRangeException>(
             () => recorder.RecordVisibleArea(centerX: 0, centerZ: 0, radius: -1));
         Assert.Empty(source.SampledColumns);
+    }
+
+    private static ExplorationRecorder CreateRecorder(
+        ITerrainMapSource source,
+        ExplorationTileStore store,
+        Rgba32 sampledColor)
+    {
+        return new ExplorationRecorder(
+            new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+            {
+                [1] = new BlockPixelData(1, sampledColor, false),
+            })),
+            store);
+    }
+
+    private static void AssertRegion(MapTile tile, int localX, int localZ, Rgba32 expected)
+    {
+        for (var z = 0; z < TerrainChunkCoordinate.Size; z++)
+        {
+            for (var x = 0; x < TerrainChunkCoordinate.Size; x++)
+            {
+                Assert.True(tile.TryGetPixel(localX + x, localZ + z, out var actual));
+                Assert.Equal(expected, actual);
+            }
+        }
+    }
+
+    private static TileState CaptureState(MapTile tile)
+    {
+        var explored = new byte[MapTile.ExploredByteCount];
+        var colors = new byte[MapTile.ColorByteCount];
+        tile.CopyExploredTo(explored);
+        tile.CopyColorsTo(colors);
+        return new TileState(tile.Version, explored, colors);
+    }
+
+    private sealed record TileState(long Version, byte[] Explored, byte[] Colors)
+    {
+        public bool Equals(TileState? other) =>
+            other is not null
+            && Version == other.Version
+            && Explored.AsSpan().SequenceEqual(other.Explored)
+            && Colors.AsSpan().SequenceEqual(other.Colors);
+
+        public override int GetHashCode() => HashCode.Combine(Version, Explored.Length, Colors.Length);
     }
 }
 

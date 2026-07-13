@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Persistence;
 using Xunit;
@@ -31,6 +32,45 @@ public sealed class ExplorationTileStoreTests : IDisposable
         var reloaded = new ExplorationTileStore(_directory).GetOrLoad(0, 0);
         Assert.True(reloaded.TryGetPixel(4, 5, out var color));
         Assert.Equal(new Rgba32(10, 20, 30, 255), color);
+    }
+
+    [Fact]
+    public async Task Recorded_chunk_persists_all_256_cells_with_codec_version_one()
+    {
+        var expected = new Rgba32(10, 20, 30, 255);
+        var store = new ExplorationTileStore(_directory);
+        var recorder = new ExplorationRecorder(
+            new TerrainMapSampler(
+                new FakeTerrainMapSource(defaultContent: 1),
+                TerrainMapSamplerTests.CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+                {
+                    [1] = new BlockPixelData(1, expected, false),
+                })),
+            store);
+
+        var result = recorder.RecordChunk(new TerrainChunkCoordinate(-1, 5));
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ExplorationRecordResult.Recorded, result);
+        var path = Path.Combine(_directory, "-1_1.sctm");
+        using (var source = File.OpenRead(path))
+        using (var deflate = new DeflateStream(source, CompressionMode.Decompress))
+        {
+            Span<byte> header = stackalloc byte[5];
+            deflate.ReadExactly(header);
+            Assert.Equal("SCTM"u8.ToArray(), header[..4].ToArray());
+            Assert.Equal(1, header[4]);
+        }
+
+        var reloaded = new ExplorationTileStore(_directory).GetOrLoad(-1, 1);
+        for (var z = 16; z < 32; z++)
+        {
+            for (var x = 48; x < 64; x++)
+            {
+                Assert.True(reloaded.TryGetPixel(x, z, out var actual));
+                Assert.Equal(expected, actual);
+            }
+        }
     }
 
     [Fact]
@@ -180,24 +220,28 @@ public sealed class ExplorationTileStoreTests : IDisposable
                     token);
             });
 
-        for (var x = 0; x < 40; x++)
+        var recorder = new ExplorationRecorder(
+            new TerrainMapSampler(
+                new FakeTerrainMapSource(defaultContent: 1),
+                TerrainMapSamplerTests.CreatePixelData()),
+            store);
+        for (var tileX = 0; tileX < 40; tileX++)
         {
-            if (store.TryAcquireMutation(x, 0, out var lease) == TileMutationAdmission.Acquired)
-            {
-                lease!.Tile.SetPixel(0, 0, new Rgba32(1, 2, 3, 255));
-                lease.Dispose();
-            }
+            recorder.RecordChunk(new TerrainChunkCoordinate(tileX * 4, 0));
         }
 
         Assert.True(store.IsUnderPressure);
         Assert.True(store.Diagnostics.CachedTileCount <= store.Capacity);
         await Assert.ThrowsAsync<IOException>(() => store.FlushAsync(TestContext.Current.CancellationToken));
-        Assert.Equal(TileMutationAdmission.Pressure, store.TryAcquireMutation(99, 0, out _));
+        Assert.Equal(
+            ExplorationRecordResult.Pressure,
+            recorder.RecordChunk(new TerrainChunkCoordinate(99 * 4, 0)));
 
         failWrites = false;
         await store.FlushAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(TileMutationAdmission.Acquired, store.TryAcquireMutation(99, 0, out var recovered));
-        recovered!.Dispose();
+        Assert.Equal(
+            ExplorationRecordResult.Recorded,
+            recorder.RecordChunk(new TerrainChunkCoordinate(99 * 4, 0)));
         Assert.False(store.IsUnderPressure);
         Assert.True(store.Diagnostics.CachedTileCount <= store.Capacity);
     }
