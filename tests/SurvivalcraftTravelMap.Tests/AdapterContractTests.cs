@@ -325,6 +325,37 @@ public sealed class AdapterContractTests
         Assert.Equal(0, writes);
     }
 
+    [Fact]
+    public async Task Queued_action_can_invoke_reentrantly_on_the_update_thread()
+    {
+        using var dispatcher = new GameUpdateDispatcher();
+        var nestedCalls = 0;
+        var worker = Task.Run(
+            () => dispatcher.Invoke(() => dispatcher.Invoke(() => nestedCalls++)),
+            TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
+
+        dispatcher.Pump();
+
+        await worker;
+        Assert.Equal(1, nestedCalls);
+    }
+
+    [Fact]
+    public async Task Queued_action_can_dispose_reentrantly_without_waiting_for_its_own_pump()
+    {
+        var dispatcher = new GameUpdateDispatcher();
+        var worker = Task.Run(
+            () => dispatcher.Invoke(dispatcher.Dispose),
+            TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
+
+        dispatcher.Pump();
+
+        await worker;
+        Assert.Throws<ObjectDisposedException>(() => dispatcher.Invoke(static () => { }));
+    }
+
     [Theory]
     [InlineData(TravelMapWorkType.Local, true, true, true)]
     [InlineData(TravelMapWorkType.Server, false, true, false)]
