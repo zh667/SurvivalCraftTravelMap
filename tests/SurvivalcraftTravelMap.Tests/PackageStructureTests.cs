@@ -94,6 +94,7 @@ public sealed class PackageStructureTests
         Assert.Equal(
             "false",
             properties.Single(e => e.Name == "IncludeSourceRevisionInInformationalVersion").Value);
+        Assert.Equal("false", properties.Single(e => e.Name == "EnableSourceLink").Value);
 
         foreach (var assembly in new[]
                  {
