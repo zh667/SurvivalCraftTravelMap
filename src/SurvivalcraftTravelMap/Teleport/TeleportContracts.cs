@@ -1,0 +1,90 @@
+using System.Numerics;
+
+namespace SurvivalcraftTravelMap.Teleport;
+
+public enum TeleportResult
+{
+    Success,
+    ChunkTimeout,
+    NoSafePosition,
+    OutOfWorld,
+    RolledBack,
+}
+
+public enum TeleportBlockKind
+{
+    Air,
+    SafeSolid,
+    Lava,
+    Fire,
+    Cactus,
+    Spikes,
+    Water,
+    Fluid,
+    Leaves,
+    Falling,
+    Damaging,
+}
+
+public readonly record struct PlayerMovementSnapshot(
+    Vector3 Position,
+    Quaternion Rotation,
+    Vector3 LinearVelocity,
+    Vector3 AngularVelocity,
+    float FallDistance,
+    bool IsFalling,
+    bool HasPendingFallDamage);
+
+public interface ITerrainAccess
+{
+    bool IsColumnInWorld(int x, int z);
+
+    bool IsCellInWorld(int x, int y, int z);
+
+    int GetSurfaceHeight(int x, int z);
+
+    TeleportBlockKind GetBlockKind(int x, int y, int z);
+}
+
+public interface IChunkLoader
+{
+    Task LoadAreaAsync(int centerX, int centerZ, int radius, CancellationToken cancellationToken);
+}
+
+public interface IPlayerMover
+{
+    PlayerMovementSnapshot CaptureSnapshot();
+
+    void Move(PlayerMovementSnapshot movement);
+
+    void Restore(PlayerMovementSnapshot snapshot);
+}
+
+public interface IEntityCollisionQuery
+{
+    bool HasCollision(Vector3 feetPosition);
+}
+
+public interface ITeleportClock
+{
+    Task DelayAsync(TimeSpan duration, CancellationToken cancellationToken);
+
+    Task WaitForNextUpdateAsync(CancellationToken cancellationToken);
+}
+
+public sealed class TeleportRollbackException : Exception
+{
+    public TeleportRollbackException(Exception originalFailure, Exception restoreFailure)
+        : base("Teleport failed and restoring the original player movement state also failed.",
+            new AggregateException(originalFailure, restoreFailure))
+    {
+        ArgumentNullException.ThrowIfNull(originalFailure);
+        ArgumentNullException.ThrowIfNull(restoreFailure);
+        OriginalFailure = originalFailure;
+        RestoreFailure = restoreFailure;
+    }
+
+    public Exception OriginalFailure { get; }
+
+    public Exception RestoreFailure { get; }
+}
