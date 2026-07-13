@@ -56,6 +56,30 @@ public sealed class ExplorationTileStore
         }
     }
 
+    public MapTile GetOrLoadAndMarkDirty(int tileX, int tileZ)
+    {
+        var key = new TileKey(tileX, tileZ);
+        lock (_sync)
+        {
+            CacheEntry entry;
+            if (_cache.TryGetValue(key, out var cached))
+            {
+                entry = cached;
+            }
+            else
+            {
+                var tile = Load(key);
+                var node = _lru.AddFirst(key);
+                entry = new CacheEntry(tile, node);
+                _cache.Add(key, entry);
+            }
+
+            SetDirty(entry);
+            TrimCleanEntries();
+            return entry.Tile;
+        }
+    }
+
     public void MarkDirty(MapTile tile)
     {
         ArgumentNullException.ThrowIfNull(tile);
@@ -68,9 +92,7 @@ public sealed class ExplorationTileStore
                 throw new InvalidOperationException("Only a tile returned by this store can be marked dirty.");
             }
 
-            entry.IsDirty = true;
-            entry.Generation++;
-            Touch(entry);
+            SetDirty(entry);
         }
     }
 
@@ -156,6 +178,13 @@ public sealed class ExplorationTileStore
     {
         _lru.Remove(entry.Node);
         _lru.AddFirst(entry.Node);
+    }
+
+    private void SetDirty(CacheEntry entry)
+    {
+        entry.IsDirty = true;
+        entry.Generation++;
+        Touch(entry);
     }
 
     private void TrimCleanEntries()

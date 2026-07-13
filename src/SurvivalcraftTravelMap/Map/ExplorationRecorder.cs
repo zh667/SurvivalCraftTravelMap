@@ -22,6 +22,7 @@ public sealed class ExplorationRecorder(
         var maximumX = checked(centerX + radius);
         var minimumZ = checked(centerZ - radius);
         var maximumZ = checked(centerZ + radius);
+        var acquiredTiles = new Dictionary<(int X, int Z), MapTile>();
         var touchedTiles = new HashSet<MapTile>();
 
         try
@@ -32,7 +33,13 @@ public sealed class ExplorationRecorder(
                 {
                     var color = _sampler.Sample(x, z);
                     var coordinate = TileCoordinate.FromWorld(x, z);
-                    var tile = _tileStore.GetOrLoad(coordinate.TileX, coordinate.TileZ);
+                    var key = (X: coordinate.TileX, Z: coordinate.TileZ);
+                    if (!acquiredTiles.TryGetValue(key, out var tile))
+                    {
+                        tile = _tileStore.GetOrLoadAndMarkDirty(key.X, key.Z);
+                        acquiredTiles.Add(key, tile);
+                    }
+
                     tile.SetPixel(coordinate.LocalX, coordinate.LocalZ, color);
                     touchedTiles.Add(tile);
 

@@ -7,6 +7,47 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public async Task Low_capacity_recording_pins_every_touched_tile_until_it_is_dirty()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
+        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var recorder = new ExplorationRecorder(sampler, store);
+
+        recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1);
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            ["0_0.sctm", "0_1.sctm", "1_0.sctm", "1_1.sctm"],
+            Directory.GetFiles(directory.Path, "*.sctm")
+                .Select(path => Path.GetFileName(path)!)
+                .Order()
+                .ToArray());
+    }
+
+    [Fact]
+    public async Task Low_capacity_sampler_failure_preserves_its_exception_and_every_successful_pixel()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new ThrowingTerrainMapSource(throwAtSample: 4);
+        var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var recorder = new ExplorationRecorder(sampler, store);
+
+        var exception = Assert.Throws<TerrainSamplingException>(
+            () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1));
+        Assert.Equal("sample 4", exception.Message);
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        var reloadedStore = new ExplorationTileStore(directory.Path);
+        var firstTile = reloadedStore.GetOrLoad(0, 0);
+        Assert.True(firstTile.TryGetPixel(62, 62, out _));
+        Assert.True(firstTile.TryGetPixel(63, 62, out _));
+        Assert.True(reloadedStore.GetOrLoad(1, 0).TryGetPixel(0, 62, out _));
+    }
+
+    [Fact]
     public async Task Flush_interleaved_with_recording_does_not_clear_later_pixel_writes()
     {
         using var directory = new TemporaryDirectory();
@@ -178,3 +219,27 @@ internal sealed class BlockingSecondSampleTerrainSource(int? throwAtSample = nul
         SecondSampleStarted.Dispose();
     }
 }
+
+internal sealed class ThrowingTerrainMapSource(int throwAtSample) : ITerrainMapSource
+{
+    private int _sampleCount;
+
+    public int GetTopHeight(int x, int z)
+    {
+        var sample = ++_sampleCount;
+        if (sample == throwAtSample)
+        {
+            throw new TerrainSamplingException($"sample {sample}");
+        }
+
+        return 64;
+    }
+
+    public int GetContent(int x, int y, int z) => 1;
+
+    public int GetSeasonalTemperature(int x, int z) => 8;
+
+    public int GetSeasonalHumidity(int x, int z) => 8;
+}
+
+internal sealed class TerrainSamplingException(string message) : Exception(message);
