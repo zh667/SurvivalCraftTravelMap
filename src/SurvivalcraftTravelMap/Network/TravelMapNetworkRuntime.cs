@@ -1,0 +1,302 @@
+using Game;
+using Game.NetWork;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using SurvivalcraftTravelMap.Mod;
+using SurvivalcraftTravelMap.Teleport;
+
+namespace SurvivalcraftTravelMap.Network;
+
+internal static class TravelMapNetworkRuntime
+{
+    private static readonly ConditionalWeakTable<ProjectNet, LegacyServerContext> LegacyServers = new();
+
+    internal static void HandleLegacy(
+        LegacyGpsPackage package,
+        ProjectNet projectNet,
+        NetNode netNode,
+        bool isServer)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+        ArgumentNullException.ThrowIfNull(projectNet);
+        ArgumentNullException.ThrowIfNull(netNode);
+        if (isServer)
+        {
+            if (package.From is not null)
+            {
+                Observe(LegacyServers.GetValue(
+                    projectNet,
+                    static project => new LegacyServerContext(project))
+                    .HandleAsync(package, netNode));
+            }
+
+            return;
+        }
+
+        var mainPlayer = projectNet.FindSubsystem<SubsystemPlayers>(false)?.MainPlayer;
+        var component = mainPlayer?.Entity.FindComponent<TravelMapComponent>(false);
+        if (component is not null
+            && package.Message.Kind == LegacyGpsMessageKind.TeleportResponse)
+        {
+            component.HandleLegacyClientResponse(package.Message);
+        }
+    }
+
+    internal static void UpdateLegacyServer(ProjectNet projectNet, NetNode netNode)
+    {
+        if (LegacyServers.TryGetValue(projectNet, out var context))
+        {
+            context.ExpireInvitations(netNode);
+        }
+    }
+
+    internal static void HandleCoordinate(
+        CoordinateTeleportPackage package,
+        ProjectNet projectNet,
+        NetNode netNode,
+        bool isServer)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+        ArgumentNullException.ThrowIfNull(projectNet);
+        ArgumentNullException.ThrowIfNull(netNode);
+        if (isServer)
+        {
+            var task = HandleCoordinateOnServerAsync(package, netNode);
+            Observe(task);
+            return;
+        }
+
+        var source = package.From;
+        var mainPlayer = projectNet.FindSubsystem<SubsystemPlayers>(false)?.MainPlayer;
+        var component = mainPlayer?.Entity.FindComponent<TravelMapComponent>(false);
+        if (source is not null && component is not null)
+        {
+            component.ReceiveCoordinateServerMessage(source, package.Message);
+        }
+    }
+
+    private static async Task HandleCoordinateOnServerAsync(
+        CoordinateTeleportPackage package,
+        NetNode netNode)
+    {
+        var source = package.From;
+        if (source is null)
+        {
+            return;
+        }
+
+        CoordinateTeleportMessage response;
+        try
+        {
+            var component = source.PlayerData?.ComponentPlayer?.Entity
+                .FindComponent<TravelMapComponent>(false);
+            response = component is null
+                ? CoordinateTeleportMessage.Result(
+                    package.Message.RequestId,
+                    CoordinateTeleportResultCode.Rejected)
+                : await component.HandleCoordinateServerAsync(
+                    source,
+                    package.Message,
+                    CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            response = CoordinateTeleportMessage.Result(
+                package.Message.RequestId,
+                CoordinateTeleportResultCode.InternalError);
+        }
+
+        if (source.IsConnected)
+        {
+            netNode.QueuePackage(new CoordinateTeleportPackage(response) { To = source });
+        }
+    }
+
+    private static void Observe(Task task)
+    {
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private sealed class LegacyServerContext(ProjectNet project)
+    {
+        private readonly ProjectNet _project = project;
+        private readonly InvitationManager _invitations = new();
+
+        internal async Task HandleAsync(LegacyGpsPackage package, NetNode netNode)
+        {
+            var source = package.From;
+            var sourcePlayer = FindPlayer(source.PlayerGuid);
+            if (sourcePlayer is null || sourcePlayer.PlayerData.Client != source)
+            {
+                return;
+            }
+
+            switch (package.Message.Kind)
+            {
+                case LegacyGpsMessageKind.Request:
+                    Send(netNode, source, LegacyGpsMessage.Response(
+                        _project.FindSubsystem<SubsystemPlayers>(true).ComponentPlayers
+                            .Where(player => player.PlayerGuid != sourcePlayer.PlayerGuid)
+                            .Select(player => new LegacyGpsPlayerData(0, player.PlayerData.Name))
+                            .ToArray()));
+                    break;
+                case LegacyGpsMessageKind.Teleport:
+                    await HandleTeleportRequestAsync(package.Message, sourcePlayer, netNode)
+                        .ConfigureAwait(false);
+                    break;
+                case LegacyGpsMessageKind.TeleportAllow:
+                    await HandleInvitationResolutionAsync(
+                        sourcePlayer,
+                        package.Message.IsAllowed,
+                        netNode).ConfigureAwait(false);
+                    break;
+                case LegacyGpsMessageKind.MultiServerTeleport:
+                    SendResult(netNode, sourcePlayer, "此服务器不支持跨服务器玩家传送");
+                    break;
+            }
+        }
+
+        internal void ExpireInvitations(NetNode netNode)
+        {
+            foreach (var invitation in _invitations.RemoveExpired())
+            {
+                var inviter = FindPlayer(invitation.Inviter.Id);
+                if (inviter is not null)
+                {
+                    SendResult(netNode, inviter, "玩家传送邀请等待超时");
+                }
+            }
+        }
+
+        private async Task HandleTeleportRequestAsync(
+            LegacyGpsMessage message,
+            ComponentPlayer inviter,
+            NetNode netNode)
+        {
+            if (!Guid.TryParse(message.PlayerName, out var targetId))
+            {
+                SendResult(netNode, inviter, "目标玩家标识无效");
+                return;
+            }
+
+            var invitee = FindPlayer(targetId);
+            var request = _invitations.Request(
+                ToInvitationPlayer(inviter),
+                invitee is null
+                    ? new LegacyInvitationPlayer(targetId, string.Empty, false)
+                    : ToInvitationPlayer(invitee),
+                inviter.PlayerData.ServerManager);
+            switch (request.Status)
+            {
+                case InvitationRequestStatus.Self:
+                    SendResult(netNode, inviter, "不能邀请自己传送");
+                    break;
+                case InvitationRequestStatus.TargetOffline:
+                    SendResult(netNode, inviter, "目标玩家已离线");
+                    break;
+                case InvitationRequestStatus.AlreadyPending:
+                    SendResult(netNode, inviter, "相关玩家已有待处理的传送邀请");
+                    break;
+                case InvitationRequestStatus.AdminImmediateTeleport:
+                    await TeleportInviterAsync(inviter, invitee!, netNode).ConfigureAwait(false);
+                    break;
+                case InvitationRequestStatus.InvitationCreated:
+                    SendResult(netNode, inviter, "传送邀请已发送");
+                    Send(
+                        netNode,
+                        invitee!.PlayerData.Client,
+                        LegacyGpsMessage.TeleportResponse(
+                            1,
+                            $"{inviter.PlayerData.Name} 邀请传送到你的位置，是否同意？"));
+                    break;
+            }
+        }
+
+        private async Task HandleInvitationResolutionAsync(
+            ComponentPlayer invitee,
+            bool accepted,
+            NetNode netNode)
+        {
+            var resolution = _invitations.Resolve(invitee.PlayerGuid, accepted);
+            if (resolution.Status is InvitationResolutionStatus.NotFound
+                or InvitationResolutionStatus.Expired)
+            {
+                SendResult(netNode, invitee, "传送邀请已失效");
+                return;
+            }
+
+            var inviter = FindPlayer(resolution.Invitation!.Inviter.Id);
+            var currentInvitee = FindPlayer(resolution.Invitation.Invitee.Id);
+            if (inviter is null || currentInvitee is null)
+            {
+                if (inviter is not null)
+                {
+                    SendResult(netNode, inviter, "对方已离线，传送邀请已取消");
+                }
+
+                return;
+            }
+
+            if (resolution.Status == InvitationResolutionStatus.Rejected)
+            {
+                SendResult(netNode, inviter, "对方拒绝了传送邀请");
+                return;
+            }
+
+            await TeleportInviterAsync(inviter, currentInvitee, netNode).ConfigureAwait(false);
+        }
+
+        private async Task TeleportInviterAsync(
+            ComponentPlayer inviter,
+            ComponentPlayer invitee,
+            NetNode netNode)
+        {
+            var component = inviter.Entity.FindComponent<TravelMapComponent>(false);
+            if (component is null)
+            {
+                SendResult(netNode, inviter, "服务器地图传送组件不可用");
+                return;
+            }
+
+            var position = invitee.ComponentBody.Position;
+            var result = await component.HandleLegacyTeleportToPlayerAsync(
+                new Vector3(position.X, position.Y, position.Z),
+                CancellationToken.None).ConfigureAwait(false);
+            SendResult(
+                netNode,
+                inviter,
+                result == TeleportResult.Success
+                    ? "传送完成"
+                    : result switch
+                    {
+                        TeleportResult.ChunkTimeout => "目标区块加载超时",
+                        TeleportResult.NoSafePosition => "目标玩家附近没有安全落点",
+                        TeleportResult.OutOfWorld => "目标位置超出世界范围",
+                        TeleportResult.RolledBack => "落点复查失败，已回到原位置",
+                        _ => "传送未完成",
+                    });
+        }
+
+        private ComponentPlayer? FindPlayer(Guid playerId) =>
+            _project.FindSubsystem<SubsystemPlayers>(true).ComponentPlayers
+                .FirstOrDefault(player => player.PlayerGuid == playerId);
+
+        private static LegacyInvitationPlayer ToInvitationPlayer(ComponentPlayer player) =>
+            new(player.PlayerGuid, player.PlayerData.Name, player.PlayerData.Client.IsConnected);
+
+        private static void SendResult(NetNode netNode, ComponentPlayer player, string message) =>
+            Send(netNode, player.PlayerData.Client, LegacyGpsMessage.TeleportResponse(0, message));
+
+        private static void Send(NetNode netNode, Client target, LegacyGpsMessage message)
+        {
+            if (target.IsConnected)
+            {
+                netNode.QueuePackage(new LegacyGpsPackage(message) { To = target });
+            }
+        }
+    }
+}

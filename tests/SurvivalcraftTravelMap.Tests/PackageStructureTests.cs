@@ -98,13 +98,16 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
-    public void Loader_only_checks_for_the_legacy_package_conflict()
+    public void Loader_checks_conflict_and_registers_only_travel_map_protocols()
     {
         var source = File.ReadAllText(TestPaths.Loader);
 
         Assert.Contains("ModsManager.GetModEntity(\"34GPSFix\"", source, StringComparison.Ordinal);
         Assert.Contains("DialogsManager.Alert", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("PackageManager.RegisterPackage", source, StringComparison.Ordinal);
+        Assert.Contains("PackageManager.RegisterPackage(new LegacyGpsPackage())", source, StringComparison.Ordinal);
+        Assert.Contains("PackageManager.RegisterPackage(new CoordinateTeleportPackage())", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PackageId = 60", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AntiCheat", source, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

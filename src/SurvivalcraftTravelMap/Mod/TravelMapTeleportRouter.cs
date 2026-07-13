@@ -10,7 +10,15 @@ public enum TravelMapTeleportDispatchResult
     CommandQueued,
 }
 
-public sealed record TravelMapClientTravelCommand(Vector3 Target);
+public enum TravelMapClientTravelMode
+{
+    Surface,
+    Waypoint,
+}
+
+public sealed record TravelMapClientTravelCommand(
+    Vector3 Target,
+    TravelMapClientTravelMode Mode = TravelMapClientTravelMode.Waypoint);
 
 public sealed class TravelMapTeleportRouter(
     TravelMapWorkType workType,
@@ -22,6 +30,22 @@ public sealed class TravelMapTeleportRouter(
 
     public Task<TravelMapTeleportDispatchResult> RequestAsync(
         Vector3 target,
+        CancellationToken cancellationToken) =>
+        RequestAsync(target, TravelMapClientTravelMode.Waypoint, cancellationToken);
+
+    public Task<TravelMapTeleportDispatchResult> RequestSurfaceAsync(
+        Vector3 target,
+        CancellationToken cancellationToken) =>
+        RequestAsync(target, TravelMapClientTravelMode.Surface, cancellationToken);
+
+    public Task<TravelMapTeleportDispatchResult> RequestWaypointAsync(
+        Vector3 target,
+        CancellationToken cancellationToken) =>
+        RequestAsync(target, TravelMapClientTravelMode.Waypoint, cancellationToken);
+
+    private Task<TravelMapTeleportDispatchResult> RequestAsync(
+        Vector3 target,
+        TravelMapClientTravelMode mode,
         CancellationToken cancellationToken)
     {
         if (workType == TravelMapWorkType.Local)
@@ -32,7 +56,7 @@ public sealed class TravelMapTeleportRouter(
         if (workType == TravelMapWorkType.Client && clientCommand is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            clientCommand(new TravelMapClientTravelCommand(target));
+            clientCommand(new TravelMapClientTravelCommand(target, mode));
             return Task.FromResult(TravelMapTeleportDispatchResult.CommandQueued);
         }
 

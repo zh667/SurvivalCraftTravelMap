@@ -3,6 +3,7 @@ using Game;
 using Game.NetWork;
 using GameEntitySystem;
 using SurvivalcraftTravelMap.Map;
+using SurvivalcraftTravelMap.Network;
 using SurvivalcraftTravelMap.Persistence;
 using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.Teleport;
@@ -80,6 +81,13 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private TravelMapDialog? _largeMapDialog;
     private TrackedUiActionRunner? _uiActions;
     private Task? _flushTask;
+    private readonly object _networkSync = new();
+    private CoordinateTeleportServerSession? _coordinateServerSession;
+    private CoordinateTeleportClientSession? _coordinateClientSession;
+    private CoordinateTeleportServerOptions _coordinateServerOptions = new();
+    private TrackedUiActionRunner? _networkActions;
+    private TeleportPanelWidget? _teleportPanel;
+    private BevelledButtonWidget? _teleportPanelButton;
     private int _lastRecordedX = int.MinValue;
     private int _lastRecordedZ = int.MinValue;
     private float _stationaryRecordElapsed;
@@ -112,6 +120,21 @@ public sealed class TravelMapComponent : Component, IUpdateable
         Terrain = Project.FindSubsystem<SubsystemTerrain>(true);
         TimeOfDay = Project.FindSubsystem<SubsystemTimeOfDay>(true);
         WorkType = ToTravelMapWorkType(CommonLib.WorkType);
+        if (WorkType == TravelMapWorkType.Server)
+        {
+            try
+            {
+                var optionsPath = Engine.Storage.GetSystemPath(
+                    "app:/SurvivalcraftTravelMap/server-settings.json");
+                _coordinateServerOptions = new CoordinateTeleportServerOptionsStore(optionsPath).Load();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Engine.Log.Warning($"[TravelMap] Server teleport settings could not be loaded: {exception.Message}");
+                _coordinateServerOptions = new CoordinateTeleportServerOptions();
+            }
+        }
+
         Gui = TravelMapRuntimePolicy.CreatesUi(WorkType)
             ? player.ComponentGui
             : null;
@@ -144,12 +167,22 @@ public sealed class TravelMapComponent : Component, IUpdateable
         if (TravelMapRuntimePolicy.CreatesUi(WorkType) && player.PlayerData.IsMainPlayer)
         {
             InitializeUi();
+            if (WorkType == TravelMapWorkType.Client)
+            {
+                InitializeCoordinateClient();
+            }
         }
     }
 
     public void Update(float dt)
     {
         _dispatcher?.Pump();
+        if (WorkType == TravelMapWorkType.Server && Project is ProjectNet projectNet)
+        {
+            TravelMapNetworkRuntime.UpdateLegacyServer(projectNet, CommonLib.Net);
+        }
+
+        UpdateInvitationUi();
         if (_miniMap is null || _settings is null)
         {
             return;
@@ -188,7 +221,17 @@ public sealed class TravelMapComponent : Component, IUpdateable
     public override void OnEntityRemoved()
     {
         TravelMapRuntimePolicy.CleanupRuntime(
-            () => _lifetimeCancellation.Cancel(),
+            () =>
+            {
+                _lifetimeCancellation.Cancel();
+                lock (_networkSync)
+                {
+                    _coordinateServerSession?.Dispose();
+                    _coordinateServerSession = null;
+                    _coordinateClientSession?.Dispose();
+                    _coordinateClientSession = null;
+                }
+            },
             () => _chunkLoader?.Dispose(),
             () => _dispatcher?.Dispose(),
             () =>
@@ -218,6 +261,168 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _ => throw new InvalidOperationException($"Unsupported Survivalcraft work type: {workType}."),
     };
 
+    internal async Task<CoordinateTeleportMessage> HandleCoordinateServerAsync(
+        Client source,
+        CoordinateTeleportMessage message,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(message);
+        var sourceIdentity = TravelMapNetworkPeerIdentity.ForClient(source);
+        CoordinateTeleportServerSession session;
+        lock (_networkSync)
+        {
+            if (WorkType != TravelMapWorkType.Server
+                || TeleportService is null
+                || source.PlayerGuid != Player.PlayerGuid)
+            {
+                return CoordinateTeleportMessage.Result(
+                    message.RequestId,
+                    CoordinateTeleportResultCode.Rejected);
+            }
+
+            _coordinateServerSession ??= new CoordinateTeleportServerSession(
+                sourceIdentity,
+                new SafeTeleportExecutor(TeleportService),
+                _coordinateServerOptions);
+            session = _coordinateServerSession;
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _lifetimeCancellation.Token);
+        return await session.HandleAsync(sourceIdentity, message, linked.Token).ConfigureAwait(false);
+    }
+
+    internal bool ReceiveCoordinateServerMessage(Client source, CoordinateTeleportMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        lock (_networkSync)
+        {
+            return WorkType == TravelMapWorkType.Client
+                && _coordinateClientSession is not null
+                && _coordinateClientSession.Receive(
+                    TravelMapNetworkPeerIdentity.ForClient(source),
+                    message);
+        }
+    }
+
+    internal async Task<TeleportResult> HandleLegacyTeleportToPlayerAsync(
+        Vector3 target,
+        CancellationToken cancellationToken)
+    {
+        if (WorkType != TravelMapWorkType.Server || TeleportService is null)
+        {
+            return TeleportResult.OutOfWorld;
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _lifetimeCancellation.Token);
+        return await TeleportService.TeleportToWaypointAsync(target, linked.Token).ConfigureAwait(false);
+    }
+
+    internal void HandleLegacyClientResponse(LegacyGpsMessage message)
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        var action = LegacyInvitationClientPolicy.Decide(
+            message,
+            _settings.AcceptTeleportInvitations);
+        switch (action)
+        {
+            case LegacyClientResponseAction.ShowMessage:
+                ShowMessage(message.Message ?? string.Empty);
+                break;
+            case LegacyClientResponseAction.RejectInvitation:
+                QueueLegacyPackage(LegacyGpsMessage.TeleportAllow(false));
+                ShowMessage("已按设置自动拒绝玩家传送邀请");
+                break;
+            case LegacyClientResponseAction.ShowInvitation:
+                try
+                {
+                    _dispatcher?.Invoke(() => DialogsManager.ShowDialog(
+                        Player.GuiWidget,
+                        new MessageDialog(
+                            "玩家传送邀请",
+                            message.Message ?? string.Empty,
+                            LanguageControl.Ok,
+                            LanguageControl.Cancel,
+                            button => QueueLegacyPackage(
+                                LegacyGpsMessage.TeleportAllow(button == MessageDialogButton.Button1)))));
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
+                break;
+        }
+    }
+
+    private void InitializeCoordinateClient()
+    {
+        var server = CommonLib.Net.Server;
+        if (server is null)
+        {
+            ShowMessage(CoordinateTeleportClientSession.UnsupportedOrTimeoutMessage);
+            return;
+        }
+
+        _networkActions = new TrackedUiActionRunner(_ => ShowMessage("联机旅行请求未能完成"));
+        _coordinateClientSession = new CoordinateTeleportClientSession(
+            TravelMapNetworkPeerIdentity.ForClient(server),
+            message =>
+            {
+                var package = new CoordinateTeleportPackage(message) { To = server };
+                CommonLib.Net.QueuePackage(package);
+            },
+            new SystemCoordinateTeleportProtocolClock(),
+            ShowMessage);
+        ClientTravelCommand = QueueCoordinateClientCommand;
+    }
+
+    private void QueueCoordinateClientCommand(TravelMapClientTravelCommand command)
+    {
+        var runner = _networkActions;
+        if (runner is null || !runner.TryRun(token => SendCoordinateClientCommandAsync(command, token)))
+        {
+            ShowMessage("另一项联机旅行请求仍在进行");
+        }
+    }
+
+    private async Task SendCoordinateClientCommandAsync(
+        TravelMapClientTravelCommand command,
+        CancellationToken cancellationToken)
+    {
+        CoordinateTeleportClientSession? session;
+        lock (_networkSync)
+        {
+            session = _coordinateClientSession;
+        }
+
+        if (session is null)
+        {
+            ShowMessage(CoordinateTeleportClientSession.UnsupportedOrTimeoutMessage);
+            return;
+        }
+
+        var result = command.Mode == TravelMapClientTravelMode.Surface
+            ? await session.RequestSurfaceAsync(
+                checked((int)MathF.Floor(command.Target.X)),
+                checked((int)MathF.Floor(command.Target.Z)),
+                cancellationToken).ConfigureAwait(false)
+            : await session.RequestWaypointAsync(command.Target, cancellationToken).ConfigureAwait(false);
+        if (result != CoordinateTeleportResultCode.Success
+            && result != CoordinateTeleportResultCode.TimedOut
+            && result != CoordinateTeleportResultCode.Unsupported)
+        {
+            ShowMessage(CoordinateTeleportResultText.For(result));
+        }
+    }
+
     private void InitializeUi()
     {
         _uiActions = new TrackedUiActionRunner(_ => ShowMessage("地图操作未能完成"));
@@ -227,6 +432,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _settings = _settingsStore.LoadAsync(_lifetimeCancellation.Token)
             .GetAwaiter()
             .GetResult();
+
+        if (WorkType == TravelMapWorkType.Client)
+        {
+            InitializeInvitationUi();
+        }
 
         var gameInfo = Project.FindSubsystem<SubsystemGameInfo>(true);
         var serverHost = CommonLib.Net.Server?.Peer?.Address?.ToString()
@@ -320,6 +530,72 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _miniMap.LayoutTransform = Engine.Matrix.CreateTranslation(x, 32f, 0f);
         }
     }
+
+    private void InitializeInvitationUi()
+    {
+        _teleportPanel = new TeleportPanelWidget(GetLegacyTeleportPlayers, targetId =>
+            QueueLegacyPackage(LegacyGpsMessage.Teleport(targetId.ToString())));
+        _teleportPanelButton = new BevelledButtonWidget
+        {
+            Text = "玩家传送",
+            Size = new Engine.Vector2(112f, 40f),
+            Font = ContentManager.Get<Engine.Media.BitmapFont>("Fonts/Pericles"),
+            FontScale = 0.8f,
+            Color = new Engine.Color(0xE8, 0xEC, 0xE7),
+            CenterColor = new Engine.Color(0x1B, 0x26, 0x28),
+            BevelColor = new Engine.Color(0x6F, 0x8A, 0x3B),
+            BevelSize = 1f,
+        };
+        Player.GuiWidget.Children.Add(_teleportPanelButton);
+        PositionInvitationButton();
+    }
+
+    private void UpdateInvitationUi()
+    {
+        if (_teleportPanelButton is null || _teleportPanel is null)
+        {
+            return;
+        }
+
+        PositionInvitationButton();
+        if (_teleportPanelButton.IsClicked && !DialogsManager.Dialogs.Contains(_teleportPanel))
+        {
+            _teleportPanel.Refresh();
+            DialogsManager.ShowDialog(Player.GuiWidget, _teleportPanel);
+        }
+    }
+
+    private void PositionInvitationButton()
+    {
+        if (_teleportPanelButton is null)
+        {
+            return;
+        }
+
+        var viewport = Player.GameWidget.ActiveCamera.ViewportSize;
+        var x = MathF.Max(0f, viewport.X - 212f);
+        if (Player.GuiWidget is CanvasWidget canvas)
+        {
+            canvas.SetWidgetPosition(_teleportPanelButton, new Engine.Vector2(x, 4f));
+        }
+        else
+        {
+            _teleportPanelButton.LayoutTransform = Engine.Matrix.CreateTranslation(x, 4f, 0f);
+        }
+    }
+
+    private IReadOnlyList<LegacyTeleportPlayer> GetLegacyTeleportPlayers()
+    {
+        var players = Project.FindSubsystem<SubsystemPlayers>(true).ComponentPlayers;
+        return players
+            .Where(player => player.PlayerGuid != Player.PlayerGuid)
+            .Select(player => new LegacyTeleportPlayer(player.PlayerGuid, player.PlayerData.Name))
+            .OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void QueueLegacyPackage(LegacyGpsMessage message) =>
+        CommonLib.Net.QueuePackage(new LegacyGpsPackage(message));
 
     private void UpdateExploration(float dt)
     {
@@ -471,7 +747,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     : TravelMapTeleportDispatchResult.LocalFailed;
             },
             ClientTravelCommand);
-        return ToActionStatus(await router.RequestAsync(target, cancellationToken).ConfigureAwait(false));
+        return ToActionStatus(await router.RequestSurfaceAsync(target, cancellationToken).ConfigureAwait(false));
     }
 
     private async Task<TravelMapActionStatus> RequestWaypointTravelAsync(
@@ -488,7 +764,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     : TravelMapTeleportDispatchResult.LocalFailed;
             },
             ClientTravelCommand);
-        return ToActionStatus(await router.RequestAsync(target, cancellationToken).ConfigureAwait(false));
+        return ToActionStatus(await router.RequestWaypointAsync(target, cancellationToken).ConfigureAwait(false));
     }
 
     private Waypoint? FindWaypoint(Guid? id) => id.HasValue
@@ -555,6 +831,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void CleanupUi()
     {
+        var networkActions = _networkActions;
+        networkActions?.Dispose();
+        _networkActions = null;
         var uiActions = _uiActions;
         uiActions?.Dispose();
         _uiActions = null;
@@ -579,6 +858,20 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _miniMap.ParentWidget?.Children.Remove(_miniMap);
             _miniMap.Dispose();
             _miniMap = null;
+        }
+
+        if (_teleportPanel is not null)
+        {
+            DialogsManager.HideDialog(_teleportPanel);
+            _teleportPanel.Dispose();
+            _teleportPanel = null;
+        }
+
+        if (_teleportPanelButton is not null)
+        {
+            _teleportPanelButton.ParentWidget?.Children.Remove(_teleportPanelButton);
+            _teleportPanelButton.Dispose();
+            _teleportPanelButton = null;
         }
 
         if (_tileStore is not null)
@@ -621,6 +914,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
         {
             BoundedTaskObserver.ObserveWithin(
                 uiActions.WhenIdleAsync(),
+                RemainingTime(),
+                ReportShutdownFailure);
+        }
+
+        if (networkActions is not null && RemainingTime() > TimeSpan.Zero)
+        {
+            BoundedTaskObserver.ObserveWithin(
+                networkActions.WhenIdleAsync(),
                 RemainingTime(),
                 ReportShutdownFailure);
         }

@@ -1,4 +1,6 @@
 using Game;
+using Game.NetWork;
+using SurvivalcraftTravelMap.Network;
 
 namespace SurvivalcraftTravelMap.Mod;
 
@@ -11,6 +13,10 @@ public sealed class TravelMapModLoader : ModLoader
             DialogsManager.Alert(
                 "Mod conflict",
                 "Survivalcraft Travel Map cannot run while 34GPSFix is installed. Remove 34GPSFix and restart the game.");
+            return;
         }
+
+        PackageManager.RegisterPackage(new LegacyGpsPackage());
+        PackageManager.RegisterPackage(new CoordinateTeleportPackage());
     }
 }
