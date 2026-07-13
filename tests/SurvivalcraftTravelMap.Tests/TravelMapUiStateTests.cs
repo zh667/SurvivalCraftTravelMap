@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Text.Json;
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
+using SurvivalcraftTravelMap.Persistence;
 using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
 using SurvivalcraftTravelMap.Waypoints;
@@ -11,6 +12,34 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapUiStateTests
 {
+    [Fact]
+    public async Task Minimap_wheel_requires_hover_and_unblocked_input_then_persists_sqrt2_zoom()
+    {
+        var settings = new TravelMapSettings { MiniMapBlocksPerPixel = 2f };
+        var saves = 0;
+        using var interaction = new MiniMapWheelInteraction(
+            settings,
+            _ =>
+            {
+                saves++;
+                return Task.CompletedTask;
+            },
+            _ => { },
+            TimeSpan.Zero);
+        var transform = new MapTransform(Vector2.Zero, 2f, new Vector2(256f));
+
+        var outside = interaction.HandleWheel(transform, new Vector2(5f), 1f, isHovered: false, inputBlocked: false);
+        var blocked = interaction.HandleWheel(transform, new Vector2(5f), 1f, isHovered: true, inputBlocked: true);
+        var zoomed = interaction.HandleWheel(transform, new Vector2(5f), 1f, isHovered: true, inputBlocked: false);
+        await interaction.WhenSaveIdleAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(transform, outside);
+        Assert.Equal(transform, blocked);
+        Assert.Equal(2f / MathF.Sqrt(2f), zoomed.BlocksPerPixel, 5);
+        Assert.Equal(zoomed.BlocksPerPixel, settings.MiniMapBlocksPerPixel);
+        Assert.Equal(1, saves);
+    }
+
     [Fact]
     public void Secondary_label_scale_meets_the_readability_floor()
     {
@@ -62,6 +91,20 @@ public sealed class TravelMapUiStateTests
         Assert.Equal(
             shouldOpen ? TravelMapUiCommandKind.OpenLargeMap : TravelMapUiCommandKind.None,
             command.Kind);
+    }
+
+    [Fact]
+    public void M_toggles_an_open_map_but_chat_focus_still_blocks_it()
+    {
+        Assert.Equal(
+            TravelMapUiCommandKind.CloseLargeMap,
+            _controller.HandleToggleHotkey(true, isOpen: true, TravelMapFocusState.Clear).Kind);
+        Assert.Equal(
+            TravelMapUiCommandKind.None,
+            _controller.HandleToggleHotkey(
+                true,
+                isOpen: true,
+                new TravelMapFocusState(false, true, false)).Kind);
     }
 
     [Fact]
@@ -193,6 +236,136 @@ public sealed class TravelMapUiStateTests
 
 public sealed class TravelMapSettingsStoreTests
 {
+    [Fact]
+    public void Future_schema_warning_is_emitted_only_once()
+    {
+        var gate = new TravelMapSettingsFutureSchemaWarningGate();
+        var result = new TravelMapSettingsLoadResult(
+            new TravelMapSettings(),
+            TravelMapSettingsLoadOutcome.UnsupportedFutureSchemaReadOnly,
+            IsReadOnly: true);
+        var messages = new List<string>();
+
+        gate.NotifyIfNeeded(result, messages.Add);
+        gate.NotifyIfNeeded(result, messages.Add);
+
+        Assert.Single(messages);
+    }
+
+    [Fact]
+    public async Task Canonical_settings_path_uses_schema_one_envelope()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
+
+        Assert.EndsWith("settings.json", store.SettingsPath, StringComparison.Ordinal);
+        Assert.Equal(TravelMapSettingsLoadOutcome.Created, result.Outcome);
+        Assert.False(result.IsReadOnly);
+        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
+    }
+
+    [Fact]
+    public async Task Future_schema_is_preserved_byte_for_byte_and_all_saves_are_read_only()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        Directory.CreateDirectory(directory.Path);
+        const string future = "{\"schemaVersion\":999999999999999999999999999999,\"future\":null}";
+        await File.WriteAllTextAsync(store.SettingsPath, future, TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        result.Settings.MiniMapSize = 384;
+        await store.SaveAsync(result.Settings, TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.UnsupportedFutureSchemaReadOnly, result.Outcome);
+        Assert.True(result.IsReadOnly);
+        Assert.True(store.IsReadOnly);
+        Assert.Equal(future, await File.ReadAllTextAsync(store.SettingsPath, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Previous_unversioned_filename_is_migrated_without_deleting_source()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var previous = Path.Combine(directory.Path, "travel-map-settings.json");
+        await File.WriteAllTextAsync(
+            previous,
+            "{\"MiniMapSize\":384,\"ShowCoordinates\":false}",
+            TestContext.Current.CancellationToken);
+        var store = new TravelMapSettingsStore(directory.Path);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousPath, result.Outcome);
+        Assert.Equal(384, result.Settings.MiniMapSize);
+        Assert.False(result.Settings.ShowCoordinates);
+        Assert.True(File.Exists(previous));
+        Assert.True(File.Exists(store.SettingsPath));
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_unknown_fields_when_normalizing()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":1,\"MiniMapSize\":203,\"futureHint\":{\"x\":1}}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(1, document.RootElement.GetProperty("futureHint").GetProperty("x").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("{\"schemaVersion\":null}")]
+    [InlineData("{not json")]
+    public async Task Null_invalid_or_malformed_documents_are_isolated(string json)
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(store.SettingsPath, json, TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.CorruptIsolated, result.Outcome);
+        Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
+    }
+
+    [Fact]
+    public async Task Atomic_save_failure_preserves_the_last_complete_settings_document()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var fail = false;
+        var store = new TravelMapSettingsStore(
+            directory.Path,
+            legacyPath: null,
+            (path, write, token) => fail
+                ? Task.FromException(new IOException("disk full"))
+                : AtomicFile.ReplaceAsync(path, write, token));
+        var settings = await store.LoadAsync(TestContext.Current.CancellationToken);
+        var before = await File.ReadAllBytesAsync(store.SettingsPath, TestContext.Current.CancellationToken);
+        settings.MiniMapSize = 384;
+        fail = true;
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            store.SaveAsync(settings, TestContext.Current.CancellationToken));
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(store.SettingsPath, TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public async Task First_load_migrates_only_the_two_legacy_flags_and_preserves_the_old_file()
     {

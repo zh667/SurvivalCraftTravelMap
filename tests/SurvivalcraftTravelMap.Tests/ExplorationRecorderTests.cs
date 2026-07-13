@@ -7,12 +7,29 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public void Recorder_reports_pressure_instead_of_growing_dirty_cache()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var sampler = new TerrainMapSampler(
+            new FakeTerrainMapSource(defaultContent: 1),
+            TerrainMapSamplerTests.CreatePixelData());
+        var recorder = new ExplorationRecorder(sampler, store);
+
+        var first = recorder.RecordVisibleArea(0, 0, radius: 0);
+        var pressure = recorder.RecordVisibleArea(MapTile.Size * 10, 0, radius: 0);
+
+        Assert.Equal(ExplorationRecordResult.Recorded, first);
+        Assert.Equal(ExplorationRecordResult.Pressure, pressure);
+        Assert.Equal(1, store.Diagnostics.CachedTileCount);
+    }
+    [Fact]
     public async Task Mutation_survives_concurrent_flush_and_trim_pressure_at_low_capacity()
     {
         using var directory = new TemporaryDirectory();
         using var source = new BlockingSecondSampleTerrainSource();
         var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var store = new ExplorationTileStore(directory.Path, capacity: 4);
         var recorder = new ExplorationRecorder(sampler, store);
         var recording = Task.Run(
             () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
@@ -45,7 +62,7 @@ public sealed class ExplorationRecorderTests
         using var directory = new TemporaryDirectory();
         using var source = new BlockingSecondSampleTerrainSource(throwAtSample: 4);
         var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var store = new ExplorationTileStore(directory.Path, capacity: 4);
         var recorder = new ExplorationRecorder(sampler, store);
         var recording = Task.Run(
             () => recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1),
@@ -82,7 +99,7 @@ public sealed class ExplorationRecorderTests
         using var directory = new TemporaryDirectory();
         var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
         var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var store = new ExplorationTileStore(directory.Path, capacity: 4);
         var recorder = new ExplorationRecorder(sampler, store);
 
         recorder.RecordVisibleArea(centerX: 63, centerZ: 63, radius: 1);
@@ -102,7 +119,7 @@ public sealed class ExplorationRecorderTests
         using var directory = new TemporaryDirectory();
         var source = new ThrowingTerrainMapSource(throwAtSample: 4);
         var sampler = new TerrainMapSampler(source, TerrainMapSamplerTests.CreatePixelData());
-        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        var store = new ExplorationTileStore(directory.Path, capacity: 4);
         var recorder = new ExplorationRecorder(sampler, store);
 
         var exception = Assert.Throws<TerrainSamplingException>(

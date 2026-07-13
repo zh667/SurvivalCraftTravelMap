@@ -22,6 +22,25 @@ public sealed class WaypointRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Save_current_position_handler_preserves_exact_underground_Y_for_same_XZ()
+    {
+        var repository = new WaypointRepository(_directory);
+        await repository.LoadAsync(TestContext.Current.CancellationToken);
+        var position = new Vector3(10.25f, 18.75f, -4.5f);
+        var handler = new CurrentPositionWaypointHandler(repository, () => position);
+
+        await handler.SaveAsync(TestContext.Current.CancellationToken);
+        position = new Vector3(10.25f, 62.125f, -4.5f);
+        await handler.SaveAsync(TestContext.Current.CancellationToken);
+
+        var persisted = new WaypointRepository(_directory);
+        await persisted.LoadAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(
+            [new Vector3(10.25f, 18.75f, -4.5f), new Vector3(10.25f, 62.125f, -4.5f)],
+            persisted.GetAll().Select(waypoint => waypoint.Position).ToArray());
+    }
+
+    [Fact]
     public async Task Repository_preserves_exact_xyz_and_allows_duplicate_names()
     {
         var repository = CreateRepository();

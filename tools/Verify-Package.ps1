@@ -103,6 +103,7 @@ try {
     $manifestText = [Text.Encoding]::UTF8.GetString($entryBytes["modinfo.json"])
     $manifest = $manifestText | ConvertFrom-Json
     if ($manifest.Name -cne "Survivalcraft Travel Map" -or
+        $manifest.Author -cne "SCTM" -or
         $manifest.PackageName -cne "SurvivalcraftTravelMap" -or
         $manifest.ApiVersion -cne "1.44" -or
         $manifest.ScVersion -cne "2.4.40.6" -or

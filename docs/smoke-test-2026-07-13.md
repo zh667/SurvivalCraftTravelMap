@@ -16,10 +16,10 @@
 
 | 项目 | 状态 | 复现与证据 |
 |---|---|---|
-| Release 单元/集成测试 | PASS（自动） | `dotnet test SurvivalcraftTravelMap.sln --configuration Release --no-restore`：385/385 通过。 |
+| Release 单元/集成测试 | PASS（自动） | `dotnet test SurvivalcraftTravelMap.sln --configuration Release --no-restore`：411/411 通过。 |
 | 警告视为错误构建 | PASS（自动） | `dotnet build SurvivalcraftTravelMap.sln --configuration Release --no-restore -warnaserror`：0 warnings / 0 errors。 |
 | XDB 单次注入 | PASS（自动） | `PackageStructureTests.Final_xdb_injects_exactly_one_travel_map_component_with_new_guids` 校验 Player 只有一个 `TravelMap` 成员、一个组件模板和全新 GUID。 |
-| 封包 allowlist/身份/资源 | PASS（自动） | `Build-NetMod.ps1` 后 `Verify-Package.ps1` 输出 `PACKAGE_OK`；包中精确包含 DLL、manifest、XDB 和 5 个指定资源。包 SHA-256：`E50119D044F0C7C6345CE9AAC93CAA1203A27AF1CEDF54F74E50DE963487DCE1`。 |
+| 封包 allowlist/身份/资源 | PASS（自动） | `Build-NetMod.ps1` 后 `Verify-Package.ps1` 输出 `PACKAGE_OK`；包中精确包含 DLL、manifest、XDB 和 5 个指定资源。最终且唯一候选包 SHA-256：`5024DD9C78100895E7266641A04564D5977FA0D1E58DCC89A9CA58A66C9E7A19`；包内 DLL SHA-256：`AA265342873D42C07CD24EF1BCD96D7FA514EA79473AEE2C17D2A2EA947AF49F`。 |
 | 项目自有地图调色表 | PASS（自动） | `Generate-BlockPalette.ps1` 不读取旧文件，以确定性 HSV 算法和游戏公开 block Index 常用颜色覆盖生成 257 项；字节可复现测试通过。新 SHA-256：`E03B7EC6F4DAE056A1213CD01FED7F4A0CFA845A1FAE63385403BC96077A81C7`，不同于旧文件。 |
 | 协议注册 | PASS（自动） | 测试反射程序集并确认只有 IPackage 41/61，无 60；61 冲突时回滚 41。 |
 | 34GPSFix 冲突门禁 | PASS（自动） | 启动策略测试只查询 `34GPSFix`，冲突时注册调用为 0；组件 Load 在玩家运行时初始化前再次门禁。 |
@@ -36,7 +36,7 @@
 | 平坦地面 | 待人工游戏内验证 | 进入复制世界，在草地行走 50 格，按 M，右键已探索平地传送。 | 小/大地图显示一致；落点中心、无伤害、无卡墙。 |
 | 森林 | 待人工游戏内验证 | 穿过密林并在树冠/树干附近选择传送。 | 树叶不作为地面；两格净空；找不到安全位时不移动。 |
 | 山地 | 待人工游戏内验证 | 探索陡坡和山顶，选择坡边传送。 | 半径 8 内选择安全实体地面，不坠落。 |
-| 洞穴坐标点 | 待人工游戏内验证 | 在洞穴保存坐标点，离开后从地图传送回来。 | 围绕保存 Y 搜索，不传到地表；失败不移动。 |
+| 洞穴坐标点 | 待人工游戏内验证 | 玩家站在洞穴目标处，打开地图并在任意已探索位置右键选择“保存当前位置”；记录显示的 XYZ，离开后右键该坐标点传送回来。 | repository 中保存的是玩家创建时真实地下 Y；围绕保存 Y 搜索，不传到地表；失败不移动。 |
 | 水面拒绝 | 待人工游戏内验证 | 探索湖泊，右键深水中央。 | 不站在水/流体上；无安全岸边时明确失败。 |
 | 岩浆/火危险拒绝 | 待人工游戏内验证 | 在复制世界布置岩浆/火，选择危险区域。 | 不落在伤害方块上；失败保持原位置。 |
 | 负坐标 | 待人工游戏内验证 | 到 X<0、Z<0 且跨越 -1/-64/-65，重启后查看。 | 瓦片无镜像/错位，探索与坐标点仍在正确位置。 |
@@ -49,7 +49,7 @@
 | 不支持 SCTM 的服务器 | 待人工游戏内验证 | 客户端连接未安装 SCTM 的隔离服务器并请求地图传送。 | 约 5 秒后提示；同一会话只提示一次；客户端位置不变。 |
 | 旧邀请传送 | 待人工游戏内验证 | 两名玩家测试邀请、接受、拒绝、30 秒超时和关闭邀请开关。 | ID 41 兼容；普通结果仍显示；列表每页 4 人。 |
 | 34GPSFix 同装冲突 | 待人工游戏内验证 | 仅在隔离游戏副本同时放入两个包并启动。 | 显示清晰冲突提示；SCTM 不初始化；移除旧包并重启后恢复。 |
-| UI/可读性 | 待人工游戏内验证 | 1920×1080 与另一常用分辨率检查小地图、设置、菜单和长坐标点名。 | 无遮挡关键 HUD，文字可读，滚轮/拖动/右键命中准确。 |
+| UI/可读性 | 待人工游戏内验证 | 1920×1080 与另一常用分辨率检查小地图、设置、菜单和长坐标点名；光标悬停小地图滚轮，随后在非悬停、聊天输入和大地图打开时滚轮。 | 无遮挡关键 HUD，文字可读；小地图仅悬停且无输入冲突时按 sqrt(2) 缩放并持久化；不会同时误缩放大地图。 |
 
 ## 人工测试记录模板
 

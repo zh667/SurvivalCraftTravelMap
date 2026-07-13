@@ -386,7 +386,7 @@ public sealed class TravelMapDialog : Dialog
             var result = await _actionHandler(action, menu, cancellationToken).ConfigureAwait(false);
             if (result == TravelMapActionStatus.Unavailable)
             {
-                _notify("联机旅行命令将在 Task 9 协议启用后可用");
+                _notify("当前服务器或游戏模式无法执行该旅行操作");
             }
             else if (result == TravelMapActionStatus.Failed)
             {
@@ -455,7 +455,7 @@ public sealed class TravelMapDialog : Dialog
     private static string ActionText(TravelMapContextAction action) => action switch
     {
         TravelMapContextAction.TeleportNearby => "传送到这里",
-        TravelMapContextAction.AddWaypoint => "添加坐标点",
+        TravelMapContextAction.AddWaypoint => "保存当前位置",
         TravelMapContextAction.TeleportToWaypoint => "传送到此坐标点",
         TravelMapContextAction.RenameWaypoint => "重命名",
         TravelMapContextAction.DeleteWaypoint => "删除",

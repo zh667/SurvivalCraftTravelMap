@@ -6,6 +6,54 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class PackageRegistrationTests
 {
+    [Theory]
+    [InlineData(41)]
+    [InlineData(61)]
+    public void Persistent_startup_failure_keeps_later_xdb_component_inert(int failingId)
+    {
+        TravelMapStartup.ResetForTests();
+        var registrations = new List<byte>();
+        var active = TravelMapStartup.EnsureInitialized(
+            _ => false,
+            package =>
+            {
+                registrations.Add(package.ID);
+                if (package.ID == failingId)
+                {
+                    throw new InvalidOperationException("conflict");
+                }
+            },
+            _ => { },
+            _ => { });
+        var laterRegistrations = 0;
+        var later = TravelMapStartup.EnsureInitialized(
+            _ => false,
+            _ => laterRegistrations++,
+            _ => { },
+            _ => { });
+
+        Assert.False(active);
+        Assert.False(later);
+        Assert.False(TravelMapStartup.IsActive);
+        Assert.Equal(TravelMapStartupState.RegistrationFailed, TravelMapStartup.CurrentState);
+        Assert.Equal(0, laterRegistrations);
+        TravelMapStartup.ResetForTests();
+    }
+
+    [Fact]
+    public void Successful_startup_is_idempotent_for_loader_and_component_ordering()
+    {
+        TravelMapStartup.ResetForTests();
+        var registrations = 0;
+
+        Assert.True(TravelMapStartup.EnsureInitialized(_ => false, _ => registrations++, _ => { }, _ => { }));
+        Assert.True(TravelMapStartup.EnsureInitialized(_ => false, _ => registrations++, _ => { }, _ => { }));
+
+        Assert.True(TravelMapStartup.IsActive);
+        Assert.Equal(2, registrations);
+        TravelMapStartup.ResetForTests();
+    }
+
     [Fact]
     public void Startup_checks_only_34gpsfix_and_does_not_partially_register_on_conflict()
     {

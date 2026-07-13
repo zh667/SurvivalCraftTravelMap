@@ -440,11 +440,13 @@ public sealed class SafeTeleportExecutor(SafeTeleportService service) : ICoordin
 public sealed class CoordinateTeleportServerSession : IDisposable
 {
     private const int ReplayWindow = 4096;
+    public static readonly TimeSpan ExecutionDeadline = TimeSpan.FromSeconds(4);
 
     private readonly object _sync = new();
     private readonly string _peerId;
     private readonly ICoordinateTeleportExecutor _executor;
     private readonly CoordinateTeleportServerOptions _options;
+    private readonly TimeSpan _executionDeadline;
     private readonly CancellationTokenSource _disconnect = new();
     private readonly HashSet<uint> _inFlight = [];
     private readonly HashSet<uint> _completed = [];
@@ -456,13 +458,22 @@ public sealed class CoordinateTeleportServerSession : IDisposable
     public CoordinateTeleportServerSession(
         string peerId,
         ICoordinateTeleportExecutor executor,
-        CoordinateTeleportServerOptions options)
+        CoordinateTeleportServerOptions options,
+        TimeSpan? executionDeadline = null)
     {
         _peerId = string.IsNullOrWhiteSpace(peerId)
             ? throw new ArgumentException("Peer ID is required.", nameof(peerId))
             : peerId;
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _executionDeadline = executionDeadline ?? ExecutionDeadline;
+        if (_executionDeadline <= TimeSpan.Zero
+            || _executionDeadline >= CoordinateTeleportClientSession.ResponseTimeout)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(executionDeadline),
+                "Server execution deadline must be positive and shorter than the client response timeout.");
+        }
     }
 
     public async Task<CoordinateTeleportMessage> HandleAsync(
@@ -530,9 +541,11 @@ public sealed class CoordinateTeleportServerSession : IDisposable
             }
             else
             {
+                using var deadline = new CancellationTokenSource(_executionDeadline);
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken,
-                    _disconnect.Token);
+                    _disconnect.Token,
+                    deadline.Token);
                 var serviceResult = message.Kind == CoordinateTeleportMessageKind.SurfaceRequest
                     ? await _executor.TeleportToSurfaceAsync(message.X, message.Z, linked.Token).ConfigureAwait(false)
                     : await _executor.TeleportToWaypointAsync(message.Target, linked.Token).ConfigureAwait(false);
@@ -544,6 +557,10 @@ public sealed class CoordinateTeleportServerSession : IDisposable
             result = CoordinateTeleportResultCode.Disconnected;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            result = CoordinateTeleportResultCode.TimedOut;
+        }
+        catch (OperationCanceledException)
         {
             result = CoordinateTeleportResultCode.TimedOut;
         }

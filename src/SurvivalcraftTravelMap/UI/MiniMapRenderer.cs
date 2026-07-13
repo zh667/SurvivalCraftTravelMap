@@ -354,16 +354,28 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 public sealed class MiniMapRenderer : MapSurfaceWidget
 {
     private readonly TravelMapSettings _settings;
+    private readonly Func<bool> _inputBlocked;
+    private readonly MiniMapWheelInteraction _wheelInteraction;
 
     public MiniMapRenderer(
         IExploredMapPixelSource pixelSource,
         TravelMapSettings settings,
+        TravelMapSettingsStore settingsStore,
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
-        Func<float> brightness)
+        Func<float> brightness,
+        Func<bool> inputBlocked,
+        Action<string> notify)
         : base(pixelSource, settings, playerPose, waypoints, brightness)
     {
         _settings = settings;
+        ArgumentNullException.ThrowIfNull(settingsStore);
+        _inputBlocked = inputBlocked ?? throw new ArgumentNullException(nameof(inputBlocked));
+        ArgumentNullException.ThrowIfNull(notify);
+        _wheelInteraction = new MiniMapWheelInteraction(
+            settings,
+            token => settingsStore.SaveAsync(settings, token),
+            _ => notify("小地图比例未能保存，本次会话将保留当前值"));
         AutoCenterOnPlayer = true;
         ShowWaypointLabels = false;
         Transform = new MapTransform(NVector2.Zero, settings.MiniMapBlocksPerPixel, NVector2.One);
@@ -377,5 +389,41 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         Transform = Transform with { BlocksPerPixel = _settings.MiniMapBlocksPerPixel };
         IsVisible = _settings.IsMiniMapVisible;
         IsDrawRequired = IsVisible;
+    }
+
+    public override void Update()
+    {
+        var pointer = Input.MousePosition;
+        if (!IsVisible || !pointer.HasValue)
+        {
+            return;
+        }
+
+        var localEngine = ScreenToWidget(pointer.Value);
+        var local = new NVector2(localEngine.X, localEngine.Y);
+        var hovered = local.X >= 0f
+            && local.Y >= 0f
+            && local.X <= ActualSize.X
+            && local.Y <= ActualSize.Y;
+        var before = Transform;
+        Transform = _wheelInteraction.HandleWheel(
+            before,
+            local,
+            Input.MouseWheelMovement / 120f,
+            hovered,
+            _inputBlocked());
+        if (Transform != before)
+        {
+            Input.Clear();
+        }
+    }
+
+    internal Task WhenSaveIdleAsync(CancellationToken cancellationToken = default) =>
+        _wheelInteraction.WhenSaveIdleAsync(cancellationToken);
+
+    public override void Dispose()
+    {
+        _wheelInteraction.Dispose();
+        base.Dispose();
     }
 }

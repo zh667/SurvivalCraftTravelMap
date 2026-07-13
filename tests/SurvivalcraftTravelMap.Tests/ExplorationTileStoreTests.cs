@@ -156,6 +156,53 @@ public sealed class ExplorationTileStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Persistent_write_failure_applies_bounded_backpressure_and_recovers_after_flush()
+    {
+        var failWrites = true;
+        var store = new ExplorationTileStore(
+            _directory,
+            capacity: 2,
+            flushInterval: TimeSpan.FromSeconds(5),
+            async (path, tile, token) =>
+            {
+                if (failWrites)
+                {
+                    throw new IOException("disk full");
+                }
+
+                await AtomicFile.ReplaceAsync(
+                    path,
+                    (stream, _) =>
+                    {
+                        TileCodec.Write(stream, tile);
+                        return Task.CompletedTask;
+                    },
+                    token);
+            });
+
+        for (var x = 0; x < 40; x++)
+        {
+            if (store.TryAcquireMutation(x, 0, out var lease) == TileMutationAdmission.Acquired)
+            {
+                lease!.Tile.SetPixel(0, 0, new Rgba32(1, 2, 3, 255));
+                lease.Dispose();
+            }
+        }
+
+        Assert.True(store.IsUnderPressure);
+        Assert.True(store.Diagnostics.CachedTileCount <= store.Capacity);
+        await Assert.ThrowsAsync<IOException>(() => store.FlushAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(TileMutationAdmission.Pressure, store.TryAcquireMutation(99, 0, out _));
+
+        failWrites = false;
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(TileMutationAdmission.Acquired, store.TryAcquireMutation(99, 0, out var recovered));
+        recovered!.Dispose();
+        Assert.False(store.IsUnderPressure);
+        Assert.True(store.Diagnostics.CachedTileCount <= store.Capacity);
+    }
+
+    [Fact]
     public void World_keys_normalize_inputs_and_use_24_uppercase_hex_characters()
     {
         var local = WorldKey.ForLocal(@"C:\Worlds\MyWorld\\");

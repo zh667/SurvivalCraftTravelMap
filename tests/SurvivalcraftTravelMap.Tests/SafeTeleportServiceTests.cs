@@ -226,6 +226,26 @@ public sealed class SafeTeleportServiceTests
         Assert.Equal(1, context.Chunks.Lease.DisposeCount);
     }
 
+    [Fact]
+    public async Task Equal_distance_candidates_prefer_the_one_with_safer_surroundings()
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(-1, 65, 0);
+        context.Terrain.SetSafeFeet(1, 65, 0);
+        foreach (var (x, z) in new[] { (1, -1), (1, 1), (2, -1), (2, 0), (2, 1) })
+        {
+            context.Terrain.SetSafeFeet(x, 65, z);
+        }
+
+        var result = await context.Service.TeleportToSurfaceAsync(
+            0,
+            0,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Success, result);
+        Assert.Equal(new Vector3(1.5f, 65f, 0.5f), Assert.Single(context.Mover.Movements).Position);
+    }
+
     [Theory]
     [InlineData(TeleportBlockKind.Lava)]
     [InlineData(TeleportBlockKind.Fire)]
@@ -597,13 +617,11 @@ public sealed class SafeTeleportServiceTests
         var context = new TeleportTestContext();
         using var cancellation = new CancellationTokenSource();
         context.Terrain.SetSafeFeet(0, 65, 0);
-        context.Terrain.OnBlockReadNumber = call =>
+        context.Clock.WaitForUpdate = _ =>
         {
-            if (call == 4)
-            {
-                context.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Lava);
-                cancellation.Cancel();
-            }
+            context.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Lava);
+            cancellation.Cancel();
+            return Task.CompletedTask;
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -750,7 +768,11 @@ public sealed class SafeTeleportServiceTests
             }
             else
             {
-                context.Terrain.ThrowOnReadNumber = 4;
+                context.Clock.WaitForUpdate = _ =>
+                {
+                    context.Terrain.ThrowOnReadNumber = context.Terrain.BlockReads.Count + 1;
+                    return Task.CompletedTask;
+                };
             }
 
             await Assert.ThrowsAsync<InvalidOperationException>(() =>

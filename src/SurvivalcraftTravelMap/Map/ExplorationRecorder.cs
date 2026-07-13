@@ -2,6 +2,12 @@ using SurvivalcraftTravelMap.Persistence;
 
 namespace SurvivalcraftTravelMap.Map;
 
+public enum ExplorationRecordResult
+{
+    Recorded,
+    Pressure,
+}
+
 public sealed class ExplorationRecorder(
     TerrainMapSampler sampler,
     ExplorationTileStore tileStore)
@@ -11,7 +17,7 @@ public sealed class ExplorationRecorder(
     private readonly ExplorationTileStore _tileStore = tileStore
         ?? throw new ArgumentNullException(nameof(tileStore));
 
-    public void RecordVisibleArea(int centerX, int centerZ, int radius)
+    public ExplorationRecordResult RecordVisibleArea(int centerX, int centerZ, int radius)
     {
         if (radius < 0)
         {
@@ -23,6 +29,7 @@ public sealed class ExplorationRecorder(
         var minimumZ = checked(centerZ - radius);
         var maximumZ = checked(centerZ + radius);
         var leases = new Dictionary<(int X, int Z), ExplorationTileStore.MutationLease>();
+        var pressure = false;
 
         try
         {
@@ -35,8 +42,21 @@ public sealed class ExplorationRecorder(
                     var key = (X: coordinate.TileX, Z: coordinate.TileZ);
                     if (!leases.TryGetValue(key, out var lease))
                     {
-                        lease = _tileStore.AcquireMutation(key.X, key.Z);
-                        leases.Add(key, lease);
+                        if (_tileStore.TryAcquireMutation(key.X, key.Z, out lease)
+                            == TileMutationAdmission.Pressure)
+                        {
+                            pressure = true;
+                            if (x == maximumX)
+                            {
+                                break;
+                            }
+
+                            continue;
+                        }
+
+                        var admittedLease = lease!;
+                        leases.Add(key, admittedLease);
+                        lease = admittedLease;
                     }
 
                     lease.Tile.SetPixel(coordinate.LocalX, coordinate.LocalZ, color);
@@ -60,5 +80,7 @@ public sealed class ExplorationRecorder(
                 lease.Dispose();
             }
         }
+
+        return pressure ? ExplorationRecordResult.Pressure : ExplorationRecordResult.Recorded;
     }
 }

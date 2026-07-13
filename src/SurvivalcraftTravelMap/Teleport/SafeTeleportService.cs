@@ -72,9 +72,24 @@ public sealed class SafeTeleportService
 
         using (chunkLease)
         {
+            TeleportCandidate? best = null;
+            var bestScore = int.MinValue;
+            long currentDistance = -1;
             foreach (var column in TeleportCandidate.GenerateSurface(x, z))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var distance = HorizontalDistanceSquared(column, x, z);
+                if (distance != currentDistance)
+                {
+                    if (best.HasValue)
+                    {
+                        return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    currentDistance = distance;
+                    bestScore = int.MinValue;
+                }
+
                 if (!IsColumnInWorld(column.X, column.Z, cancellationToken))
                 {
                     continue;
@@ -90,8 +105,18 @@ public sealed class SafeTeleportService
                 var candidate = new TeleportCandidate(column.X, (int)feetY, column.Z);
                 if (IsSafe(candidate, cancellationToken))
                 {
-                    return await MoveTransactionallyAsync(candidate, cancellationToken).ConfigureAwait(false);
+                    var score = GetSurroundingSafetyScore(candidate, cancellationToken);
+                    if (!best.HasValue || score > bestScore)
+                    {
+                        best = candidate;
+                        bestScore = score;
+                    }
                 }
+            }
+
+            if (best.HasValue)
+            {
+                return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
             }
 
             return TeleportResult.NoSafePosition;
@@ -139,13 +164,40 @@ public sealed class SafeTeleportService
 
         using (chunkLease)
         {
+            TeleportCandidate? best = null;
+            (int Safety, int VerticalCloseness) bestScore = (int.MinValue, int.MinValue);
+            long currentDistance = -1;
             foreach (var candidate in TeleportCandidate.GenerateWaypoint(x, y, z))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var distance = HorizontalDistanceSquared(candidate, x, z);
+                if (distance != currentDistance)
+                {
+                    if (best.HasValue)
+                    {
+                        return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    currentDistance = distance;
+                    bestScore = (int.MinValue, int.MinValue);
+                }
+
                 if (IsSafe(candidate, cancellationToken))
                 {
-                    return await MoveTransactionallyAsync(candidate, cancellationToken).ConfigureAwait(false);
+                    var score = (
+                        GetSurroundingSafetyScore(candidate, cancellationToken),
+                        -Math.Abs(candidate.Y!.Value - y));
+                    if (!best.HasValue || score.CompareTo(bestScore) > 0)
+                    {
+                        best = candidate;
+                        bestScore = score;
+                    }
                 }
+            }
+
+            if (best.HasValue)
+            {
+                return await MoveTransactionallyAsync(best.Value, cancellationToken).ConfigureAwait(false);
             }
 
             return TeleportResult.NoSafePosition;
@@ -295,6 +347,62 @@ public sealed class SafeTeleportService
         var position = GetPosition(candidate.X, feetY, candidate.Z);
         var hasCollision = HasBlockingCollisionExcludingPlayer(position, cancellationToken);
         return !hasCollision;
+    }
+
+    private int GetSurroundingSafetyScore(
+        TeleportCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        var feetY = candidate.Y!.Value;
+        var score = 0;
+        for (var offsetX = -1; offsetX <= 1; offsetX++)
+        {
+            for (var offsetZ = -1; offsetZ <= 1; offsetZ++)
+            {
+                if (offsetX == 0 && offsetZ == 0)
+                {
+                    continue;
+                }
+
+                var xLong = (long)candidate.X + offsetX;
+                var zLong = (long)candidate.Z + offsetZ;
+                var groundLong = (long)feetY - 1;
+                var headLong = (long)feetY + 1;
+                if (xLong is < int.MinValue or > int.MaxValue
+                    || zLong is < int.MinValue or > int.MaxValue
+                    || groundLong is < int.MinValue or > int.MaxValue
+                    || headLong is < int.MinValue or > int.MaxValue)
+                {
+                    continue;
+                }
+
+                var neighborX = (int)xLong;
+                var neighborZ = (int)zLong;
+                var groundY = (int)groundLong;
+                var headY = (int)headLong;
+                if (IsCellInWorld(neighborX, groundY, neighborZ, cancellationToken)
+                    && IsCellInWorld(neighborX, feetY, neighborZ, cancellationToken)
+                    && IsCellInWorld(neighborX, headY, neighborZ, cancellationToken)
+                    && GetBlockKind(neighborX, groundY, neighborZ, cancellationToken) == TeleportBlockKind.SafeSolid
+                    && GetBlockKind(neighborX, feetY, neighborZ, cancellationToken) == TeleportBlockKind.Air
+                    && GetBlockKind(neighborX, headY, neighborZ, cancellationToken) == TeleportBlockKind.Air)
+                {
+                    score++;
+                }
+            }
+        }
+
+        return score;
+    }
+
+    private static long HorizontalDistanceSquared(
+        TeleportCandidate candidate,
+        int targetX,
+        int targetZ)
+    {
+        var deltaX = (long)candidate.X - targetX;
+        var deltaZ = (long)candidate.Z - targetZ;
+        return (deltaX * deltaX) + (deltaZ * deltaZ);
     }
 
     private async Task<TeleportResult> MoveTransactionallyAsync(

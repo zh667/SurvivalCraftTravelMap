@@ -119,6 +119,38 @@ public sealed class CoordinateTeleportPackageTests
 public sealed class CoordinateTeleportServerSessionTests
 {
     [Fact]
+    public void Server_execution_deadline_is_strictly_shorter_than_client_response_timeout()
+    {
+        Assert.True(CoordinateTeleportServerSession.ExecutionDeadline < CoordinateTeleportClientSession.ResponseTimeout);
+    }
+
+    [Fact]
+    public async Task Server_deadline_cancels_slow_execution_returns_timeout_and_releases_session()
+    {
+        var executor = new RecordingExecutor { Block = true };
+        using var session = new CoordinateTeleportServerSession(
+            "peer-a",
+            executor,
+            new CoordinateTeleportServerOptions(),
+            executionDeadline: TimeSpan.FromMilliseconds(20));
+
+        var timedOut = await session.HandleAsync(
+            "peer-a",
+            CoordinateTeleportMessage.SurfaceRequest(1, 10, 20),
+            TestContext.Current.CancellationToken);
+        executor.Block = false;
+        var next = await session.HandleAsync(
+            "peer-a",
+            CoordinateTeleportMessage.SurfaceRequest(2, 11, 21),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(CoordinateTeleportResultCode.TimedOut, timedOut.ResultCode);
+        Assert.True(executor.SawCancellation);
+        Assert.Equal(CoordinateTeleportResultCode.Success, next.ResultCode);
+        Assert.Equal(1, executor.SuccessfulExecutionCount);
+    }
+
+    [Fact]
     public async Task Different_ID61_request_ids_cannot_overlap_one_players_safe_teleport_transaction()
     {
         var context = new TeleportTestContext();
@@ -481,6 +513,7 @@ public sealed class CoordinateTeleportServerSessionTests
         internal Vector3? WaypointTarget { get; private set; }
         internal TeleportResult Result { get; set; } = TeleportResult.Success;
         internal int CallCount { get; private set; }
+        internal int SuccessfulExecutionCount { get; private set; }
         internal bool Block { get; set; }
         internal bool SawCancellation { get; private set; }
         internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -514,6 +547,7 @@ public sealed class CoordinateTeleportServerSessionTests
                 }
             }
 
+            SuccessfulExecutionCount++;
             return Result;
         }
     }

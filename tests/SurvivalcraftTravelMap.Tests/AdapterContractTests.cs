@@ -474,6 +474,43 @@ public sealed class AdapterContractTests
         Assert.Equal(["cancel", "chunks", "dispatcher", "final"], events);
     }
 
+    [Theory]
+    [InlineData(TravelMapLoadStage.Settings)]
+    [InlineData(TravelMapLoadStage.Waypoints)]
+    [InlineData(TravelMapLoadStage.Resources)]
+    [InlineData(TravelMapLoadStage.Widgets)]
+    [InlineData(TravelMapLoadStage.Dispatcher)]
+    public void Load_transaction_catches_each_activation_boundary_and_cleans_up_idempotently(
+        TravelMapLoadStage failingStage)
+    {
+        var attached = new List<TravelMapLoadStage>();
+        var cleanupCalls = 0;
+        var cleanup = new IdempotentTravelMapCleanup(() =>
+        {
+            cleanupCalls++;
+            attached.Clear();
+        });
+        var reported = new List<Exception>();
+        var stages = Enum.GetValues<TravelMapLoadStage>()
+            .Select<TravelMapLoadStage, Action>(stage => () =>
+            {
+                attached.Add(stage);
+                if (stage == failingStage)
+                {
+                    throw new IOException(stage.ToString());
+                }
+            })
+            .ToArray();
+
+        var active = TravelMapLoadTransaction.TryRun(stages, cleanup.Run, reported.Add);
+        cleanup.Run();
+
+        Assert.False(active);
+        Assert.Empty(attached);
+        Assert.Equal(1, cleanupCalls);
+        Assert.Single(reported);
+    }
+
     private static PlayerMovementSnapshot CreateMovement() => new(
         new Vector3(10.5f, 65f, -3.5f),
         Quaternion.CreateFromYawPitchRoll(1f, 0.25f, -0.5f),

@@ -118,11 +118,32 @@ public sealed class PackageStructureTests
     public void Component_stops_before_player_runtime_initialization_when_legacy_mod_is_present()
     {
         var source = File.ReadAllText(TestPaths.Component);
-        var conflictGate = source.IndexOf("TravelMapStartup.HasLegacyConflict", StringComparison.Ordinal);
+        var conflictGate = source.IndexOf("TravelMapStartup.EnsureInitialized", StringComparison.Ordinal);
         var playerInitialization = source.IndexOf("Entity.FindComponent<ComponentPlayer>", StringComparison.Ordinal);
 
         Assert.True(conflictGate >= 0);
         Assert.True(playerInitialization > conflictGate);
+    }
+
+    [Fact]
+    public void Production_component_wires_transactional_activation_current_position_waypoints_and_minimap_wheel()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var miniMap = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "MiniMapRenderer.cs"));
+
+        Assert.Contains("TravelMapLoadTransaction.TryRun", component, StringComparison.Ordinal);
+        Assert.Contains("_runtimeCleanup.Run", component, StringComparison.Ordinal);
+        Assert.Contains("CurrentPositionWaypointHandler", component, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetTopHeight", component, StringComparison.Ordinal);
+        Assert.Contains("IsMapInputBlocked", component, StringComparison.Ordinal);
+        Assert.Contains("public override void Update()", miniMap, StringComparison.Ordinal);
+        Assert.Contains("Input.MouseWheelMovement", miniMap, StringComparison.Ordinal);
+        Assert.Contains("_wheelInteraction.HandleWheel", miniMap, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -415,7 +436,7 @@ internal static class PackageFixtures
             archive,
             new PackageEntry(
                 "modinfo.json",
-                "{\"Name\":\"Survivalcraft Travel Map\",\"Version\":\"1.0.0\",\"ApiVersion\":\"1.44\",\"ScVersion\":\"2.4.40.6\",\"PackageName\":\"SurvivalcraftTravelMap\",\"Dependencies\":[]}"));
+                "{\"Name\":\"Survivalcraft Travel Map\",\"Author\":\"SCTM\",\"Version\":\"1.0.0\",\"ApiVersion\":\"1.44\",\"ScVersion\":\"2.4.40.6\",\"PackageName\":\"SurvivalcraftTravelMap\",\"Dependencies\":[]}"));
         AddEntry(archive, new PackageEntry("mod.netxdb", FinalXdb));
         AddEntry(archive, new PackageEntry("Assets/BlockPixelColor.json", CreateColorJson()));
         AddEntry(archive, new PackageEntry("Assets/Point.png", MinimalPng.Bytes));

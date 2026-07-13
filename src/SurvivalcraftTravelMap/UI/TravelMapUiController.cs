@@ -37,6 +37,7 @@ public enum TravelMapUiCommandKind
 {
     None,
     OpenLargeMap,
+    CloseLargeMap,
     Pan,
     Zoom,
     ShowGroundMenu,
@@ -87,6 +88,15 @@ public sealed class TravelMapUiController
     public TravelMapUiCommand HandleOpenHotkey(bool isPressed, TravelMapFocusState focus) =>
         isPressed && focus.AllowsMapHotkey
             ? new TravelMapUiCommand(TravelMapUiCommandKind.OpenLargeMap)
+            : TravelMapUiCommand.None;
+
+    public TravelMapUiCommand HandleToggleHotkey(
+        bool isPressed,
+        bool isOpen,
+        TravelMapFocusState focus) =>
+        isPressed && focus.AllowsMapHotkey
+            ? new TravelMapUiCommand(
+                isOpen ? TravelMapUiCommandKind.CloseLargeMap : TravelMapUiCommandKind.OpenLargeMap)
             : TravelMapUiCommand.None;
 
     public MapTransform CenterLargeMap(
