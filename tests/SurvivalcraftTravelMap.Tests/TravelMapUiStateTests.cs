@@ -293,6 +293,51 @@ public sealed class TravelMapUiStateTests
     }
 
     [Fact]
+    public void Repeated_minimap_zoom_and_pan_preserve_pointer_anchor_and_world_round_trips()
+    {
+        var pointer = new Vector2(37f, 151f);
+        var point = new Vector2(-95.25f, 110.75f);
+        var transform = new MapTransform(new Vector2(-32f, 48f), 2f, new Vector2(192f));
+        var scales = new[] { 2f, 0.5f, 0.35355335f, 0.25f, 1f, 8f, 2f };
+        var wheelSteps = new[] { 0f, 4f, 1f, 1f, -4f, -6f, 4f };
+        var panDeltas = new[]
+        {
+            new Vector2(13f, -7f),
+            new Vector2(-5f, 11f),
+        };
+
+        for (var index = 0; index < scales.Length; index++)
+        {
+            if (wheelSteps[index] != 0f)
+            {
+                var worldUnderPointer = transform.ScreenToWorld(pointer);
+                var zoom = _controller.HandleWheel(
+                    transform,
+                    pointer,
+                    wheelSteps[index],
+                    isHovered: true,
+                    minimumBlocksPerPixel: 0.25f,
+                    maximumBlocksPerPixel: 8f);
+                transform = Assert.IsType<MapTransform>(zoom.Transform);
+
+                Assert.Equal(worldUnderPointer.X, transform.ScreenToWorld(pointer).X, 3);
+                Assert.Equal(worldUnderPointer.Y, transform.ScreenToWorld(pointer).Y, 3);
+            }
+
+            Assert.Equal(scales[index], transform.BlocksPerPixel, 5);
+            foreach (var panDelta in panDeltas)
+            {
+                var pan = _controller.HandlePan(transform, panDelta, isDragging: true);
+                transform = Assert.IsType<MapTransform>(pan.Transform);
+                var roundTrip = transform.ScreenToWorld(transform.WorldToScreen(point));
+
+                Assert.InRange(roundTrip.X, point.X - 0.001f, point.X + 0.001f);
+                Assert.InRange(roundTrip.Y, point.Y - 0.001f, point.Y + 0.001f);
+            }
+        }
+    }
+
+    [Fact]
     public void Right_click_prefers_a_waypoint_hit_and_returns_waypoint_actions()
     {
         var waypoint = new Waypoint(Guid.NewGuid(), "Camp", new Vector3(10f, 70f, 20f), DateTimeOffset.UtcNow);

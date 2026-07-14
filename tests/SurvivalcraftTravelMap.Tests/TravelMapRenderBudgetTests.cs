@@ -544,6 +544,87 @@ public sealed class TravelMapRenderBudgetTests
         Assert.Equal(1f, cell.ScreenMaximum.Y - cell.ScreenMinimum.Y);
     }
 
+    [Fact]
+    public void Sparse_recorded_tiles_remain_visible_through_minimap_scale_and_pan_round_trips()
+    {
+        var knownTiles = new[]
+        {
+            new MapTileCoordinate(-3, -2),
+            new MapTileCoordinate(-1, 1),
+            new MapTileCoordinate(0, 0),
+            new MapTileCoordinate(1, -1),
+            new MapTileCoordinate(3, 2),
+        };
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path, capacity: knownTiles.Length);
+        var colors = Enumerable.Repeat(
+            new Rgba32(20, 40, 60, 255),
+            MapTile.Size * MapTile.Size).ToArray();
+        foreach (var tile in knownTiles)
+        {
+            using var mutation = store.AcquireMutation(tile.X, tile.Z);
+            mutation.Tile.SetRegion(0, 0, MapTile.Size, MapTile.Size, colors);
+        }
+
+        var source = new TileStoreMapPixelSource(store);
+        var controller = new TravelMapUiController();
+        var transform = new MapTransform(Vector2.Zero, 2f, new Vector2(192f));
+        var scales = new[] { 2f, 0.5f, 0.35355335f, 0.25f, 1f, 8f, 2f };
+        var panDeltas = new[]
+        {
+            new Vector2(3f, -2f),
+            new Vector2(-3f, 2f),
+        };
+
+        foreach (var scale in scales)
+        {
+            transform = transform with { BlocksPerPixel = scale };
+            AssertVisibleKnownPixelsAreRendered();
+            foreach (var panDelta in panDeltas)
+            {
+                var pan = controller.HandlePan(transform, panDelta, isDragging: true);
+                transform = Assert.IsType<MapTransform>(pan.Transform);
+                AssertVisibleKnownPixelsAreRendered();
+            }
+        }
+
+        void AssertVisibleKnownPixelsAreRendered()
+        {
+            var sink = new CapturingRenderSink();
+            var statistics = TravelMapRenderModel.RenderTerrain(source, transform, 1f, sink);
+
+            Assert.InRange(
+                statistics.PixelQueries,
+                0,
+                TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+            Assert.All(sink.Terrain, cell =>
+            {
+                Assert.True(float.IsFinite(cell.ScreenMinimum.X));
+                Assert.True(float.IsFinite(cell.ScreenMinimum.Y));
+                Assert.True(float.IsFinite(cell.ScreenMaximum.X));
+                Assert.True(float.IsFinite(cell.ScreenMaximum.Y));
+            });
+            var visibleKnownPixels = knownTiles
+                .Select(tile => new Vector2(tile.X * MapTile.Size, tile.Z * MapTile.Size))
+                .Where(knownPixel =>
+                {
+                    var screen = transform.WorldToScreen(knownPixel);
+                    return screen.X >= 0f
+                        && screen.X <= transform.ViewportSize.X
+                        && screen.Y >= 0f
+                        && screen.Y <= transform.ViewportSize.Y;
+                })
+                .ToArray();
+            Assert.NotEmpty(visibleKnownPixels);
+            foreach (var knownPixel in visibleKnownPixels)
+            {
+                Assert.Contains(
+                    sink.Terrain,
+                    cell => cell.WorldX == knownPixel.X && cell.WorldZ == knownPixel.Y);
+            }
+        }
+    }
+
     private static MapTile CreateFullyExploredTile(Rgba32 color)
     {
         var tile = new MapTile(0, 0);
