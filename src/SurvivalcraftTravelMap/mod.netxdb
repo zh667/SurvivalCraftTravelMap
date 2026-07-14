@@ -1,0 +1,10 @@
+<SurvivalCraftMap>
+  <EntityTemplate Name="Player" Guid="4be6c1c5-d65d-4537-8a8b-a391969e6dc2">
+    <MemberComponentTemplate Name="TravelMap" Guid="32be124c-0f5b-4ca0-ae58-df7fa2b707d3" InheritanceParent="4b67335f-9888-4824-9f0e-cc5f72204b8e" />
+  </EntityTemplate>
+  <Folder Name="Gameplay" Guid="d3d4b692-acc9-4128-9b99-a5acf1de1fbb">
+    <ComponentTemplate Name="TravelMap" Guid="4b67335f-9888-4824-9f0e-cc5f72204b8e" InheritanceParent="b05700ed-7e4e-4679-98f5-b597f421496b">
+      <Parameter Name="Class" Guid="e14340ef-ab75-4dbe-aad2-9b08f7b7b61a" Value="SurvivalcraftTravelMap.Mod.TravelMapComponent" Type="string" />
+    </ComponentTemplate>
+  </Folder>
+</SurvivalCraftMap>

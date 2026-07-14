@@ -1,0 +1,295 @@
+using System.Runtime.CompilerServices;
+using SurvivalcraftTravelMap.Teleport;
+using Xunit;
+
+namespace SurvivalcraftTravelMap.Tests;
+
+public sealed class TeleportDiagnosticReporterTests
+{
+    [Fact]
+    public void Search_formatter_redacts_nonzero_counts_in_enum_order_without_coordinate_fields()
+    {
+        var diagnostic = new TeleportSearchDiagnostic(
+            new Dictionary<TeleportCandidateRejectionReason, int>
+            {
+                [TeleportCandidateRejectionReason.EntityCollision] = 4,
+                [TeleportCandidateRejectionReason.HarmfulContent] = 12,
+                [TeleportCandidateRejectionReason.NonBreathableHead] = 3,
+                [TeleportCandidateRejectionReason.NoSupport] = 0,
+            });
+
+        var text = TeleportDiagnosticReporter.FormatSearch(
+            new TeleportRequestDiagnosticContext("host", 78, "SurfaceRequest"),
+            diagnostic);
+
+        Assert.Contains("route=host", text, StringComparison.Ordinal);
+        Assert.Contains("request=78", text, StringComparison.Ordinal);
+        Assert.Contains("kind=SurfaceRequest", text, StringComparison.Ordinal);
+        Assert.Contains("HarmfulContent=<number>", text, StringComparison.Ordinal);
+        Assert.Contains("NonBreathableHead=<number>", text, StringComparison.Ordinal);
+        Assert.Contains("EntityCollision=<number>", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("NoSupport", text, StringComparison.Ordinal);
+        Assert.True(
+            text.IndexOf("HarmfulContent", StringComparison.Ordinal)
+            < text.IndexOf("NonBreathableHead", StringComparison.Ordinal));
+        Assert.True(
+            text.IndexOf("NonBreathableHead", StringComparison.Ordinal)
+            < text.IndexOf("EntityCollision", StringComparison.Ordinal));
+        Assert.DoesNotContain("targetX", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("targetZ", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("candidate", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("=12", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("=3", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("=4", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Formatter_redacts_invariant_numbers_from_outer_and_inner_exception_details()
+    {
+        var exception = CaptureNestedException();
+        var context = new TeleportRequestDiagnosticContext("remote", 73, "WaypointRequest");
+
+        var formatted = TeleportDiagnosticReporter.FormatFailure(
+            context,
+            new TeleportFailureDiagnostic(TeleportExecutionStage.PositionWrite, exception));
+
+        Assert.Contains("route=remote", formatted, StringComparison.Ordinal);
+        Assert.Contains("request=73", formatted, StringComparison.Ordinal);
+        Assert.Contains("kind=WaypointRequest", formatted, StringComparison.Ordinal);
+        Assert.Contains("stage=PositionWrite", formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(InvalidOperationException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(ArgumentException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(nameof(ThrowInnerCoordinateException), formatted, StringComparison.Ordinal);
+        Assert.Contains("<number>", formatted, StringComparison.Ordinal);
+        foreach (var sensitiveNumber in new[]
+                 {
+                     "123456789",
+                     "-987654321",
+                     "+42",
+                     "12.375",
+                     "-6.02e+23",
+                     "314159",
+                     "-271828",
+                     "0.000125",
+                     "+9.5E-7",
+                 })
+        {
+            Assert.DoesNotContain(sensitiveNumber, formatted, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Formatter_uses_none_for_absent_request_context()
+    {
+        var formatted = TeleportDiagnosticReporter.FormatFailure(
+            null,
+            new TeleportFailureDiagnostic(
+                TeleportExecutionStage.ProtocolDispatch,
+                new InvalidOperationException("failure 88")));
+
+        Assert.Contains("route=none", formatted, StringComparison.Ordinal);
+        Assert.Contains("request=none", formatted, StringComparison.Ordinal);
+        Assert.Contains("kind=none", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("88", formatted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Formatter_redacts_numbers_adjacent_to_identifiers_without_changing_type_or_method_names()
+    {
+        var exception = CaptureAdjacentNumberException();
+
+        var formatted = TeleportDiagnosticReporter.FormatFailure(
+            new TeleportRequestDiagnosticContext("remote", 91, "WaypointRequest"),
+            new TeleportFailureDiagnostic(TeleportExecutionStage.CandidateSearch, exception));
+
+        Assert.Contains(typeof(CoordinateFailure123Exception).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(nameof(ThrowAdjacentCoordinate123), formatted, StringComparison.Ordinal);
+        Assert.Contains("x<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("y_<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("z`<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("scientific<number>", formatted, StringComparison.Ordinal);
+        Assert.Contains("signed<number>", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("x123456789", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("y_987654321", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("z`314159", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("scientific1e3", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("signed-2.5E-4", formatted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Formatter_includes_every_aggregate_exception_branch_with_redaction()
+    {
+        var exception = CaptureAggregateException();
+
+        var formatted = TeleportDiagnosticReporter.FormatFailure(
+            new TeleportRequestDiagnosticContext("host", 92, "SurfaceRequest"),
+            new TeleportFailureDiagnostic(TeleportExecutionStage.ProtocolDispatch, exception));
+
+        Assert.Contains(typeof(AggregateException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(ArgumentException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(ApplicationException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.Contains(typeof(FormatException).FullName!, formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("aggregate999", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("first111", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("second222", formatted, StringComparison.Ordinal);
+        Assert.DoesNotContain("nested333", formatted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Matching_nested_scopes_share_the_reported_flag()
+    {
+        var context = new TeleportRequestDiagnosticContext("remote", 11, "SurfaceRequest");
+
+        using (TeleportDiagnosticContext.Ensure(context))
+        {
+            Assert.False(TeleportDiagnosticContext.HasReportedFailure);
+            using (TeleportDiagnosticContext.Ensure(context))
+            {
+                TeleportDiagnosticContext.MarkFailureReported();
+            }
+
+            Assert.Equal(context, TeleportDiagnosticContext.Current);
+            Assert.True(TeleportDiagnosticContext.HasReportedFailure);
+        }
+
+        Assert.Null(TeleportDiagnosticContext.Current);
+        Assert.False(TeleportDiagnosticContext.HasReportedFailure);
+    }
+
+    [Fact]
+    public void Unrelated_nested_scope_restores_the_previous_context_and_reported_flag()
+    {
+        var outer = new TeleportRequestDiagnosticContext("local", null, "WaypointRequest");
+        var inner = new TeleportRequestDiagnosticContext("invitation", null, "Teleport");
+
+        using (TeleportDiagnosticContext.Ensure(outer))
+        {
+            TeleportDiagnosticContext.MarkFailureReported();
+            using (TeleportDiagnosticContext.Ensure(inner))
+            {
+                Assert.Equal(inner, TeleportDiagnosticContext.Current);
+                Assert.False(TeleportDiagnosticContext.HasReportedFailure);
+                TeleportDiagnosticContext.MarkFailureReported();
+            }
+
+            Assert.Equal(outer, TeleportDiagnosticContext.Current);
+            Assert.True(TeleportDiagnosticContext.HasReportedFailure);
+        }
+    }
+
+    [Fact]
+    public async Task Parallel_async_flows_do_not_leak_request_context()
+    {
+        var first = new TeleportRequestDiagnosticContext("remote", 101, "SurfaceRequest");
+        var second = new TeleportRequestDiagnosticContext("host", 202, "WaypointRequest");
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+
+        async Task<(TeleportRequestDiagnosticContext? Context, bool Reported)> RunAsync(
+            TeleportRequestDiagnosticContext context)
+        {
+            using var scope = TeleportDiagnosticContext.Ensure(context);
+            if (Interlocked.Increment(ref arrivals) == 2)
+            {
+                ready.SetResult();
+            }
+
+            await ready.Task;
+            if (context == first)
+            {
+                TeleportDiagnosticContext.MarkFailureReported();
+            }
+
+            await Task.Yield();
+            return (TeleportDiagnosticContext.Current, TeleportDiagnosticContext.HasReportedFailure);
+        }
+
+        var results = await Task.WhenAll(Task.Run(() => RunAsync(first)), Task.Run(() => RunAsync(second)));
+
+        Assert.Equal(first, results[0].Context);
+        Assert.True(results[0].Reported);
+        Assert.Equal(second, results[1].Context);
+        Assert.False(results[1].Reported);
+        Assert.Null(TeleportDiagnosticContext.Current);
+    }
+
+    private static Exception CaptureNestedException()
+    {
+        try
+        {
+            ThrowInnerCoordinateException();
+        }
+        catch (Exception inner)
+        {
+            try
+            {
+                throw new InvalidOperationException(
+                    "outer target 123456789 -987654321 +42 12.375 -6.02e+23",
+                    inner);
+            }
+            catch (Exception outer)
+            {
+                return outer;
+            }
+        }
+
+        throw new InvalidOperationException("Unreachable.");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInnerCoordinateException() =>
+        throw new ArgumentException("inner target 314159 -271828 0.000125 +9.5E-7");
+
+    private static Exception CaptureAdjacentNumberException()
+    {
+        try
+        {
+            ThrowAdjacentCoordinate123();
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Unreachable.");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowAdjacentCoordinate123() =>
+        throw new CoordinateFailure123Exception(
+            "targets x123456789 y_987654321 z`314159 scientific1e3 signed-2.5E-4");
+
+    private static Exception CaptureAggregateException()
+    {
+        var first = CaptureException(
+            static () => throw new ArgumentException("first111"));
+        var nested = CaptureException(
+            static () => throw new FormatException("nested333"));
+        var second = CaptureException(
+            () => throw new ApplicationException("second222", nested));
+        try
+        {
+            throw new AggregateException("aggregate999", first, second);
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static Exception CaptureException(Action throwException)
+    {
+        try
+        {
+            throwException();
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+
+        throw new InvalidOperationException("Unreachable.");
+    }
+
+    private sealed class CoordinateFailure123Exception(string message) : Exception(message);
+}
