@@ -323,6 +323,49 @@ public sealed class ExplorationRecorderTests
     }
 
     [Fact]
+    public void Footprint_sequence_records_four_atomic_chunks_and_preserves_an_unreadable_target()
+    {
+        using var directory = new TemporaryDirectory();
+        var expected = new Rgba32(10, 20, 30, 255);
+        var store = new ExplorationTileStore(directory.Path);
+        var ready = new FakeTerrainMapSource(defaultContent: 1, isReady: true);
+        var recorder = CreateRecorder(ready, store, expected);
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(16f, 16f, 32, 1f);
+        scheduler.ObserveFootprint(footprint);
+
+        foreach (var chunk in scheduler.GetPendingAttempts(4))
+        {
+            Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(chunk));
+            scheduler.MarkCompleted(chunk);
+        }
+
+        Assert.Equal(0, scheduler.PendingCount);
+        foreach (var chunk in footprint.ChunksNearestFirst)
+        {
+            var coordinate = TileCoordinate.FromWorld(chunk.OriginX, chunk.OriginZ);
+            AssertRegion(
+                store.GetOrLoad(coordinate.TileX, coordinate.TileZ),
+                coordinate.LocalX,
+                coordinate.LocalZ,
+                expected);
+        }
+
+        var unreadable = new FakeTerrainMapSource(defaultContent: 1, isReady: false);
+        var unreadableRecorder = CreateRecorder(unreadable, store, expected);
+        var next = MinimapExplorationFootprint.Create(40f, 8f, 16, 1f);
+        scheduler.ObserveFootprint(next);
+        var pending = scheduler.GetPendingAttempts(1)[0];
+        Assert.Equal(ExplorationRecordResult.NotReady, unreadableRecorder.RecordChunk(pending));
+        Assert.Equal(1, scheduler.PendingCount);
+        var pendingCoordinate = TileCoordinate.FromWorld(pending.OriginX, pending.OriginZ);
+        Assert.False(store.GetOrLoad(pendingCoordinate.TileX, pendingCoordinate.TileZ).TryGetPixel(
+            pendingCoordinate.LocalX,
+            pendingCoordinate.LocalZ,
+            out _));
+    }
+
+    [Fact]
     public async Task Low_capacity_sampler_failure_preserves_its_exception_and_existing_data()
     {
         using var directory = new TemporaryDirectory();

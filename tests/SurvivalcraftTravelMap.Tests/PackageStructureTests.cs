@@ -215,7 +215,7 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
-    public void Component_drives_entered_chunk_exploration_after_terrain_views_every_update()
+    public void Component_drives_minimap_footprint_exploration_after_terrain_views_every_update()
     {
         var source = File.ReadAllText(TestPaths.Component);
         var update = ExtractBraceBlock(source, "public void Update(float dt)");
@@ -234,9 +234,12 @@ public sealed class PackageStructureTests
             IndexOfCode(update, "UpdateExploration();")
             < IndexOfCode(update, "if (_miniMap is null || _settings is null)"));
 
-        AssertCodeContains(exploration, "var x = (int)MathF.Floor(position.X);");
-        AssertCodeContains(exploration, "var z = (int)MathF.Floor(position.Z);");
-        AssertCodeContains(exploration, "_explorationScheduler.ObservePlayerPosition(x, z);");
+        AssertCodeContains(exploration, "MinimapExplorationFootprint.Create(");
+        AssertCodeContains(exploration, "_settings.MiniMapSize");
+        AssertCodeContains(exploration, "_settings.MiniMapBlocksPerPixel");
+        AssertCodeContains(exploration, "_explorationScheduler.ObserveFootprint(footprint);");
+        AssertCodeDoesNotContain(exploration, "ObservePlayerPosition");
+        AssertCodeDoesNotContain(exploration, "_settings.IsMiniMapVisible");
         AssertCodeContains(
             exploration,
             "_explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame)",
@@ -262,7 +265,9 @@ public sealed class PackageStructureTests
     {
         var source = File.ReadAllText(TestPaths.Component);
         var exploration = ExtractBraceBlock(source, "private void UpdateExploration()");
-        var attemptLoop = ExtractBraceBlock(exploration, "foreach (var chunk in pendingChunks)");
+        var attemptLoop = ExtractBraceBlock(
+            exploration,
+            "foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))");
         var recordedBranch = ExtractBraceBlock(
             attemptLoop,
             "if (result == ExplorationRecordResult.Recorded)");

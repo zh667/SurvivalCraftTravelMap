@@ -846,17 +846,20 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void UpdateExploration()
     {
-        if (_explorationRecorder is null)
+        if (_explorationRecorder is null || _settings is null)
         {
             return;
         }
 
         var position = Player.ComponentBody.Position;
-        var x = (int)MathF.Floor(position.X);
-        var z = (int)MathF.Floor(position.Z);
-        _explorationScheduler.ObservePlayerPosition(x, z);
-        var pendingChunks = _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame);
-        foreach (var chunk in pendingChunks)
+        var footprint = MinimapExplorationFootprint.Create(
+            position.X,
+            position.Z,
+            _settings.MiniMapSize,
+            _settings.MiniMapBlocksPerPixel);
+        _explorationScheduler.ObserveFootprint(footprint);
+
+        foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))
         {
             try
             {
