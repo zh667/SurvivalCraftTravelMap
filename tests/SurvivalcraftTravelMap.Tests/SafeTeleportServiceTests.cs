@@ -7,6 +7,105 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class SafeTeleportServiceTests
 {
     [Fact]
+    public async Task No_safe_position_reports_rejected_assessments_exactly_once()
+    {
+        var context = new TeleportTestContext();
+        foreach (var candidate in TeleportCandidate.GenerateWaypoint(0, 65, 0))
+        {
+            context.Terrain.SetBlock(
+                candidate.X,
+                candidate.Y!.Value - 1,
+                candidate.Z,
+                TeleportBlockKind.Lava);
+        }
+
+        var diagnostics = new List<TeleportSearchDiagnostic>();
+        var service = CreateSearchDiagnosticService(context, diagnostics);
+
+        var result = await service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.NoSafePosition, result);
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(
+            TeleportCandidate.GenerateWaypoint(0, 65, 0).Count(),
+            diagnostic.RejectionCounts[TeleportCandidateRejectionReason.HarmfulContent]);
+        Assert.Single(diagnostic.RejectionCounts);
+    }
+
+    [Fact]
+    public async Task Results_other_than_no_safe_position_do_not_report_search_diagnostics()
+    {
+        var success = new TeleportTestContext();
+        success.Terrain.SetSafeFeet(0, 65, 0);
+        await AssertNoSearchDiagnosticAsync(
+            success,
+            service => service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken),
+            TeleportResult.Success);
+
+        var outOfWorld = new TeleportTestContext();
+        outOfWorld.Terrain.IsColumnInWorldResult = false;
+        await AssertNoSearchDiagnosticAsync(
+            outOfWorld,
+            service => service.TeleportToSurfaceAsync(0, 0, TestContext.Current.CancellationToken),
+            TeleportResult.OutOfWorld);
+
+        var timeout = new TeleportTestContext();
+        timeout.Chunks.Load = _ => new TaskCompletionSource<IChunkLoadLease>(
+            TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        timeout.Clock.Delay = (_, _) => Task.CompletedTask;
+        await AssertNoSearchDiagnosticAsync(
+            timeout,
+            service => service.TeleportToSurfaceAsync(0, 0, TestContext.Current.CancellationToken),
+            TeleportResult.ChunkTimeout);
+
+        var rolledBack = new TeleportTestContext();
+        rolledBack.Terrain.SetSafeFeet(0, 65, 0);
+        rolledBack.Clock.WaitForUpdate = _ =>
+        {
+            rolledBack.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Lava);
+            return Task.CompletedTask;
+        };
+        await AssertNoSearchDiagnosticAsync(
+            rolledBack,
+            service => service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken),
+            TeleportResult.RolledBack);
+
+        var busy = new TeleportTestContext();
+        busy.Terrain.SetSafeFeet(0, 65, 0);
+        var enteredValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        busy.Clock.WaitForUpdate = async cancellationToken =>
+        {
+            enteredValidation.TrySetResult();
+            await releaseValidation.Task.WaitAsync(cancellationToken);
+        };
+        var busyDiagnostics = new List<TeleportSearchDiagnostic>();
+        var busyService = CreateSearchDiagnosticService(busy, busyDiagnostics);
+        var active = busyService.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+        await enteredValidation.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        var busyResult = await busyService.TeleportToSurfaceAsync(
+            0,
+            0,
+            TestContext.Current.CancellationToken);
+        releaseValidation.TrySetResult();
+
+        Assert.Equal(TeleportResult.Busy, busyResult);
+        Assert.Equal(TeleportResult.Success, await active);
+        Assert.Empty(busyDiagnostics);
+    }
+
+    [Fact]
     public async Task One_player_rejects_overlapping_transactions_and_releases_gate_after_completion()
     {
         var context = new TeleportTestContext();
@@ -1273,6 +1372,42 @@ public sealed class SafeTeleportServiceTests
             context.Clock,
             onPositionCommitted ?? (static () => { }),
             diagnostics.Add);
+
+    private static SafeTeleportService CreateSearchDiagnosticService(
+        TeleportTestContext context,
+        List<TeleportSearchDiagnostic> diagnostics) =>
+        new(
+            context.Terrain,
+            context.Chunks,
+            context.Mover,
+            context.Collisions,
+            new TestTeleportPositionCommitter(),
+            context.Clock,
+            static _ => { },
+            diagnostics.Add);
+
+    private static async Task AssertNoSearchDiagnosticAsync(
+        TeleportTestContext context,
+        Func<SafeTeleportService, Task<TeleportResult>> action,
+        TeleportResult expected)
+    {
+        var diagnostics = new List<TeleportSearchDiagnostic>();
+        var result = await action(CreateSearchDiagnosticService(context, diagnostics));
+
+        Assert.Equal(expected, result);
+        Assert.Empty(diagnostics);
+    }
+
+    private sealed class TestTeleportPositionCommitter : ITeleportPositionCommitter
+    {
+        public void Commit(Func<bool> commitGuard)
+        {
+            if (!commitGuard())
+            {
+                throw new OperationCanceledException();
+            }
+        }
+    }
 
     private static void AssertDiagnostic(
         List<TeleportFailureDiagnostic> diagnostics,

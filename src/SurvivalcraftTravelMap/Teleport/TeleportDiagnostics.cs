@@ -20,6 +20,9 @@ public sealed record TeleportFailureDiagnostic(
     TeleportExecutionStage Stage,
     Exception Exception);
 
+public sealed record TeleportSearchDiagnostic(
+    IReadOnlyDictionary<TeleportCandidateRejectionReason, int> RejectionCounts);
+
 internal readonly record struct TeleportRequestDiagnosticContext(
     string Route,
     uint? RequestId,
@@ -90,6 +93,47 @@ internal static class TeleportDiagnosticContext
 
 internal static partial class TeleportDiagnosticReporter
 {
+    internal static void ReportSearch(TeleportSearchDiagnostic diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        try
+        {
+            Engine.Log.Warning(FormatSearch(TeleportDiagnosticContext.Current, diagnostic));
+        }
+        catch
+        {
+            // Diagnostics must not replace the expected no-safe-position result.
+        }
+    }
+
+    internal static string FormatSearch(
+        TeleportRequestDiagnosticContext? context,
+        TeleportSearchDiagnostic diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        ArgumentNullException.ThrowIfNull(diagnostic.RejectionCounts);
+        var builder = new StringBuilder("[TravelMap] Teleport search found no safe position route=")
+            .Append(context?.Route ?? "none")
+            .Append(", request=")
+            .Append(context?.RequestId?.ToString(CultureInfo.InvariantCulture) ?? "none")
+            .Append(", kind=")
+            .Append(context?.Kind ?? "none");
+        foreach (var reason in Enum.GetValues<TeleportCandidateRejectionReason>())
+        {
+            if (!diagnostic.RejectionCounts.TryGetValue(reason, out var count) || count == 0)
+            {
+                continue;
+            }
+
+            builder.Append(", ")
+                .Append(reason)
+                .Append('=')
+                .Append(RedactNumbers(count.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        return builder.Append('.').ToString();
+    }
+
     internal static void Report(TeleportFailureDiagnostic diagnostic)
     {
         ArgumentNullException.ThrowIfNull(diagnostic);

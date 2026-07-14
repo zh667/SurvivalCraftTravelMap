@@ -507,7 +507,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     _dispatcher,
                     static () => { }),
             clock,
-            TeleportDiagnosticReporter.Report);
+            TeleportDiagnosticReporter.Report,
+            TeleportDiagnosticReporter.ReportSearch);
         if (TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(RuntimeContext))
         {
             _authoritativeHostTeleport = new AuthoritativeHostTeleportSession(

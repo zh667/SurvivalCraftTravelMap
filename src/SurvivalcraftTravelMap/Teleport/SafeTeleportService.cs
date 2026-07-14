@@ -15,6 +15,7 @@ public sealed class SafeTeleportService
     private readonly ITeleportClock _clock;
     private readonly ITeleportPositionCommitter _positionCommitter;
     private readonly Action<TeleportFailureDiagnostic> _reportFailure;
+    private readonly Action<TeleportSearchDiagnostic> _reportSearch;
     private int _transactionActive;
 
     public SafeTeleportService(
@@ -30,6 +31,7 @@ public sealed class SafeTeleportService
             collisionQuery,
             new DelegateTeleportPositionCommitter(static () => { }),
             clock,
+            static _ => { },
             static _ => { })
     {
     }
@@ -48,6 +50,7 @@ public sealed class SafeTeleportService
             collisionQuery,
             new DelegateTeleportPositionCommitter(onPositionCommitted),
             clock,
+            static _ => { },
             static _ => { })
     {
     }
@@ -67,7 +70,8 @@ public sealed class SafeTeleportService
             collisionQuery,
             new DelegateTeleportPositionCommitter(onPositionCommitted),
             clock,
-            reportFailure)
+            reportFailure,
+            static _ => { })
     {
     }
 
@@ -79,6 +83,27 @@ public sealed class SafeTeleportService
         ITeleportPositionCommitter positionCommitter,
         ITeleportClock clock,
         Action<TeleportFailureDiagnostic> reportFailure)
+        : this(
+            terrain,
+            chunkLoader,
+            playerMover,
+            collisionQuery,
+            positionCommitter,
+            clock,
+            reportFailure,
+            static _ => { })
+    {
+    }
+
+    internal SafeTeleportService(
+        ITerrainAccess terrain,
+        IChunkLoader chunkLoader,
+        IPlayerMover playerMover,
+        IEntityCollisionQuery collisionQuery,
+        ITeleportPositionCommitter positionCommitter,
+        ITeleportClock clock,
+        Action<TeleportFailureDiagnostic> reportFailure,
+        Action<TeleportSearchDiagnostic> reportSearch)
     {
         ArgumentNullException.ThrowIfNull(terrain);
         ArgumentNullException.ThrowIfNull(chunkLoader);
@@ -92,6 +117,7 @@ public sealed class SafeTeleportService
         _clock = clock;
         _positionCommitter = positionCommitter ?? throw new ArgumentNullException(nameof(positionCommitter));
         _reportFailure = reportFailure ?? (static _ => { });
+        _reportSearch = reportSearch ?? (static _ => { });
     }
 
     public Task<TeleportResult> TeleportToSurfaceAsync(
@@ -157,6 +183,7 @@ public sealed class SafeTeleportService
         using (chunkLease)
         {
             trace.Stage = TeleportExecutionStage.CandidateSearch;
+            var rejectionCounts = new Dictionary<TeleportCandidateRejectionReason, int>();
             TeleportCandidate? best = null;
             var bestScore = int.MinValue;
             long currentDistance = -1;
@@ -181,6 +208,7 @@ public sealed class SafeTeleportService
 
                 if (!IsColumnInWorld(column.X, column.Z, cancellationToken))
                 {
+                    RecordRejection(rejectionCounts, TeleportCandidateRejectionReason.OutOfWorld);
                     continue;
                 }
 
@@ -198,6 +226,10 @@ public sealed class SafeTeleportService
                         bestScore = score;
                     }
                 }
+                else if (assessment.Rejection is { } rejection)
+                {
+                    RecordRejection(rejectionCounts, rejection);
+                }
             }
 
             if (best.HasValue)
@@ -209,6 +241,7 @@ public sealed class SafeTeleportService
                     trace).ConfigureAwait(false);
             }
 
+            ReportSearch(rejectionCounts);
             return TeleportResult.NoSafePosition;
         }
     }
@@ -276,6 +309,7 @@ public sealed class SafeTeleportService
         using (chunkLease)
         {
             trace.Stage = TeleportExecutionStage.CandidateSearch;
+            var rejectionCounts = new Dictionary<TeleportCandidateRejectionReason, int>();
             TeleportCandidate? best = null;
             (int Safety, int VerticalCloseness) bestScore = (int.MinValue, int.MinValue);
             long currentDistance = -1;
@@ -298,7 +332,8 @@ public sealed class SafeTeleportService
                     bestScore = (int.MinValue, int.MinValue);
                 }
 
-                if (AssessCandidate(candidate, cancellationToken).IsSafe)
+                var assessment = AssessCandidate(candidate, cancellationToken);
+                if (assessment.IsSafe)
                 {
                     var score = (
                         GetSurroundingSafetyScore(candidate, cancellationToken),
@@ -308,6 +343,10 @@ public sealed class SafeTeleportService
                         best = candidate;
                         bestScore = score;
                     }
+                }
+                else if (assessment.Rejection is { } rejection)
+                {
+                    RecordRejection(rejectionCounts, rejection);
                 }
             }
 
@@ -320,7 +359,30 @@ public sealed class SafeTeleportService
                     trace).ConfigureAwait(false);
             }
 
+            ReportSearch(rejectionCounts);
             return TeleportResult.NoSafePosition;
+        }
+    }
+
+    private static void RecordRejection(
+        Dictionary<TeleportCandidateRejectionReason, int> rejectionCounts,
+        TeleportCandidateRejectionReason reason)
+    {
+        rejectionCounts.TryGetValue(reason, out var count);
+        rejectionCounts[reason] = checked(count + 1);
+    }
+
+    private void ReportSearch(
+        Dictionary<TeleportCandidateRejectionReason, int> rejectionCounts)
+    {
+        try
+        {
+            _reportSearch(new TeleportSearchDiagnostic(
+                new Dictionary<TeleportCandidateRejectionReason, int>(rejectionCounts)));
+        }
+        catch
+        {
+            // Diagnostics must never replace the expected no-safe-position result.
         }
     }
 

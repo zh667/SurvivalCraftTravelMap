@@ -7,6 +7,43 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class TeleportDiagnosticReporterTests
 {
     [Fact]
+    public void Search_formatter_redacts_nonzero_counts_in_enum_order_without_coordinate_fields()
+    {
+        var diagnostic = new TeleportSearchDiagnostic(
+            new Dictionary<TeleportCandidateRejectionReason, int>
+            {
+                [TeleportCandidateRejectionReason.EntityCollision] = 4,
+                [TeleportCandidateRejectionReason.HarmfulContent] = 12,
+                [TeleportCandidateRejectionReason.NonBreathableHead] = 3,
+                [TeleportCandidateRejectionReason.NoSupport] = 0,
+            });
+
+        var text = TeleportDiagnosticReporter.FormatSearch(
+            new TeleportRequestDiagnosticContext("host", 78, "SurfaceRequest"),
+            diagnostic);
+
+        Assert.Contains("route=host", text, StringComparison.Ordinal);
+        Assert.Contains("request=78", text, StringComparison.Ordinal);
+        Assert.Contains("kind=SurfaceRequest", text, StringComparison.Ordinal);
+        Assert.Contains("HarmfulContent=<number>", text, StringComparison.Ordinal);
+        Assert.Contains("NonBreathableHead=<number>", text, StringComparison.Ordinal);
+        Assert.Contains("EntityCollision=<number>", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("NoSupport", text, StringComparison.Ordinal);
+        Assert.True(
+            text.IndexOf("HarmfulContent", StringComparison.Ordinal)
+            < text.IndexOf("NonBreathableHead", StringComparison.Ordinal));
+        Assert.True(
+            text.IndexOf("NonBreathableHead", StringComparison.Ordinal)
+            < text.IndexOf("EntityCollision", StringComparison.Ordinal));
+        Assert.DoesNotContain("targetX", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("targetZ", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("candidate", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("=12", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("=3", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("=4", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Formatter_redacts_invariant_numbers_from_outer_and_inner_exception_details()
     {
         var exception = CaptureNestedException();
