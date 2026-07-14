@@ -35,7 +35,8 @@
 - 第一轮隔离世界测试发现玩家组件没有由 `mod.netxdb` 注入，同时联机版单人世界被错误当作 `WorkType.Local`。注入与运行能力判定修复后，日志已出现数据库组件注入和 `workType=Server, main=True, ui=True`，确认该场景是具有本地主玩家 UI 的集成主机。
 - 第二轮隔离世界测试中，`M` 已可打开大地图，但右上角小地图不可见；地图只显示初始不透明区域，当前坐标被保存为探索位为真但 `RGBA=0,0,0,0`；地图和坐标点传送未完成。
 - 针对第二轮现象已实现修复：以 `GuiWidget.ActualSize` 逻辑坐标定位右上角控件；进入区块后在地形更新之后调度探索，达到 `TerrainChunkState.InvalidPropagatedLight` surface-readable 阈值且 256 个采样均非透明时整块原子写入，重入时刷新旧 partial/透明缓存；集成主机绕开远程 ID 61 的 4 秒期限，并在成功提交后通过 `PositionSet` 同步权威位置。
-- 上述修复已通过 439/439 全量测试、`-warnaserror` 零警告构建和 `PACKAGE_OK` 封包校验。当前修复包 SHA-256 为 `DE63AFAFB98DA7149E858F4ED69A5ADB55C9FFAED460BB73D38E3B6D320BC0CE`，包内 DLL SHA-256 为 `A54CB8576EB6ACB6380CFD452CB0DBE9D28B5CADC8EA136DBC842D42C787BFCB`；隔离副本中的包哈希与构建产物一致。第二轮实机复测仍未完成。
+- entered-chunk Task 5 提交 `e055afe` 的自动门禁证据为：初始 focused 29/29，通过删除 area-only 兼容测试后的 expanded focused 39/39，完整 Release 547/547，以及 `-warnaserror` 构建 0 warnings / 0 errors。
+- 439/439、`PACKAGE_OK`、包 SHA-256 `DE63AFAFB98DA7149E858F4ED69A5ADB55C9FFAED460BB73D38E3B6D320BC0CE` 和包内 DLL SHA-256 `A54CB8576EB6ACB6380CFD452CB0DBE9D28B5CADC8EA136DBC842D42C787BFCB` 均属于 Task 5 之前的前一候选，仅供历史追溯，不是 `e055afe` 或后续提交的产物证据。本阶段未运行封包门禁，不伪造或沿用新包哈希；当前新 package hash 与游戏内验证均为 pending。
 
 ## 游戏内矩阵
 

@@ -220,27 +220,27 @@ public sealed class PackageStructureTests
         var exploration = ExtractBraceBlock(source, "private void UpdateExploration()");
         var cleanup = ExtractBraceBlock(source, "private void CleanupRuntimeResources()");
 
-        Assert.Contains("public UpdateOrder UpdateOrder => UpdateOrder.Views;", source, StringComparison.Ordinal);
-        Assert.Contains("private const int MaximumChunkAttemptsPerFrame = 4;", source, StringComparison.Ordinal);
-        Assert.Contains(
-            "private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();",
+        AssertCodeContains(source, "public UpdateOrder UpdateOrder => UpdateOrder.Views;");
+        AssertCodeContains(source, "private const int MaximumChunkAttemptsPerFrame = 4;");
+        AssertCodeContains(
             source,
-            StringComparison.Ordinal);
-        Assert.Contains("UpdateExploration();", update, StringComparison.Ordinal);
-        Assert.DoesNotContain("UpdateExploration(dt)", update, StringComparison.Ordinal);
+            "private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();",
+            "scheduler field");
+        AssertCodeContains(update, "UpdateExploration();");
+        AssertCodeDoesNotContain(update, "UpdateExploration(dt)");
         Assert.True(
-            update.IndexOf("UpdateExploration();", StringComparison.Ordinal)
-            < update.IndexOf("if (_miniMap is null || _settings is null)", StringComparison.Ordinal));
+            IndexOfCode(update, "UpdateExploration();")
+            < IndexOfCode(update, "if (_miniMap is null || _settings is null)"));
 
-        Assert.Matches(@"var\s+x\s*=\s*\(int\)MathF\.Floor\(position\.X\);", exploration);
-        Assert.Matches(@"var\s+z\s*=\s*\(int\)MathF\.Floor\(position\.Z\);", exploration);
-        Assert.Contains("_explorationScheduler.ObservePlayerPosition(x, z);", exploration, StringComparison.Ordinal);
-        Assert.Contains(
-            "_explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame)",
+        AssertCodeContains(exploration, "var x = (int)MathF.Floor(position.X);");
+        AssertCodeContains(exploration, "var z = (int)MathF.Floor(position.Z);");
+        AssertCodeContains(exploration, "_explorationScheduler.ObservePlayerPosition(x, z);");
+        AssertCodeContains(
             exploration,
-            StringComparison.Ordinal);
-        Assert.Contains("_explorationScheduler.Clear();", cleanup, StringComparison.Ordinal);
-        Assert.Contains("_explorationFailureWarnings.Clear();", cleanup, StringComparison.Ordinal);
+            "_explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame)",
+            "bounded pending snapshot");
+        AssertCodeContains(cleanup, "_explorationScheduler.Clear();");
+        AssertCodeContains(cleanup, "_explorationFailureWarnings.Clear();");
 
         foreach (var legacyReference in new[]
                  {
@@ -251,7 +251,7 @@ public sealed class PackageStructureTests
                      "RecordVisibleArea",
                  })
         {
-            Assert.DoesNotContain(legacyReference, source, StringComparison.Ordinal);
+            AssertCodeDoesNotContain(source, legacyReference);
         }
     }
 
@@ -266,21 +266,22 @@ public sealed class PackageStructureTests
             "if (result == ExplorationRecordResult.Recorded)");
         var exceptionHandler = ExtractBraceBlock(attemptLoop, "catch (Exception exception)");
 
-        Assert.Contains("try", attemptLoop, StringComparison.Ordinal);
-        Assert.Contains("_explorationRecorder.RecordChunk(chunk)", attemptLoop, StringComparison.Ordinal);
-        Assert.Contains("_explorationScheduler.MarkCompleted(chunk);", recordedBranch, StringComparison.Ordinal);
+        AssertCodeContains(attemptLoop, "try");
+        AssertCodeContains(attemptLoop, "_explorationRecorder.RecordChunk(chunk)");
+        AssertCodeContains(recordedBranch, "_explorationScheduler.MarkCompleted(chunk);");
         Assert.Equal(1, CountOccurrences(exploration, "MarkCompleted("));
-        Assert.Contains("result == ExplorationRecordResult.Pressure", attemptLoop, StringComparison.Ordinal);
-        Assert.Contains("!_explorationPressureWarningShown", attemptLoop, StringComparison.Ordinal);
+        AssertCodeContains(attemptLoop, "result == ExplorationRecordResult.Pressure");
+        AssertCodeContains(attemptLoop, "!_explorationPressureWarningShown");
 
-        Assert.Contains("exception.GetType().FullName", exceptionHandler, StringComparison.Ordinal);
-        Assert.Contains("exception.Message", exceptionHandler, StringComparison.Ordinal);
-        Assert.Contains("_explorationFailureWarnings.Add((chunk, errorSignature))", exceptionHandler, StringComparison.Ordinal);
-        Assert.Contains("Engine.Log.Warning", exceptionHandler, StringComparison.Ordinal);
-        Assert.DoesNotContain("MarkCompleted", exceptionHandler, StringComparison.Ordinal);
-        Assert.DoesNotContain("return;", exceptionHandler, StringComparison.Ordinal);
-        Assert.DoesNotContain("break;", exceptionHandler, StringComparison.Ordinal);
-        Assert.DoesNotContain("throw;", exceptionHandler, StringComparison.Ordinal);
+        AssertCodeContains(exceptionHandler, "exception.GetType().FullName");
+        AssertCodeContains(exceptionHandler, "exception.Message");
+        AssertCodeContains(exceptionHandler, "_explorationFailureWarnings.Add((chunk, errorSignature))");
+        AssertCodeContains(exceptionHandler, "Engine.Log.Warning");
+        AssertCodeDoesNotContain(exceptionHandler, "MarkCompleted");
+        foreach (var forbiddenExit in new[] { "return", "break", "continue", "goto", "throw" })
+        {
+            Assert.Equal(0, CountOccurrences(exceptionHandler, forbiddenExit));
+        }
     }
 
     [Fact]
@@ -387,89 +388,27 @@ public sealed class PackageStructureTests
 
     private static string ExtractBraceBlock(string source, string anchor)
     {
-        var anchorIndex = source.IndexOf(anchor, StringComparison.Ordinal);
-        Assert.True(anchorIndex >= 0, $"Could not find source anchor '{anchor}'.");
-        var openingBrace = source.IndexOf('{', anchorIndex + anchor.Length);
-        Assert.True(openingBrace >= 0, $"Could not find opening brace after '{anchor}'.");
-
-        var depth = 0;
-        var inString = false;
-        var inCharacter = false;
-        var inLineComment = false;
-        var inBlockComment = false;
-        var verbatimString = false;
-        for (var index = openingBrace; index < source.Length; index++)
+        var tokens = TokenizeCSharp(source);
+        var anchorTokens = TokenizeCSharp(anchor);
+        var anchorIndex = FindTokenSequence(tokens, anchorTokens);
+        Assert.True(anchorIndex >= 0, $"Could not find code anchor '{anchor}'.");
+        var openingBraceIndex = anchorIndex + anchorTokens.Count;
+        while (openingBraceIndex < tokens.Count && tokens[openingBraceIndex].Text != "{")
         {
-            var current = source[index];
-            var next = index + 1 < source.Length ? source[index + 1] : '\0';
+            openingBraceIndex++;
+        }
 
-            if (inLineComment)
-            {
-                inLineComment = current != '\n';
-                continue;
-            }
-
-            if (inBlockComment)
-            {
-                if (current == '*' && next == '/')
-                {
-                    inBlockComment = false;
-                    index++;
-                }
-
-                continue;
-            }
-
-            if (inString)
-            {
-                if (verbatimString && current == '"' && next == '"')
-                {
-                    index++;
-                }
-                else if (current == '"' && (verbatimString || source[index - 1] != '\\'))
-                {
-                    inString = false;
-                }
-
-                continue;
-            }
-
-            if (inCharacter)
-            {
-                if (current == '\'' && source[index - 1] != '\\')
-                {
-                    inCharacter = false;
-                }
-
-                continue;
-            }
-
-            if (current == '/' && next == '/')
-            {
-                inLineComment = true;
-                index++;
-            }
-            else if (current == '/' && next == '*')
-            {
-                inBlockComment = true;
-                index++;
-            }
-            else if (current == '"')
-            {
-                inString = true;
-                verbatimString = index > 0 && source[index - 1] == '@';
-            }
-            else if (current == '\'')
-            {
-                inCharacter = true;
-            }
-            else if (current == '{')
+        Assert.True(openingBraceIndex < tokens.Count, $"Could not find opening brace after code anchor '{anchor}'.");
+        var depth = 0;
+        for (var index = openingBraceIndex; index < tokens.Count; index++)
+        {
+            if (tokens[index].Text == "{")
             {
                 depth++;
             }
-            else if (current == '}' && --depth == 0)
+            else if (tokens[index].Text == "}" && --depth == 0)
             {
-                return source[openingBrace..(index + 1)];
+                return source[tokens[openingBraceIndex].Start..tokens[index].End];
             }
         }
 
@@ -478,13 +417,461 @@ public sealed class PackageStructureTests
 
     private static int CountOccurrences(string source, string value)
     {
+        var tokens = TokenizeCSharp(source);
+        var valueTokens = TokenizeCSharp(value);
+        Assert.NotEmpty(valueTokens);
         var count = 0;
-        for (var index = 0; (index = source.IndexOf(value, index, StringComparison.Ordinal)) >= 0; index += value.Length)
+        for (var index = 0; index <= tokens.Count - valueTokens.Count;)
         {
-            count++;
+            if (TokensMatchAt(tokens, valueTokens, index))
+            {
+                count++;
+                index += valueTokens.Count;
+            }
+            else
+            {
+                index++;
+            }
         }
 
         return count;
+    }
+
+    private static void AssertCodeContains(
+        string source,
+        string expectedCode,
+        string? description = null) =>
+        Assert.True(
+            IndexOfCode(source, expectedCode) >= 0,
+            $"Could not find expected code{(description is null ? string.Empty : $" ({description})")}: {expectedCode}");
+
+    private static void AssertCodeDoesNotContain(string source, string unexpectedCode) =>
+        Assert.True(
+            IndexOfCode(source, unexpectedCode) < 0,
+            $"Found forbidden code: {unexpectedCode}");
+
+    private static int IndexOfCode(string source, string expectedCode)
+    {
+        var tokens = TokenizeCSharp(source);
+        var expectedTokens = TokenizeCSharp(expectedCode);
+        var tokenIndex = FindTokenSequence(tokens, expectedTokens);
+        return tokenIndex < 0 ? -1 : tokens[tokenIndex].Start;
+    }
+
+    private static int FindTokenSequence(
+        IReadOnlyList<SourceToken> tokens,
+        IReadOnlyList<SourceToken> expected,
+        int startIndex = 0)
+    {
+        if (expected.Count == 0)
+        {
+            return -1;
+        }
+
+        for (var index = startIndex; index <= tokens.Count - expected.Count; index++)
+        {
+            if (TokensMatchAt(tokens, expected, index))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool TokensMatchAt(
+        IReadOnlyList<SourceToken> tokens,
+        IReadOnlyList<SourceToken> expected,
+        int index)
+    {
+        for (var offset = 0; offset < expected.Count; offset++)
+        {
+            if (!string.Equals(tokens[index + offset].Text, expected[offset].Text, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static IReadOnlyList<SourceToken> TokenizeCSharp(string source, int baseOffset = 0)
+    {
+        var tokens = new List<SourceToken>();
+        for (var index = 0; index < source.Length;)
+        {
+            if (char.IsWhiteSpace(source[index]))
+            {
+                index++;
+                continue;
+            }
+
+            if (TrySkipComment(source, ref index)
+                || TrySkipStringLiteral(source, ref index, tokens, baseOffset)
+                || TrySkipCharacterLiteral(source, ref index))
+            {
+                continue;
+            }
+
+            var start = index;
+            if (IsIdentifierStart(source[index]))
+            {
+                index++;
+                while (index < source.Length && IsIdentifierPart(source[index]))
+                {
+                    index++;
+                }
+            }
+            else if (char.IsDigit(source[index]))
+            {
+                index++;
+                while (index < source.Length
+                       && (char.IsLetterOrDigit(source[index]) || source[index] is '_' or '.'))
+                {
+                    index++;
+                }
+            }
+            else
+            {
+                index++;
+            }
+
+            tokens.Add(new SourceToken(
+                source[start..index],
+                baseOffset + start,
+                baseOffset + index));
+        }
+
+        return tokens;
+    }
+
+    private static bool TrySkipComment(string source, ref int index)
+    {
+        if (index + 1 >= source.Length || source[index] != '/')
+        {
+            return false;
+        }
+
+        if (source[index + 1] == '/')
+        {
+            index += 2;
+            while (index < source.Length && source[index] is not '\r' and not '\n')
+            {
+                index++;
+            }
+
+            return true;
+        }
+
+        if (source[index + 1] != '*')
+        {
+            return false;
+        }
+
+        index += 2;
+        while (index + 1 < source.Length && (source[index] != '*' || source[index + 1] != '/'))
+        {
+            index++;
+        }
+
+        index = Math.Min(source.Length, index + 2);
+        return true;
+    }
+
+    private static bool TrySkipCharacterLiteral(string source, ref int index)
+    {
+        if (source[index] != '\'')
+        {
+            return false;
+        }
+
+        index++;
+        while (index < source.Length)
+        {
+            if (source[index] == '\\')
+            {
+                index = Math.Min(source.Length, index + 2);
+            }
+            else if (source[index++] == '\'')
+            {
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TrySkipStringLiteral(
+        string source,
+        ref int index,
+        List<SourceToken>? interpolatedCodeTokens = null,
+        int baseOffset = 0)
+    {
+        var cursor = index;
+        var dollarCount = 0;
+        var verbatim = false;
+
+        if (source[cursor] == '@')
+        {
+            verbatim = true;
+            cursor++;
+            if (cursor < source.Length && source[cursor] == '$')
+            {
+                dollarCount = 1;
+                cursor++;
+            }
+        }
+        else
+        {
+            while (cursor < source.Length && source[cursor] == '$')
+            {
+                dollarCount++;
+                cursor++;
+            }
+
+            if (cursor < source.Length && source[cursor] == '@')
+            {
+                verbatim = true;
+                cursor++;
+            }
+        }
+
+        if (cursor >= source.Length || source[cursor] != '"')
+        {
+            return false;
+        }
+
+        var quoteCount = CountCharacterRun(source, cursor, '"');
+        if (quoteCount >= 3)
+        {
+            index = SkipRawString(source, cursor + quoteCount, quoteCount);
+            return true;
+        }
+
+        if (quoteCount != 1 || dollarCount > 1)
+        {
+            return false;
+        }
+
+        index = dollarCount == 1
+            ? SkipInterpolatedString(
+                source,
+                cursor + 1,
+                verbatim,
+                interpolatedCodeTokens,
+                baseOffset)
+            : SkipOrdinaryString(source, cursor + 1, verbatim);
+        return true;
+    }
+
+    private static int SkipOrdinaryString(string source, int index, bool verbatim)
+    {
+        while (index < source.Length)
+        {
+            if (verbatim && source[index] == '"' && index + 1 < source.Length && source[index + 1] == '"')
+            {
+                index += 2;
+            }
+            else if (!verbatim && source[index] == '\\')
+            {
+                index = Math.Min(source.Length, index + 2);
+            }
+            else if (source[index] == '"')
+            {
+                return index + 1;
+            }
+            else
+            {
+                index++;
+            }
+        }
+
+        return source.Length;
+    }
+
+    private static int SkipInterpolatedString(
+        string source,
+        int index,
+        bool verbatim,
+        List<SourceToken>? interpolatedCodeTokens,
+        int baseOffset)
+    {
+        while (index < source.Length)
+        {
+            if (verbatim && source[index] == '"' && index + 1 < source.Length && source[index + 1] == '"')
+            {
+                index += 2;
+            }
+            else if (!verbatim && source[index] == '\\')
+            {
+                index = Math.Min(source.Length, index + 2);
+            }
+            else if (source[index] == '"')
+            {
+                return index + 1;
+            }
+            else if (source[index] == '{' && index + 1 < source.Length && source[index + 1] == '{')
+            {
+                index += 2;
+            }
+            else if (source[index] == '{')
+            {
+                var expressionStart = index + 1;
+                var afterExpression = SkipInterpolationHole(source, expressionStart);
+                var expressionEnd = Math.Max(expressionStart, afterExpression - 1);
+                if (interpolatedCodeTokens is not null && expressionEnd > expressionStart)
+                {
+                    interpolatedCodeTokens.AddRange(TokenizeCSharp(
+                        source[expressionStart..expressionEnd],
+                        baseOffset + expressionStart));
+                }
+
+                index = afterExpression;
+            }
+            else if (source[index] == '}' && index + 1 < source.Length && source[index + 1] == '}')
+            {
+                index += 2;
+            }
+            else
+            {
+                index++;
+            }
+        }
+
+        return source.Length;
+    }
+
+    private static int SkipInterpolationHole(string source, int index)
+    {
+        var depth = 1;
+        while (index < source.Length)
+        {
+            if (TrySkipComment(source, ref index)
+                || TrySkipStringLiteral(source, ref index)
+                || TrySkipCharacterLiteral(source, ref index))
+            {
+                continue;
+            }
+
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}' && --depth == 0)
+            {
+                return index + 1;
+            }
+
+            index++;
+        }
+
+        return source.Length;
+    }
+
+    private static int SkipRawString(string source, int index, int quoteCount)
+    {
+        while (index < source.Length)
+        {
+            if (source[index] != '"')
+            {
+                index++;
+                continue;
+            }
+
+            var runLength = CountCharacterRun(source, index, '"');
+            if (runLength >= quoteCount)
+            {
+                return index + runLength;
+            }
+
+            index += runLength;
+        }
+
+        return source.Length;
+    }
+
+    private static int CountCharacterRun(string source, int index, char value)
+    {
+        var start = index;
+        while (index < source.Length && source[index] == value)
+        {
+            index++;
+        }
+
+        return index - start;
+    }
+
+    private static bool IsIdentifierStart(char value) => value == '_' || char.IsLetter(value);
+
+    private static bool IsIdentifierPart(char value) => value == '_' || char.IsLetterOrDigit(value);
+
+    private readonly record struct SourceToken(string Text, int Start, int End);
+
+    [Fact]
+    public void Source_block_extraction_ignores_method_anchors_in_comments_and_string_literals()
+    {
+        var source = """"
+            internal sealed class Probe
+            {
+                // private void Target() { DecoyFromLineComment(); }
+                /* private void Target() { DecoyFromBlockComment(); } */
+                private const string Normal = "private void Target() { DecoyFromNormal(); }";
+                private const string Verbatim = @"private void Target() { DecoyFromVerbatim(); }";
+                private const string Interpolated = $"prefix {new { Text = "private void Target() { DecoyFromInterpolated(); }" }} suffix";
+                private const string InterpolatedVerbatim = $@"private void Target() {{ DecoyFromInterpolatedVerbatim(); }}";
+                private const string Raw = """private void Target() { DecoyFromRaw(); }""";
+
+                private void Target()
+                {
+                    RealBody();
+                }
+            }
+            """";
+
+        var block = ExtractBraceBlock(source, "private void Target()");
+
+        Assert.Contains("RealBody();", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("Decoy", block, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Source_token_count_ignores_invocations_in_comments_and_string_literals()
+    {
+        var source = """"
+            {
+                // _scheduler.MarkCompleted(chunk);
+                /* _scheduler.MarkCompleted(chunk); */
+                var normal = "_scheduler.MarkCompleted(chunk);";
+                var verbatim = @"_scheduler.MarkCompleted(chunk);";
+                var interpolated = $"{{_scheduler.MarkCompleted(chunk)}}";
+                var raw = """_scheduler.MarkCompleted(chunk);""";
+                _scheduler.MarkCompleted(chunk);
+            }
+            """";
+
+        Assert.Equal(1, CountOccurrences(source, "MarkCompleted("));
+    }
+
+    [Fact]
+    public void Source_token_count_ignores_fake_exits_but_detects_throw_expressions()
+    {
+        var source = """"
+            {
+                // return; break; continue; goto Exit; throw;
+                /* return; break; continue; goto Exit; throw exception; */
+                var normal = "return; break; continue; goto Exit; throw exception;";
+                var verbatim = @"return; break; continue; goto Exit; throw exception;";
+                var interpolated = $"{{return; break; continue; goto Exit; throw exception;}}";
+                var raw = """return; break; continue; goto Exit; throw exception;""";
+                throw exception;
+            }
+            """";
+
+        Assert.Equal(0, CountOccurrences(source, "return"));
+        Assert.Equal(0, CountOccurrences(source, "break"));
+        Assert.Equal(0, CountOccurrences(source, "continue"));
+        Assert.Equal(0, CountOccurrences(source, "goto"));
+        Assert.Equal(1, CountOccurrences(source, "throw"));
     }
 
     [Fact]
