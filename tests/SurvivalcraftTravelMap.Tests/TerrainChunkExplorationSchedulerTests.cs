@@ -92,6 +92,76 @@ public sealed class TerrainChunkExplorationSchedulerTests
     }
 
     [Fact]
+    public void Reconciliation_reenqueues_a_persistently_incomplete_chunk_marked_completed_in_memory()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(8f, 8f, 32, 1f);
+        scheduler.ObserveFootprint(footprint);
+        scheduler.MarkCompleted(footprint.CenterChunk);
+
+        var checks = scheduler.ReconcileCoverage(
+            chunk => chunk != footprint.CenterChunk,
+            maximumChecks: 4);
+
+        Assert.Equal(4, checks);
+        Assert.Equal(footprint.CenterChunk, scheduler.GetPendingAttempts(1)[0]);
+    }
+
+    [Fact]
+    public void Reconciliation_removes_complete_chunks_and_deduplicates_incomplete_chunks()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(16f, 16f, 16, 1f);
+        scheduler.ObserveFootprint(footprint);
+        var incomplete = footprint.ChunksNearestFirst[1];
+
+        scheduler.ReconcileCoverage(chunk => chunk != incomplete, maximumChecks: 4);
+        scheduler.ReconcileCoverage(chunk => chunk != incomplete, maximumChecks: 4);
+
+        Assert.Equal(1, scheduler.PendingCount);
+        Assert.Equal(incomplete, scheduler.GetPendingAttempts(1)[0]);
+    }
+
+    [Fact]
+    public void Reconciliation_checks_the_current_chunk_first_then_advances_a_bounded_cursor()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(8f, 8f, 64, 1f);
+        scheduler.ObserveFootprint(footprint);
+        var first = new List<TerrainChunkCoordinate>();
+        var second = new List<TerrainChunkCoordinate>();
+
+        Assert.Equal(4, scheduler.ReconcileCoverage(chunk => { first.Add(chunk); return true; }, 4));
+        Assert.Equal(4, scheduler.ReconcileCoverage(chunk => { second.Add(chunk); return true; }, 4));
+
+        Assert.Equal(footprint.CenterChunk, first[0]);
+        Assert.Equal(footprint.CenterChunk, second[0]);
+        Assert.Equal(4, first.Distinct().Count());
+        Assert.Equal(4, second.Distinct().Count());
+        Assert.False(first.Skip(1).SequenceEqual(second.Skip(1)));
+    }
+
+    [Fact]
+    public void Null_coverage_predicate_is_rejected()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+
+        Assert.Throws<ArgumentNullException>(
+            () => scheduler.ReconcileCoverage(null!, maximumChecks: 4));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Nonpositive_coverage_check_limit_throws(int maximumChecks)
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => scheduler.ReconcileCoverage(_ => true, maximumChecks));
+    }
+
+    [Fact]
     public void Clear_resets_visible_identity_and_pending_state()
     {
         var scheduler = new TerrainChunkExplorationScheduler();
@@ -102,6 +172,11 @@ public sealed class TerrainChunkExplorationSchedulerTests
 
         Assert.Equal(0, scheduler.PendingCount);
         Assert.Empty(scheduler.GetPendingAttempts(4));
+        Assert.Equal(
+            0,
+            scheduler.ReconcileCoverage(
+                _ => throw new InvalidOperationException("Coverage predicate must not run after Clear."),
+                maximumChecks: 4));
         Assert.True(scheduler.ObserveFootprint(footprint));
         Assert.Equal(footprint.ChunksNearestFirst, scheduler.GetPendingAttempts(32));
     }

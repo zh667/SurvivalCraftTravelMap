@@ -5,6 +5,8 @@ public sealed class TerrainChunkExplorationScheduler
     private readonly LinkedList<TerrainChunkCoordinate> _pending = new();
     private readonly Dictionary<TerrainChunkCoordinate, LinkedListNode<TerrainChunkCoordinate>> _nodes = new();
     private readonly HashSet<TerrainChunkCoordinate> _visible = [];
+    private IReadOnlyList<TerrainChunkCoordinate> _visibleNearestFirst = Array.Empty<TerrainChunkCoordinate>();
+    private int _coverageCursor;
     private TerrainChunkCoordinate? _center;
 
     public int PendingCount => _pending.Count;
@@ -22,6 +24,12 @@ public sealed class TerrainChunkExplorationScheduler
 
         _visible.Clear();
         _visible.Add(chunk);
+        if (changed)
+        {
+            _visibleNearestFirst = [chunk];
+            _coverageCursor = 0;
+        }
+
         _center = chunk;
         MovePendingToFront(chunk);
         return changed;
@@ -41,9 +49,58 @@ public sealed class TerrainChunkExplorationScheduler
 
         _visible.Clear();
         _visible.UnionWith(nextVisible);
+        if (changed)
+        {
+            _visibleNearestFirst = footprint.ChunksNearestFirst.ToArray();
+            _coverageCursor = 0;
+        }
+
         _center = footprint.CenterChunk;
         MovePendingToFront(footprint.CenterChunk);
         return changed;
+    }
+
+    public int ReconcileCoverage(
+        Func<TerrainChunkCoordinate, bool> isFullyExplored,
+        int maximumChecks)
+    {
+        ArgumentNullException.ThrowIfNull(isFullyExplored);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumChecks);
+        if (_visibleNearestFirst.Count == 0)
+            return 0;
+
+        var candidates = new List<TerrainChunkCoordinate>(
+            Math.Min(maximumChecks, _visibleNearestFirst.Count));
+        if (_center is TerrainChunkCoordinate center)
+            candidates.Add(center);
+
+        var examined = 0;
+        while (candidates.Count < maximumChecks && examined < _visibleNearestFirst.Count)
+        {
+            if (_coverageCursor >= _visibleNearestFirst.Count)
+                _coverageCursor = 0;
+
+            var candidate = _visibleNearestFirst[_coverageCursor++];
+            examined++;
+            if (!candidates.Contains(candidate))
+                candidates.Add(candidate);
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (isFullyExplored(candidate))
+            {
+                MarkCompleted(candidate);
+            }
+            else if (!_nodes.ContainsKey(candidate))
+            {
+                EnqueueLast(candidate);
+            }
+        }
+
+        if (_center is TerrainChunkCoordinate current)
+            MovePendingToFront(current);
+        return candidates.Count;
     }
 
     public IReadOnlyList<TerrainChunkCoordinate> GetPendingAttempts(int maximumCount)
@@ -94,6 +151,8 @@ public sealed class TerrainChunkExplorationScheduler
         _pending.Clear();
         _nodes.Clear();
         _visible.Clear();
+        _visibleNearestFirst = Array.Empty<TerrainChunkCoordinate>();
+        _coverageCursor = 0;
         _center = null;
     }
 
