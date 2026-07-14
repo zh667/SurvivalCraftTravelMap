@@ -2,8 +2,10 @@ using System.Numerics;
 using System.Text.Json;
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
+using SurvivalcraftTravelMap.Network;
 using SurvivalcraftTravelMap.Persistence;
 using SurvivalcraftTravelMap.Settings;
+using SurvivalcraftTravelMap.Teleport;
 using SurvivalcraftTravelMap.UI;
 using SurvivalcraftTravelMap.Waypoints;
 using Xunit;
@@ -12,6 +14,37 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapUiStateTests
 {
+    [Theory]
+    [InlineData(CoordinateTeleportResultCode.Success, TravelMapNoticeKind.Success)]
+    [InlineData(CoordinateTeleportResultCode.NoSafePosition, TravelMapNoticeKind.Failure)]
+    [InlineData(CoordinateTeleportResultCode.OutOfWorld, TravelMapNoticeKind.Failure)]
+    [InlineData(CoordinateTeleportResultCode.Rejected, TravelMapNoticeKind.Failure)]
+    public void Coordinate_results_map_to_visible_notice_kinds(
+        CoordinateTeleportResultCode result,
+        TravelMapNoticeKind expected)
+    {
+        Assert.Equal(expected, TravelMapNoticeFactory.For(result).Kind);
+        Assert.Equal(CoordinateTeleportResultText.For(result), TravelMapNoticeFactory.For(result).Text);
+    }
+
+    [Theory]
+    [InlineData(TeleportResult.Success, CoordinateTeleportResultCode.Success, TravelMapNoticeKind.Success)]
+    [InlineData(TeleportResult.ChunkTimeout, CoordinateTeleportResultCode.TimedOut, TravelMapNoticeKind.Failure)]
+    [InlineData(TeleportResult.NoSafePosition, CoordinateTeleportResultCode.NoSafePosition, TravelMapNoticeKind.Failure)]
+    [InlineData(TeleportResult.OutOfWorld, CoordinateTeleportResultCode.OutOfWorld, TravelMapNoticeKind.Failure)]
+    [InlineData(TeleportResult.RolledBack, CoordinateTeleportResultCode.RolledBack, TravelMapNoticeKind.Failure)]
+    [InlineData(TeleportResult.Busy, CoordinateTeleportResultCode.Rejected, TravelMapNoticeKind.Failure)]
+    public void Local_teleport_results_map_to_the_same_visible_notices_as_coordinate_results(
+        TeleportResult result,
+        CoordinateTeleportResultCode equivalent,
+        TravelMapNoticeKind expectedKind)
+    {
+        var notice = TravelMapNoticeFactory.For(result);
+
+        Assert.Equal(expectedKind, notice.Kind);
+        Assert.Equal(CoordinateTeleportResultText.For(equivalent), notice.Text);
+    }
+
     [Fact]
     public void Top_right_overlay_position_uses_the_gui_logical_size()
     {

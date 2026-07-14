@@ -1,3 +1,6 @@
+using SurvivalcraftTravelMap.Network;
+using SurvivalcraftTravelMap.Teleport;
+
 namespace SurvivalcraftTravelMap.UI;
 
 public enum TravelMapNoticeKind
@@ -8,6 +11,26 @@ public enum TravelMapNoticeKind
 }
 
 public readonly record struct TravelMapNotice(string Text, TravelMapNoticeKind Kind);
+
+public static class TravelMapNoticeFactory
+{
+    public static TravelMapNotice For(CoordinateTeleportResultCode result) => new(
+        CoordinateTeleportResultText.For(result),
+        result == CoordinateTeleportResultCode.Success
+            ? TravelMapNoticeKind.Success
+            : TravelMapNoticeKind.Failure);
+
+    public static TravelMapNotice For(TeleportResult result) => For(result switch
+    {
+        TeleportResult.Success => CoordinateTeleportResultCode.Success,
+        TeleportResult.ChunkTimeout => CoordinateTeleportResultCode.TimedOut,
+        TeleportResult.NoSafePosition => CoordinateTeleportResultCode.NoSafePosition,
+        TeleportResult.OutOfWorld => CoordinateTeleportResultCode.OutOfWorld,
+        TeleportResult.RolledBack => CoordinateTeleportResultCode.RolledBack,
+        TeleportResult.Busy => CoordinateTeleportResultCode.Rejected,
+        _ => CoordinateTeleportResultCode.InternalError,
+    });
+}
 
 public sealed class TravelMapNoticeController
 {

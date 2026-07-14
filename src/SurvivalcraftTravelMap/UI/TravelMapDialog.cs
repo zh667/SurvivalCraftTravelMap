@@ -14,6 +14,7 @@ public enum TravelMapActionStatus
     Cancelled,
     Unavailable,
     Failed,
+    FailedWithFeedback,
 }
 
 public delegate Task<TravelMapActionStatus> TravelMapContextActionHandler(
@@ -33,7 +34,7 @@ public sealed class TravelMapDialog : Dialog
     private readonly TravelMapSettings _settings;
     private readonly TravelMapSettingsStore _settingsStore;
     private readonly Func<PlayerMapPose> _playerPose;
-    private readonly Action<string> _notify;
+    private readonly Action<TravelMapNotice> _notify;
     private readonly TravelMapContextActionHandler _actionHandler;
     private readonly TrackedUiActionRunner _actionRunner;
     private readonly TrackedUiActionRunner _persistenceRunner;
@@ -48,6 +49,11 @@ public sealed class TravelMapDialog : Dialog
     private readonly TravelMapSettingsWidget _settingsWidget;
     private readonly CanvasWidget _contextCard;
     private readonly StackPanelWidget _contextActions;
+    private readonly TravelMapNoticeController _noticeController =
+        new TravelMapNoticeController(TimeSpan.FromSeconds(2.5));
+    private readonly CanvasWidget _noticeHost;
+    private readonly RectangleWidget _noticeBackground;
+    private readonly LabelWidget _noticeLabel;
     private readonly List<(BevelledButtonWidget Button, TravelMapContextAction Action)> _contextButtons = [];
     private TravelMapContextMenu? _activeMenu;
     private NVector2? _lastDragPosition;
@@ -63,15 +69,17 @@ public sealed class TravelMapDialog : Dialog
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<float> brightness,
         TravelMapContextActionHandler actionHandler,
-        Action<string> notify)
+        Action<TravelMapNotice> notify)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
         _playerPose = playerPose ?? throw new ArgumentNullException(nameof(playerPose));
         _actionHandler = actionHandler ?? throw new ArgumentNullException(nameof(actionHandler));
         _notify = notify ?? throw new ArgumentNullException(nameof(notify));
-        _actionRunner = new TrackedUiActionRunner(_ => _notify("地图操作未能完成"));
-        _persistenceRunner = new TrackedUiActionRunner(_ => _notify("大地图比例未能保存，本次会话将保留当前值"));
+        _actionRunner = new TrackedUiActionRunner(
+            _ => Notify("地图操作未能完成", TravelMapNoticeKind.Failure));
+        _persistenceRunner = new TrackedUiActionRunner(
+            _ => Notify("大地图比例未能保存，本次会话将保留当前值", TravelMapNoticeKind.Failure));
 
         _background = new RectangleWidget
         {
@@ -129,7 +137,10 @@ public sealed class TravelMapDialog : Dialog
         _topBar.Children.Add(_settingsButton);
         _topBar.Children.Add(_closeButton);
 
-        _settingsWidget = new TravelMapSettingsWidget(settings, settingsStore, notify)
+        _settingsWidget = new TravelMapSettingsWidget(
+            settings,
+            settingsStore,
+            message => Notify(message, TravelMapNoticeKind.Failure))
         {
             IsVisible = false,
         };
@@ -165,6 +176,30 @@ public sealed class TravelMapDialog : Dialog
         };
         _contextCard.Children.Add(_contextActions);
         _contextCard.SetWidgetPosition(_contextActions, new Vector2(12f, 46f));
+
+        _noticeHost = new CanvasWidget
+        {
+            Size = new Vector2(560f, 48f),
+            IsVisible = false,
+        };
+        Children.Add(_noticeHost);
+        _noticeBackground = new RectangleWidget
+        {
+            Size = _noticeHost.Size,
+            FillColor = new Color(Basalt, 238),
+            OutlineColor = SnowText,
+            OutlineThickness = 2f,
+        };
+        _noticeHost.Children.Add(_noticeBackground);
+        _noticeLabel = new LabelWidget
+        {
+            Size = _noticeHost.Size,
+            Color = SnowText,
+            FontScale = TravelMapTypography.SecondaryLabelScale,
+            TextAnchor = Engine.Graphics.TextAnchor.HorizontalCenter
+                | Engine.Graphics.TextAnchor.VerticalCenter,
+        };
+        _noticeHost.Children.Add(_noticeLabel);
         RefreshScaleText();
     }
 
@@ -178,7 +213,27 @@ public sealed class TravelMapDialog : Dialog
         _topBar.Size = new Vector2(ActualSize.X, 48f);
         _topBar.SetWidgetPosition(_settingsButton, new Vector2(MathF.Max(0f, ActualSize.X - 204f), 3f));
         _topBar.SetWidgetPosition(_closeButton, new Vector2(MathF.Max(0f, ActualSize.X - 104f), 3f));
+        var noticeWidth = MathF.Max(1f, MathF.Min(560f, ActualSize.X - 32f));
+        _noticeHost.Size = new Vector2(noticeWidth, 48f);
+        _noticeBackground.Size = _noticeHost.Size;
+        _noticeLabel.Size = _noticeHost.Size;
+        SetWidgetPosition(_noticeHost, new Vector2((ActualSize.X - noticeWidth) / 2f, 58f));
         base.ArrangeOverride();
+    }
+
+    public void ShowNotice(TravelMapNotice notice)
+    {
+        _noticeController.Show(notice, Time.FrameStartTime);
+        _noticeLabel.Text = notice.Text;
+        var color = notice.Kind switch
+        {
+            TravelMapNoticeKind.Success => SurveyCyan,
+            TravelMapNoticeKind.Failure => HazardAmber,
+            _ => SnowText,
+        };
+        _noticeLabel.Color = color;
+        _noticeBackground.OutlineColor = color;
+        _noticeHost.IsVisible = true;
     }
 
     public void ResetToPlayer()
@@ -190,11 +245,18 @@ public sealed class TravelMapDialog : Dialog
             _settings.LargeMapBlocksPerPixel);
         HideContextMenu();
         _settingsWidget.IsVisible = false;
+        _noticeController.Clear();
+        _noticeHost.IsVisible = false;
         RefreshScaleText();
     }
 
     public override void Update()
     {
+        if (!_noticeController.Update(Time.FrameStartTime))
+        {
+            _noticeHost.IsVisible = false;
+        }
+
         if (_scaleSavePending && Time.FrameStartTime >= _scaleSaveTime)
         {
             PersistScale();
@@ -293,7 +355,7 @@ public sealed class TravelMapDialog : Dialog
                     var menu = _activeMenu;
                     if (!_actionRunner.TryRun(token => ExecuteActionAsync(item.Action, menu, token)))
                     {
-                        _notify("另一项地图操作仍在执行");
+                        Notify("另一项地图操作仍在执行", TravelMapNoticeKind.Information);
                     }
                 }
 
@@ -341,7 +403,7 @@ public sealed class TravelMapDialog : Dialog
         if (command.Kind == TravelMapUiCommandKind.ShowUnexploredMessage)
         {
             HideContextMenu();
-            _notify("该区域尚未探索");
+            Notify("该区域尚未探索", TravelMapNoticeKind.Information);
             return;
         }
 
@@ -386,11 +448,11 @@ public sealed class TravelMapDialog : Dialog
             var result = await _actionHandler(action, menu, cancellationToken).ConfigureAwait(false);
             if (result == TravelMapActionStatus.Unavailable)
             {
-                _notify("当前服务器或游戏模式无法执行该旅行操作");
+                Notify("当前服务器或游戏模式无法执行该旅行操作", TravelMapNoticeKind.Information);
             }
             else if (result == TravelMapActionStatus.Failed)
             {
-                _notify("旅行操作未完成");
+                Notify("旅行操作未完成", TravelMapNoticeKind.Failure);
             }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
@@ -438,9 +500,12 @@ public sealed class TravelMapDialog : Dialog
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            _notify("大地图比例未能保存；本次会话仍会保留更改。");
+            Notify("大地图比例未能保存；本次会话仍会保留更改。", TravelMapNoticeKind.Failure);
         }
     }
+
+    private void Notify(string message, TravelMapNoticeKind kind) =>
+        _notify(new TravelMapNotice(message, kind));
 
     private static BevelledButtonWidget CreateButton(string text, float width) => new()
     {

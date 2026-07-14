@@ -220,7 +220,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _lifetimeCancellation.Token);
-        return await service.TeleportToSurfaceAsync(x, z, linkedCancellation.Token);
+        var result = await service.TeleportToSurfaceAsync(x, z, linkedCancellation.Token);
+        ShowMessage(TravelMapNoticeFactory.For(result));
+        return result;
     }
 
     public async Task<TeleportResult> TeleportToWaypointAsync(
@@ -233,7 +235,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _lifetimeCancellation.Token);
-        return await service.TeleportToWaypointAsync(xyz, linkedCancellation.Token);
+        var result = await service.TeleportToWaypointAsync(xyz, linkedCancellation.Token);
+        ShowMessage(TravelMapNoticeFactory.For(result));
+        return result;
     }
 
     public override void OnEntityRemoved()
@@ -286,9 +290,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 || TeleportService is null
                 || !binding.IsCurrent)
             {
-                return CoordinateTeleportMessage.Result(
+                var rejected = CoordinateTeleportMessage.Result(
                     message.RequestId,
                     CoordinateTeleportResultCode.Rejected);
+                ShowMessage(TravelMapNoticeFactory.For(CoordinateTeleportResultCode.Rejected));
+                return rejected;
             }
 
             _coordinateServerSession ??= new CoordinateTeleportServerSession(
@@ -304,6 +310,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
             message,
             cancellationToken).ConfigureAwait(false);
         ReportCoordinateTeleportResult("remote", message, response.ResultCode);
+        if (response.ResultCode is { } result)
+        {
+            ShowMessage(TravelMapNoticeFactory.For(result));
+        }
+
         return response;
     }
 
@@ -388,7 +399,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             return;
         }
 
-        _networkActions = new TrackedUiActionRunner(_ => ShowMessage("联机旅行请求未能完成"));
+        _networkActions = new TrackedUiActionRunner(
+            _ => ShowMessage("联机旅行请求未能完成", TravelMapNoticeKind.Failure));
         _coordinateClientSession = new CoordinateTeleportClientSession(
             TravelMapNetworkPeerIdentity.ForClient(server),
             message =>
@@ -397,7 +409,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 CommonLib.Net.QueuePackage(package);
             },
             new SystemCoordinateTeleportProtocolClock(),
-            ShowMessage);
+            message => ShowMessage(message));
         ClientTravelCommand = QueueCoordinateClientCommand;
     }
 
@@ -406,7 +418,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         var runner = _networkActions;
         if (runner is null || !runner.TryRun(token => SendCoordinateClientCommandAsync(command, token)))
         {
-            ShowMessage("另一项联机旅行请求仍在进行");
+            ShowMessage("另一项联机旅行请求仍在进行", TravelMapNoticeKind.Information);
         }
     }
 
@@ -432,12 +444,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 checked((int)MathF.Floor(command.Target.Z)),
                 cancellationToken).ConfigureAwait(false)
             : await session.RequestWaypointAsync(command.Target, cancellationToken).ConfigureAwait(false);
-        if (result != CoordinateTeleportResultCode.Success
-            && result != CoordinateTeleportResultCode.TimedOut
-            && result != CoordinateTeleportResultCode.Unsupported)
-        {
-            ShowMessage(CoordinateTeleportResultText.For(result));
-        }
+        ShowMessage(TravelMapNoticeFactory.For(result));
     }
 
     private void InitializeCoreRuntime()
@@ -541,7 +548,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             return;
         }
 
-        _uiActions = new TrackedUiActionRunner(_ => ShowMessage("地图操作未能完成"));
+        _uiActions = new TrackedUiActionRunner(
+            _ => ShowMessage("地图操作未能完成", TravelMapNoticeKind.Failure));
         state.AppRoot = Engine.Storage.GetSystemPath("app:/SurvivalcraftTravelMap");
         var legacySettingsPath = Engine.Storage.GetSystemPath("app:/GPSSetting.xml");
         _settingsStore = new TravelMapSettingsStore(state.AppRoot, legacySettingsPath);
@@ -551,7 +559,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 .GetAwaiter()
                 .GetResult();
             _settings = loadResult.Settings;
-            SettingsWarningGate.NotifyIfNeeded(loadResult, ShowMessage);
+            SettingsWarningGate.NotifyIfNeeded(loadResult, message => ShowMessage(message));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -652,7 +660,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             GetTerrainBrightness,
             IsMapInputBlocked,
             OpenLargeMap,
-            ShowMessage);
+            message => ShowMessage(message));
         Player.GuiWidget.Children.Add(_miniMap);
         UpdateHudPositions();
 
@@ -667,7 +675,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             ShowMessage);
         if (state.WaypointLoadOutcome == WaypointLoadOutcome.CorruptIsolated)
         {
-            ShowMessage("坐标点文件已损坏，已隔离并使用空列表");
+            ShowMessage("坐标点文件已损坏，已隔离并使用空列表", TravelMapNoticeKind.Failure);
         }
 
         if (WorkType == TravelMapWorkType.Client)
@@ -878,7 +886,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 else if (result == ExplorationRecordResult.Pressure && !_explorationPressureWarningShown)
                 {
                     _explorationPressureWarningShown = true;
-                    ShowMessage("地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存");
+                    ShowMessage(
+                        "地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存",
+                        TravelMapNoticeKind.Failure);
                 }
             }
             catch (Exception exception)
@@ -1004,6 +1014,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
                 _waypoints = await _currentPositionWaypointHandler.SaveAsync(cancellationToken)
                     .ConfigureAwait(false);
+                ShowMessage("坐标点已保存", TravelMapNoticeKind.Success);
                 return TravelMapActionStatus.Completed;
             }
             case TravelMapContextAction.RenameWaypoint:
@@ -1027,6 +1038,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 }
 
                 await SaveWaypointsAsync(cancellationToken).ConfigureAwait(false);
+                ShowMessage("坐标点已删除", TravelMapNoticeKind.Success);
                 return TravelMapActionStatus.Completed;
             case TravelMapContextAction.Cancel:
                 return TravelMapActionStatus.Cancelled;
@@ -1090,13 +1102,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 checked((int)MathF.Floor(command.Target.Z)),
                 cancellationToken).ConfigureAwait(false)
             : await host.RequestWaypointAsync(command.Target, cancellationToken).ConfigureAwait(false);
-        if (result == CoordinateTeleportResultCode.Success)
-        {
-            return TravelMapTeleportDispatchResult.LocalRequested;
-        }
-
-        ShowMessage(CoordinateTeleportResultText.For(result));
-        return TravelMapTeleportDispatchResult.LocalFailed;
+        ShowMessage(TravelMapNoticeFactory.For(result));
+        return result == CoordinateTeleportResultCode.Success
+            ? TravelMapTeleportDispatchResult.LocalRequested
+            : TravelMapTeleportDispatchResult.LocalFailed;
     }
 
     private Waypoint? FindWaypoint(Guid? id) => id.HasValue
@@ -1110,11 +1119,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
             if (_waypointRepository is not null && _waypointRepository.Rename(id, name))
             {
                 await SaveWaypointsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+                ShowMessage("坐标点已重命名", TravelMapNoticeKind.Success);
             }
         }
         catch (Exception exception) when (exception is ArgumentException or IOException)
         {
-            ShowMessage("坐标点名称未保存");
+            ShowMessage("坐标点名称未保存", TravelMapNoticeKind.Failure);
         }
     }
 
@@ -1146,15 +1156,32 @@ public sealed class TravelMapComponent : Component, IUpdateable
         ? DayNightBrightness.Calculate(TimeOfDay.TimeOfDay, _settings.NightMinimumBrightness)
         : 1f;
 
-    private void ShowMessage(string message)
+    private void ShowMessage(TravelMapNotice notice)
+    {
+        ShowMessage(notice.Text, notice.Kind);
+    }
+
+    private void ShowMessage(
+        string message,
+        TravelMapNoticeKind kind = TravelMapNoticeKind.Information)
     {
         try
         {
-            _dispatcher?.Invoke(() => Gui?.DisplaySmallMessage(
-                message,
-                Engine.Color.White,
-                blinking: false,
-                playNotificationSound: false));
+            _dispatcher?.Invoke(() =>
+            {
+                if (_largeMapDialog is not null
+                    && DialogsManager.Dialogs.Contains(_largeMapDialog))
+                {
+                    _largeMapDialog.ShowNotice(new TravelMapNotice(message, kind));
+                    return;
+                }
+
+                Gui?.DisplaySmallMessage(
+                    message,
+                    Engine.Color.White,
+                    blinking: false,
+                    playNotificationSound: false);
+            });
         }
         catch (ObjectDisposedException)
         {
@@ -1170,7 +1197,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         _persistenceWarningShown = true;
         Engine.Log.Warning($"[TravelMap] {message}");
-        ShowMessage(message);
+        ShowMessage(message, TravelMapNoticeKind.Failure);
     }
 
     private void CleanupRuntimeResources()
@@ -1381,7 +1408,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     {
         TravelMapTeleportDispatchResult.LocalRequested => TravelMapActionStatus.Completed,
         TravelMapTeleportDispatchResult.CommandQueued => TravelMapActionStatus.Completed,
-        TravelMapTeleportDispatchResult.LocalFailed => TravelMapActionStatus.Failed,
+        TravelMapTeleportDispatchResult.LocalFailed => TravelMapActionStatus.FailedWithFeedback,
         TravelMapTeleportDispatchResult.Unavailable => TravelMapActionStatus.Unavailable,
         _ => TravelMapActionStatus.Failed,
     };

@@ -416,6 +416,80 @@ public sealed class PackageStructureTests
         AssertCodeContains(cleanup, "teleportButtonPressedTexture.Dispose");
     }
 
+    [Fact]
+    public void Large_map_notice_layer_is_above_settings_and_context_and_uses_one_timed_adaptive_toast()
+    {
+        var dialog = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "TravelMapDialog.cs"));
+        var constructor = ExtractBraceBlock(dialog, "public TravelMapDialog(");
+        var arrange = ExtractBraceBlock(dialog, "public override void ArrangeOverride()");
+        var update = ExtractBraceBlock(dialog, "public override void Update()");
+        var reset = ExtractBraceBlock(dialog, "public void ResetToPlayer()");
+        var showNotice = ExtractBraceBlock(dialog, "public void ShowNotice(TravelMapNotice notice)");
+
+        var settingsIndex = constructor.IndexOf("Children.Add(_settingsWidget);", StringComparison.Ordinal);
+        var contextIndex = constructor.IndexOf("Children.Add(_contextCard);", StringComparison.Ordinal);
+        var noticeIndex = constructor.IndexOf("Children.Add(_noticeHost);", StringComparison.Ordinal);
+        Assert.True(settingsIndex >= 0);
+        Assert.True(contextIndex > settingsIndex);
+        Assert.True(noticeIndex > contextIndex);
+
+        AssertCodeContains(dialog, "new TravelMapNoticeController(TimeSpan.FromSeconds(2.5))");
+        AssertCodeContains(showNotice, "_noticeController.Show(notice, Time.FrameStartTime);");
+        AssertCodeContains(showNotice, "TravelMapNoticeKind.Success => SurveyCyan");
+        AssertCodeContains(showNotice, "TravelMapNoticeKind.Failure => HazardAmber");
+        AssertCodeContains(showNotice, "_noticeHost.IsVisible = true;");
+        AssertCodeContains(arrange, "MathF.Min(560f, ActualSize.X - 32f)");
+        AssertCodeContains(arrange, "new Vector2((ActualSize.X - noticeWidth) / 2f, 58f)");
+        AssertCodeContains(update, "_noticeController.Update(Time.FrameStartTime)");
+        AssertCodeContains(reset, "_noticeController.Clear();");
+    }
+
+    [Fact]
+    public void Component_routes_notices_into_open_map_and_uses_hud_only_as_fallback()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var typed = ExtractBraceBlock(component, "private void ShowMessage(TravelMapNotice notice)");
+        var routed = ExtractBraceBlock(component, "private void ShowMessage(\n        string message,");
+
+        AssertCodeContains(typed, "ShowMessage(notice.Text, notice.Kind);");
+        AssertCodeContains(routed, "_dispatcher?.Invoke");
+        AssertCodeContains(routed, "DialogsManager.Dialogs.Contains(_largeMapDialog)");
+        AssertCodeContains(routed, "_largeMapDialog.ShowNotice(new TravelMapNotice(message, kind));");
+        AssertCodeContains(routed, "return;");
+        AssertCodeContains(routed, "Gui?.DisplaySmallMessage(");
+        Assert.True(
+            routed.IndexOf("_largeMapDialog.ShowNotice", StringComparison.Ordinal)
+            < routed.IndexOf("Gui?.DisplaySmallMessage", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Specific_teleport_feedback_is_not_overwritten_by_a_generic_action_failure()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var dialog = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "TravelMapDialog.cs"));
+        var statusMap = ExtractBraceBlock(
+            component,
+            "private static TravelMapActionStatus ToActionStatus(TravelMapTeleportDispatchResult result)");
+        var execute = ExtractBraceBlock(dialog, "private async Task ExecuteActionAsync(");
+
+        AssertCodeContains(dialog, "FailedWithFeedback");
+        AssertCodeContains(
+            statusMap,
+            "TravelMapTeleportDispatchResult.LocalFailed => TravelMapActionStatus.FailedWithFeedback");
+        AssertCodeContains(execute, "result == TravelMapActionStatus.Failed");
+        AssertCodeDoesNotContain(execute, "result == TravelMapActionStatus.FailedWithFeedback");
+    }
+
     [Theory]
     [InlineData("inventory")]
     [InlineData("character")]
