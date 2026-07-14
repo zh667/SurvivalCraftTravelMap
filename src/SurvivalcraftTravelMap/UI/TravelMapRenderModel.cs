@@ -17,6 +17,18 @@ public static class TravelMapPalette
     public static Rgba32 HazardAmber { get; } = new(0xE2, 0xA3, 0x3B, 0xFF);
 
     public static Rgba32 SnowText { get; } = new(0xE8, 0xEC, 0xE7, 0xFF);
+
+    public static Rgba32 MiniMapBackground { get; } = new(0x27, 0x29, 0x2A, 0xFF);
+
+    public static Rgba32 MiniMapFrame { get; } = new(0xE3, 0xDE, 0xD3, 0xFF);
+
+    public static Rgba32 MiniMapFrameShadow { get; } = new(0x12, 0x12, 0x12, 0x80);
+
+    public static Rgba32 MiniMapPlayer { get; } = new(0xD9, 0x43, 0x43, 0xFF);
+
+    public static Rgba32 MiniMapPlayerOutline { get; } = new(0x2A, 0x1C, 0x1C, 0xFF);
+
+    public static Rgba32 MiniMapCoordinateBackdrop { get; } = new(0x12, 0x12, 0x12, 0xA0);
 }
 
 public interface IExploredMapPixelSource
@@ -56,7 +68,8 @@ public readonly record struct MapOverlayState(
     float PlayerHeading,
     float PlayerArrowSize,
     IReadOnlyList<Waypoint> Waypoints,
-    bool ShowCoordinates);
+    bool ShowCoordinates,
+    Rgba32? PlayerMarkerColor = null);
 
 internal interface IMapTileProvider
 {
@@ -324,8 +337,8 @@ public static class TravelMapRenderModel
         sink.Player(
             state.PlayerPosition,
             state.PlayerHeading,
-            Math.Clamp(state.PlayerArrowSize, 24f, 40f),
-            TravelMapPalette.SurveyCyan);
+            Math.Clamp(state.PlayerArrowSize, 14f, 40f),
+            state.PlayerMarkerColor ?? TravelMapPalette.SurveyCyan);
 
         foreach (var waypoint in state.Waypoints)
         {
@@ -343,9 +356,19 @@ public static class TravelMapRenderModel
 
     public static float PlayerArrowSize(int miniMapSize) => Math.Clamp(miniMapSize / 8f, 24f, 40f);
 
+    public static float MiniMapPlayerArrowSize(int miniMapSize) =>
+        Math.Clamp(miniMapSize * (3f / 32f), 14f, 24f);
+
     public static string FormatCoordinates(Vector3 position) => string.Format(
         CultureInfo.InvariantCulture,
         "X: {0}  Y: {1}  Z: {2}",
+        (int)position.X,
+        (int)position.Y,
+        (int)position.Z);
+
+    public static string FormatCompactCoordinates(Vector3 position) => string.Format(
+        CultureInfo.InvariantCulture,
+        "X:{0} Y:{1} Z:{2}",
         (int)position.X,
         (int)position.Y,
         (int)position.Z);

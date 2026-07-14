@@ -7,6 +7,8 @@ namespace SurvivalcraftTravelMap.UI;
 public static class TravelMapTypography
 {
     public const float SecondaryLabelScale = 0.8f;
+
+    public const float MiniMapCoordinateScale = 0.65f;
 }
 
 public readonly record struct TravelMapFocusState(
@@ -87,6 +89,14 @@ public sealed class TravelMapUiController
 
     public TravelMapUiCommand HandleOpenHotkey(bool isPressed, TravelMapFocusState focus) =>
         isPressed && focus.AllowsMapHotkey
+            ? new TravelMapUiCommand(TravelMapUiCommandKind.OpenLargeMap)
+            : TravelMapUiCommand.None;
+
+    public TravelMapUiCommand HandleMiniMapActivation(
+        bool isPressed,
+        bool isHovered,
+        bool inputBlocked) =>
+        isPressed && isHovered && !inputBlocked
             ? new TravelMapUiCommand(TravelMapUiCommandKind.OpenLargeMap)
             : TravelMapUiCommand.None;
 

@@ -1,5 +1,6 @@
 using Engine;
 using Engine.Graphics;
+using Engine.Input;
 using Engine.Media;
 using Game;
 using SurvivalcraftTravelMap.Map;
@@ -45,18 +46,134 @@ internal static class MiniMapTextRenderer
         IMapFontQueue queue,
         string text,
         NVector2 position,
-        Rgba32 color) => queue.QueueText(
+        Rgba32 color) => QueueCoordinates(
+            queue,
+            text,
+            position,
+            color,
+            TravelMapTypography.SecondaryLabelScale);
+
+    public static void QueueCoordinates(
+        IMapFontQueue queue,
+        string text,
+        NVector2 position,
+        Rgba32 color,
+        float scale) => queue.QueueText(
             text,
             position,
             color,
             MapTextAlignment.BottomLeft,
-            TravelMapTypography.SecondaryLabelScale);
+            scale);
+}
+
+internal enum MapFramePrimitiveKind
+{
+    Shadow,
+    Frame,
+}
+
+internal readonly record struct MapFramePrimitive(
+    MapFramePrimitiveKind Kind,
+    NVector2 Minimum,
+    NVector2 Maximum,
+    Rgba32 Color);
+
+internal readonly record struct MapCoordinateBackdropPrimitive(
+    NVector2 Minimum,
+    NVector2 Maximum,
+    Rgba32 Color);
+
+internal readonly record struct MapPlayerPrimitive(
+    NVector2 Tip,
+    NVector2 Left,
+    NVector2 Right,
+    float Size,
+    Rgba32 Color);
+
+internal static class MiniMapVisualStyle
+{
+    public const float ShadowThickness = 1f;
+    public const float FrameThickness = 2f;
+    public const byte FrameShadowAlpha = 0x80;
+    public const float CoordinateStripHeight = 18f;
+
+    public static IReadOnlyList<MapFramePrimitive> CreateFramePrimitives(
+        NVector2 size,
+        bool showFrameShadow,
+        float frameThickness,
+        Rgba32 shadowColor,
+        Rgba32 frameColor)
+    {
+        var primitives = new List<MapFramePrimitive>();
+        var firstFrameInset = 1f;
+        if (showFrameShadow)
+        {
+            primitives.Add(new MapFramePrimitive(
+                MapFramePrimitiveKind.Shadow,
+                new NVector2(0.5f),
+                size - new NVector2(0.5f),
+                shadowColor));
+            firstFrameInset = 0.5f + ShadowThickness;
+        }
+
+        for (var index = 0; index < (int)MathF.Ceiling(frameThickness); index++)
+        {
+            var inset = firstFrameInset + index;
+            primitives.Add(new MapFramePrimitive(
+                MapFramePrimitiveKind.Frame,
+                new NVector2(inset),
+                size - new NVector2(inset),
+                frameColor));
+        }
+
+        return primitives;
+    }
+
+    public static MapCoordinateBackdropPrimitive CreateCoordinateBackdrop(NVector2 size) => new(
+        new NVector2(0f, MathF.Max(0f, size.Y - CoordinateStripHeight)),
+        size,
+        TravelMapPalette.MiniMapCoordinateBackdrop);
+
+    public static IReadOnlyList<MapPlayerPrimitive> CreatePlayerPrimitives(
+        NVector2 center,
+        float heading,
+        float size,
+        Rgba32 color,
+        bool drawOutline)
+    {
+        var primitives = new List<MapPlayerPrimitive>(drawOutline ? 2 : 1);
+        if (drawOutline)
+        {
+            primitives.Add(CreatePlayerPrimitive(
+                center,
+                heading,
+                size + 3f,
+                TravelMapPalette.MiniMapPlayerOutline));
+        }
+
+        primitives.Add(CreatePlayerPrimitive(center, heading, size, color));
+        return primitives;
+    }
+
+    private static MapPlayerPrimitive CreatePlayerPrimitive(
+        NVector2 center,
+        float heading,
+        float size,
+        Rgba32 color)
+    {
+        var direction = new NVector2(MathF.Sin(heading), -MathF.Cos(heading));
+        var side = new NVector2(-direction.Y, direction.X);
+        return new MapPlayerPrimitive(
+            center + (direction * (size * 0.55f)),
+            center - (direction * (size * 0.35f)) + (side * (size * 0.32f)),
+            center - (direction * (size * 0.35f)) - (side * (size * 0.32f)),
+            size,
+            color);
+    }
 }
 
 public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 {
-    private static readonly Color Basalt = ToEngineColor(TravelMapPalette.Basalt);
-    private static readonly Color Moss = ToEngineColor(TravelMapPalette.Moss);
     private static readonly Color SurveyCyan = ToEngineColor(TravelMapPalette.SurveyCyan);
 
     private readonly IExploredMapPixelSource _pixelSource;
@@ -95,6 +212,28 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     public bool AutoCenterOnPlayer { get; set; }
 
     public bool ShowWaypointLabels { get; set; }
+
+    public bool ShowSurveyCrosshair { get; set; } = true;
+
+    public bool ShowFrameShadow { get; set; }
+
+    public bool ShowCoordinateBackdrop { get; set; }
+
+    public bool UseCompactCoordinates { get; set; }
+
+    public bool DrawPlayerOutline { get; set; }
+
+    public float CoordinateTextScale { get; set; } = TravelMapTypography.SecondaryLabelScale;
+
+    public float FrameThickness { get; set; } = 1f;
+
+    public Rgba32 PlayerMarkerColor { get; set; } = TravelMapPalette.SurveyCyan;
+
+    public Rgba32 BackgroundColor { get; set; } = TravelMapPalette.Basalt;
+
+    public Rgba32 FrameColor { get; set; } = TravelMapPalette.Moss;
+
+    public Rgba32 FrameShadowColor { get; set; } = new(0x12, 0x12, 0x12, 0x80);
 
     public float PlayerArrowSize { get; set; } = 32f;
 
@@ -184,7 +323,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             Engine.Vector2.Zero,
             new Engine.Vector2(ActualSize.X, ActualSize.Y),
             0f,
-            new Color(Basalt, 224));
+            new Color(ToEngineColor(BackgroundColor), 224));
 
         var terrainBrightness = _settings.UseDayNightTint ? _brightness() : 1f;
         TravelMapRenderModel.RenderTerrain(_pixelSource, Transform, terrainBrightness, this);
@@ -195,14 +334,27 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 pose.Heading,
                 PlayerArrowSize,
                 _drawWaypoints,
-                _settings.ShowCoordinates),
+                _settings.ShowCoordinates,
+                PlayerMarkerColor),
             this);
-        QueueSurveyCrosshair(Transform.WorldToScreen(new NVector2(pose.Position.X, pose.Position.Z)));
-        _flatBatch.QueueRectangle(
-            new Engine.Vector2(1f),
-            new Engine.Vector2(ActualSize.X - 1f, ActualSize.Y - 1f),
-            0f,
-            Moss);
+        if (ShowSurveyCrosshair)
+        {
+            QueueSurveyCrosshair(Transform.WorldToScreen(new NVector2(pose.Position.X, pose.Position.Z)));
+        }
+
+        foreach (var primitive in MiniMapVisualStyle.CreateFramePrimitives(
+                     viewport,
+                     ShowFrameShadow,
+                     FrameThickness,
+                     FrameShadowColor,
+                     FrameColor))
+        {
+            _flatBatch.QueueRectangle(
+                ToEngine(primitive.Minimum),
+                ToEngine(primitive.Maximum),
+                0f,
+                ToEngineColor(primitive.Color));
+        }
 
         _flatBatch.TransformTriangles(_drawTransform, triangleStart);
         _flatBatch.TransformLines(_drawTransform, lineStart);
@@ -226,12 +378,20 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     public void Player(NVector3 position, float heading, float size, Rgba32 color)
     {
         var center = _drawMapTransform.WorldToScreen(new NVector2(position.X, position.Z));
-        var direction = new NVector2(MathF.Sin(heading), -MathF.Cos(heading));
-        var side = new NVector2(-direction.Y, direction.X);
-        var tip = center + (direction * (size * 0.55f));
-        var left = center - (direction * (size * 0.35f)) + (side * (size * 0.32f));
-        var right = center - (direction * (size * 0.35f)) - (side * (size * 0.32f));
-        _flatBatch!.QueueTriangle(ToEngine(tip), ToEngine(left), ToEngine(right), 0f, ToEngineColor(color));
+        foreach (var primitive in MiniMapVisualStyle.CreatePlayerPrimitives(
+                     center,
+                     heading,
+                     size,
+                     color,
+                     DrawPlayerOutline))
+        {
+            _flatBatch!.QueueTriangle(
+                ToEngine(primitive.Tip),
+                ToEngine(primitive.Left),
+                ToEngine(primitive.Right),
+                0f,
+                ToEngineColor(primitive.Color));
+        }
     }
 
     public void Waypoint(Waypoint waypoint, Rgba32 color)
@@ -271,14 +431,28 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         if (coordinate != _lastCoordinate || _coordinateText.Length == 0)
         {
             _lastCoordinate = coordinate;
-            _coordinateText = TravelMapRenderModel.FormatCoordinates(worldPosition);
+            _coordinateText = UseCompactCoordinates
+                ? TravelMapRenderModel.FormatCompactCoordinates(worldPosition)
+                : TravelMapRenderModel.FormatCoordinates(worldPosition);
+        }
+
+        if (ShowCoordinateBackdrop)
+        {
+            var backdrop = MiniMapVisualStyle.CreateCoordinateBackdrop(
+                new NVector2(ActualSize.X, ActualSize.Y));
+            _flatBatch!.QueueQuad(
+                ToEngine(backdrop.Minimum),
+                ToEngine(backdrop.Maximum),
+                0f,
+                ToEngineColor(backdrop.Color));
         }
 
         MiniMapTextRenderer.QueueCoordinates(
             _mapFontQueue!,
             _coordinateText,
             new NVector2(10f, ActualSize.Y - 12f),
-            color);
+            color,
+            CoordinateTextScale);
     }
 
     private bool ShouldDrawWaypointLabel(Waypoint waypoint, NVector2 position)
@@ -355,7 +529,9 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
 {
     private readonly TravelMapSettings _settings;
     private readonly Func<bool> _inputBlocked;
+    private readonly Action _requestOpenLargeMap;
     private readonly MiniMapWheelInteraction _wheelInteraction;
+    private readonly TravelMapUiController _uiController = new();
 
     public MiniMapRenderer(
         IExploredMapPixelSource pixelSource,
@@ -366,18 +542,53 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         Func<float> brightness,
         Func<bool> inputBlocked,
         Action<string> notify)
+        : this(
+            pixelSource,
+            settings,
+            settingsStore,
+            playerPose,
+            waypoints,
+            brightness,
+            inputBlocked,
+            () => { },
+            notify)
+    {
+    }
+
+    public MiniMapRenderer(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        TravelMapSettingsStore settingsStore,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<float> brightness,
+        Func<bool> inputBlocked,
+        Action requestOpenLargeMap,
+        Action<string> notify)
         : base(pixelSource, settings, playerPose, waypoints, brightness)
     {
         _settings = settings;
         ArgumentNullException.ThrowIfNull(settingsStore);
         _inputBlocked = inputBlocked ?? throw new ArgumentNullException(nameof(inputBlocked));
+        _requestOpenLargeMap = requestOpenLargeMap ?? throw new ArgumentNullException(nameof(requestOpenLargeMap));
         ArgumentNullException.ThrowIfNull(notify);
         _wheelInteraction = new MiniMapWheelInteraction(
             settings,
             token => settingsStore.SaveAsync(settings, token),
             _ => notify("小地图比例未能保存，本次会话将保留当前值"));
         AutoCenterOnPlayer = true;
+        PlayerMarkerColor = TravelMapPalette.MiniMapPlayer;
+        BackgroundColor = TravelMapPalette.MiniMapBackground;
+        FrameColor = TravelMapPalette.MiniMapFrame;
+        FrameShadowColor = TravelMapPalette.MiniMapFrameShadow;
+        ShowSurveyCrosshair = false;
+        ShowFrameShadow = true;
         ShowWaypointLabels = false;
+        ShowCoordinateBackdrop = true;
+        UseCompactCoordinates = true;
+        DrawPlayerOutline = true;
+        CoordinateTextScale = TravelMapTypography.MiniMapCoordinateScale;
+        FrameThickness = MiniMapVisualStyle.FrameThickness;
         Transform = new MapTransform(NVector2.Zero, settings.MiniMapBlocksPerPixel, NVector2.One);
     }
 
@@ -385,10 +596,9 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
     {
         var size = _settings.MiniMapSize;
         DesiredSize = new Engine.Vector2(size, size);
-        PlayerArrowSize = TravelMapRenderModel.PlayerArrowSize(size);
+        PlayerArrowSize = TravelMapRenderModel.MiniMapPlayerArrowSize(size);
         Transform = Transform with { BlocksPerPixel = _settings.MiniMapBlocksPerPixel };
-        IsVisible = _settings.IsMiniMapVisible;
-        IsDrawRequired = IsVisible;
+        IsDrawRequired = true;
     }
 
     public override void Update()
@@ -405,13 +615,25 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
             && local.Y >= 0f
             && local.X <= ActualSize.X
             && local.Y <= ActualSize.Y;
+        var inputBlocked = _inputBlocked();
+        var activation = _uiController.HandleMiniMapActivation(
+            Input.IsMouseButtonDownOnce(MouseButton.Left),
+            hovered,
+            inputBlocked);
+        if (activation.Kind == TravelMapUiCommandKind.OpenLargeMap)
+        {
+            _requestOpenLargeMap();
+            Input.Clear();
+            return;
+        }
+
         var before = Transform;
         Transform = _wheelInteraction.HandleWheel(
             before,
             local,
             Input.MouseWheelMovement / 120f,
             hovered,
-            _inputBlocked());
+            inputBlocked);
         if (Transform != before)
         {
             Input.Clear();

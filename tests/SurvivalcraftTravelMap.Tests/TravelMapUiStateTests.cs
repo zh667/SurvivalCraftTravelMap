@@ -136,6 +136,16 @@ public sealed class TravelMapUiStateTests
         Assert.True(TravelMapTypography.SecondaryLabelScale >= 0.8f);
     }
 
+    [Fact]
+    public void Compact_minimap_contract_uses_the_192_pixel_design_values()
+    {
+        Assert.Equal(18f, TravelMapRenderModel.MiniMapPlayerArrowSize(192));
+        Assert.Equal(
+            "X:488 Y:63 Z:-60",
+            TravelMapRenderModel.FormatCompactCoordinates(new Vector3(488.9f, 63.2f, -60.1f)));
+        Assert.Equal(0.65f, TravelMapTypography.MiniMapCoordinateScale);
+    }
+
     [Theory]
     [InlineData(true, false, false, false, true, false, false)]
     [InlineData(false, true, true, false, false, true, false)]
@@ -162,6 +172,22 @@ public sealed class TravelMapUiStateTests
     }
 
     private readonly TravelMapUiController _controller = new();
+
+    [Theory]
+    [InlineData(true, true, false, TravelMapUiCommandKind.OpenLargeMap)]
+    [InlineData(false, true, false, TravelMapUiCommandKind.None)]
+    [InlineData(true, false, false, TravelMapUiCommandKind.None)]
+    [InlineData(true, true, true, TravelMapUiCommandKind.None)]
+    public void Minimap_activation_requires_a_pressed_hovered_unblocked_click(
+        bool isPressed,
+        bool isHovered,
+        bool inputBlocked,
+        TravelMapUiCommandKind expected)
+    {
+        var command = _controller.HandleMiniMapActivation(isPressed, isHovered, inputBlocked);
+
+        Assert.Equal(expected, command.Kind);
+    }
 
     [Theory]
     [InlineData(false, false, false, true)]
@@ -792,6 +818,32 @@ public sealed class TravelMapRenderModelTests
     }
 
     [Fact]
+    public void Overlay_marker_style_can_be_overridden_for_the_minimap_without_changing_large_map_defaults()
+    {
+        var largeMapSink = new RecordingRenderSink();
+        var miniMapSink = new RecordingRenderSink();
+        var pose = new Vector3(12f, 64f, -8f);
+
+        TravelMapRenderModel.RenderOverlays(
+            new MapOverlayState(pose, 0f, 32f, [], ShowCoordinates: false),
+            largeMapSink);
+        TravelMapRenderModel.RenderOverlays(
+            new MapOverlayState(
+                pose,
+                0f,
+                TravelMapRenderModel.MiniMapPlayerArrowSize(192),
+                [],
+                ShowCoordinates: false,
+                TravelMapPalette.MiniMapPlayer),
+            miniMapSink);
+
+        Assert.Equal(32f, largeMapSink.PlayerSize);
+        Assert.Equal(TravelMapPalette.SurveyCyan, largeMapSink.PlayerColor);
+        Assert.Equal(18f, miniMapSink.PlayerSize);
+        Assert.Equal(TravelMapPalette.MiniMapPlayer, miniMapSink.PlayerColor);
+    }
+
+    [Fact]
     public void Coordinates_and_player_arrow_size_follow_the_design()
     {
         Assert.Equal("X: 123  Y: 64  Z: -456", TravelMapRenderModel.FormatCoordinates(new Vector3(123.9f, 64.2f, -456.1f)));
@@ -920,6 +972,8 @@ internal sealed class RecordingRenderSink : ITravelMapRenderSink
 
     public Rgba32 PlayerColor { get; private set; }
 
+    public float PlayerSize { get; private set; }
+
     public Rgba32 WaypointColor { get; private set; }
 
     public Rgba32 LabelColor { get; private set; }
@@ -928,7 +982,11 @@ internal sealed class RecordingRenderSink : ITravelMapRenderSink
 
     public void ExplorationBoundary(MapBoundaryEdge edge) => Boundaries.Add(edge);
 
-    public void Player(Vector3 position, float heading, float size, Rgba32 color) => PlayerColor = color;
+    public void Player(Vector3 position, float heading, float size, Rgba32 color)
+    {
+        PlayerSize = size;
+        PlayerColor = color;
+    }
 
     public void Waypoint(Waypoint waypoint, Rgba32 color) => WaypointColor = color;
 
