@@ -22,7 +22,11 @@ public static class TravelMapPalette
 
     public static Rgba32 MiniMapFrame { get; } = new(0xE3, 0xDE, 0xD3, 0xFF);
 
-    public static Rgba32 MiniMapFrameShadow { get; } = new(0x12, 0x12, 0x12, 0x80);
+    public static Rgba32 MiniMapFrameShadow { get; } = new(
+        0x12,
+        0x12,
+        0x12,
+        MiniMapVisualStyle.FrameShadowAlpha);
 
     public static Rgba32 MiniMapPlayer { get; } = new(0xD9, 0x43, 0x43, 0xFF);
 
@@ -69,7 +73,38 @@ public readonly record struct MapOverlayState(
     float PlayerArrowSize,
     IReadOnlyList<Waypoint> Waypoints,
     bool ShowCoordinates,
-    Rgba32? PlayerMarkerColor = null);
+    Rgba32? PlayerMarkerColor)
+{
+    public MapOverlayState(
+        Vector3 PlayerPosition,
+        float PlayerHeading,
+        float PlayerArrowSize,
+        IReadOnlyList<Waypoint> Waypoints,
+        bool ShowCoordinates)
+        : this(
+            PlayerPosition,
+            PlayerHeading,
+            PlayerArrowSize,
+            Waypoints,
+            ShowCoordinates,
+            PlayerMarkerColor: null)
+    {
+    }
+
+    public void Deconstruct(
+        out Vector3 PlayerPosition,
+        out float PlayerHeading,
+        out float PlayerArrowSize,
+        out IReadOnlyList<Waypoint> Waypoints,
+        out bool ShowCoordinates)
+    {
+        PlayerPosition = this.PlayerPosition;
+        PlayerHeading = this.PlayerHeading;
+        PlayerArrowSize = this.PlayerArrowSize;
+        Waypoints = this.Waypoints;
+        ShowCoordinates = this.ShowCoordinates;
+    }
+}
 
 internal interface IMapTileProvider
 {

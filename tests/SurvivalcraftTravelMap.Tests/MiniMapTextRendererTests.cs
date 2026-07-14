@@ -1,5 +1,7 @@
 using System.Numerics;
+using Engine.Media;
 using SurvivalcraftTravelMap.Map;
+using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
 using Xunit;
 
@@ -135,6 +137,146 @@ public sealed class MiniMapTextRendererTests
         Assert.True(primitives[0].Tip.Y < primitives[1].Tip.Y);
     }
 
+    [Fact]
+    public void Actual_minimap_draw_queues_shadow_then_two_frames_and_dark_outline_then_red_marker()
+    {
+        using var widget = CreateSurface();
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+        widget.ShowSurveyCrosshair = false;
+        widget.ShowFrameShadow = true;
+        widget.DrawPlayerOutline = true;
+        widget.PlayerArrowSize = 18f;
+        widget.PlayerMarkerColor = TravelMapPalette.MiniMapPlayer;
+        widget.FrameThickness = MiniMapVisualStyle.FrameThickness;
+        widget.FrameShadowColor = TravelMapPalette.MiniMapFrameShadow;
+        widget.FrameColor = TravelMapPalette.MiniMapFrame;
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        Assert.Collection(
+            queue.Primitives,
+            background => Assert.Equal(MapSurfacePrimitiveKind.Background, background.Kind),
+            outline =>
+            {
+                Assert.Equal(MapSurfacePrimitiveKind.Player, outline.Kind);
+                Assert.Equal(TravelMapPalette.MiniMapPlayerOutline, outline.Color);
+                Assert.Equal(21f, outline.Size);
+                Assert.Equal(96f - (21f * 0.55f), outline.Vertices[0].Y, 4);
+            },
+            marker =>
+            {
+                Assert.Equal(MapSurfacePrimitiveKind.Player, marker.Kind);
+                Assert.Equal(TravelMapPalette.MiniMapPlayer, marker.Color);
+                Assert.Equal(18f, marker.Size);
+                Assert.Equal(96f - (18f * 0.55f), marker.Vertices[0].Y, 4);
+            },
+            shadow => AssertQueuedRectangle(
+                shadow,
+                MapSurfacePrimitiveKind.FrameShadow,
+                0.5f,
+                191.5f,
+                TravelMapPalette.MiniMapFrameShadow),
+            outerFrame => AssertQueuedRectangle(
+                outerFrame,
+                MapSurfacePrimitiveKind.Frame,
+                1.5f,
+                190.5f,
+                TravelMapPalette.MiniMapFrame),
+            innerFrame => AssertQueuedRectangle(
+                innerFrame,
+                MapSurfacePrimitiveKind.Frame,
+                2.5f,
+                189.5f,
+                TravelMapPalette.MiniMapFrame));
+
+        Assert.NotEqual(queue.Primitives[1].Color, queue.Primitives[2].Color);
+        Assert.Equal(
+            MiniMapVisualStyle.FrameShadowAlpha,
+            queue.Primitives[3].Color.A);
+        Assert.NotEqual(queue.Primitives[3].Color, queue.Primitives[4].Color);
+    }
+
+    [Fact]
+    public void Actual_default_large_map_draw_queues_no_shadow()
+    {
+        using var widget = CreateSurface();
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(640f, 480f), queue));
+
+        Assert.DoesNotContain(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.FrameShadow);
+        var frame = Assert.Single(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Frame);
+        AssertQueuedRectangle(
+            frame,
+            MapSurfacePrimitiveKind.Frame,
+            1f,
+            new Vector2(639f, 479f),
+            TravelMapPalette.Moss);
+    }
+
+    [Fact]
+    public void Shadow_alpha_has_one_production_definition_and_reaches_the_real_draw_queue()
+    {
+        var production = string.Concat(
+            File.ReadAllText(Path.Combine(
+                TestPaths.RepositoryRoot,
+                "src",
+                "SurvivalcraftTravelMap",
+                "UI",
+                "MiniMapRenderer.cs")),
+            File.ReadAllText(Path.Combine(
+                TestPaths.RepositoryRoot,
+                "src",
+                "SurvivalcraftTravelMap",
+                "UI",
+                "TravelMapRenderModel.cs")));
+
+        Assert.Equal(1, production.Split("0x80", StringSplitOptions.None).Length - 1);
+        Assert.Equal(MiniMapVisualStyle.FrameShadowAlpha, TravelMapPalette.MiniMapFrameShadow.A);
+    }
+
+    private static MapSurfaceWidget CreateSurface()
+    {
+        var font = (BitmapFont)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+            typeof(BitmapFont));
+        return new MapSurfaceWidget(
+            new EmptyPixelSource(),
+            new TravelMapSettings { ShowCoordinates = false },
+            () => new PlayerMapPose(new System.Numerics.Vector3(0f, 64f, 0f), 0f),
+            () => [],
+            () => 1f,
+            font);
+    }
+
+    private static void AssertQueuedRectangle(
+        RecordedMapSurfacePrimitive primitive,
+        MapSurfacePrimitiveKind kind,
+        float minimum,
+        float maximum,
+        Rgba32 color) => AssertQueuedRectangle(
+            primitive,
+            kind,
+            minimum,
+            new Vector2(maximum),
+            color);
+
+    private static void AssertQueuedRectangle(
+        RecordedMapSurfacePrimitive primitive,
+        MapSurfacePrimitiveKind kind,
+        float minimum,
+        Vector2 maximum,
+        Rgba32 color)
+    {
+        Assert.Equal(kind, primitive.Kind);
+        Assert.Equal(new Vector2(minimum), primitive.Minimum);
+        Assert.Equal(maximum, primitive.Maximum);
+        Assert.Equal(color, primitive.Color);
+    }
+
     private sealed class RecordingMapFontQueue : IMapFontQueue
     {
         public List<float> Scales { get; } = [];
@@ -152,4 +294,98 @@ public sealed class MiniMapTextRendererTests
             Items.Add((alignment, scale));
         }
     }
+
+    private sealed class EmptyPixelSource : IExploredMapPixelSource
+    {
+        public IExploredMapReadSession BeginReadSession() => new EmptySession();
+
+        private sealed class EmptySession : IExploredMapReadSession
+        {
+            public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
+            {
+                color = default;
+                return false;
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+    }
+
+    private sealed class RecordingMapSurfacePrimitiveQueue : IMapSurfacePrimitiveQueue
+    {
+        public List<RecordedMapSurfacePrimitive> Primitives { get; } = [];
+
+        public void QueueQuad(
+            MapSurfacePrimitiveKind kind,
+            Vector2 minimum,
+            Vector2 maximum,
+            Rgba32 color) => Primitives.Add(new RecordedMapSurfacePrimitive(
+                kind,
+                minimum,
+                maximum,
+                [minimum, maximum],
+                0f,
+                color));
+
+        public void QueueQuad(
+            MapSurfacePrimitiveKind kind,
+            Vector2 point1,
+            Vector2 point2,
+            Vector2 point3,
+            Vector2 point4,
+            Rgba32 color)
+        {
+            var vertices = new[] { point1, point2, point3, point4 };
+            Primitives.Add(new RecordedMapSurfacePrimitive(
+                kind,
+                new Vector2(vertices.Min(point => point.X), vertices.Min(point => point.Y)),
+                new Vector2(vertices.Max(point => point.X), vertices.Max(point => point.Y)),
+                vertices,
+                0f,
+                color));
+        }
+
+        public void QueueLine(
+            MapSurfacePrimitiveKind kind,
+            Vector2 start,
+            Vector2 end,
+            Rgba32 color) => Primitives.Add(new RecordedMapSurfacePrimitive(
+                kind,
+                Vector2.Min(start, end),
+                Vector2.Max(start, end),
+                [start, end],
+                0f,
+                color));
+
+        public void QueueTriangle(
+            MapSurfacePrimitiveKind kind,
+            MapPlayerPrimitive primitive) => Primitives.Add(new RecordedMapSurfacePrimitive(
+                kind,
+                Vector2.Min(primitive.Tip, Vector2.Min(primitive.Left, primitive.Right)),
+                Vector2.Max(primitive.Tip, Vector2.Max(primitive.Left, primitive.Right)),
+                [primitive.Tip, primitive.Left, primitive.Right],
+                primitive.Size,
+                primitive.Color));
+
+        public void QueueRectangle(MapFramePrimitive primitive) =>
+            Primitives.Add(new RecordedMapSurfacePrimitive(
+                primitive.Kind == MapFramePrimitiveKind.Shadow
+                    ? MapSurfacePrimitiveKind.FrameShadow
+                    : MapSurfacePrimitiveKind.Frame,
+                primitive.Minimum,
+                primitive.Maximum,
+                [primitive.Minimum, primitive.Maximum],
+                0f,
+                primitive.Color));
+    }
+
+    private sealed record RecordedMapSurfacePrimitive(
+        MapSurfacePrimitiveKind Kind,
+        Vector2 Minimum,
+        Vector2 Maximum,
+        IReadOnlyList<Vector2> Vertices,
+        float Size,
+        Rgba32 Color);
 }

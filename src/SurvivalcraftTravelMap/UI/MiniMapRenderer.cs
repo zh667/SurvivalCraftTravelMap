@@ -172,18 +172,60 @@ internal static class MiniMapVisualStyle
     }
 }
 
+internal enum MapSurfacePrimitiveKind
+{
+    Background,
+    Terrain,
+    ExplorationBoundary,
+    Player,
+    Waypoint,
+    CoordinateBackdrop,
+    SurveyCrosshair,
+    FrameShadow,
+    Frame,
+}
+
+internal interface IMapSurfacePrimitiveQueue
+{
+    void QueueQuad(
+        MapSurfacePrimitiveKind kind,
+        NVector2 minimum,
+        NVector2 maximum,
+        Rgba32 color);
+
+    void QueueQuad(
+        MapSurfacePrimitiveKind kind,
+        NVector2 point1,
+        NVector2 point2,
+        NVector2 point3,
+        NVector2 point4,
+        Rgba32 color);
+
+    void QueueLine(
+        MapSurfacePrimitiveKind kind,
+        NVector2 start,
+        NVector2 end,
+        Rgba32 color);
+
+    void QueueTriangle(MapSurfacePrimitiveKind kind, MapPlayerPrimitive primitive);
+
+    void QueueRectangle(MapFramePrimitive primitive);
+}
+
+internal readonly record struct MapSurfaceDrawContext(
+    NVector2 ViewportSize,
+    IMapSurfacePrimitiveQueue PrimitiveQueue,
+    IMapFontQueue? FontQueue = null);
+
 public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 {
-    private static readonly Color SurveyCyan = ToEngineColor(TravelMapPalette.SurveyCyan);
-
     private readonly IExploredMapPixelSource _pixelSource;
     private readonly TravelMapSettings _settings;
     private readonly Func<PlayerMapPose> _playerPose;
     private readonly Func<IReadOnlyList<Waypoint>> _waypoints;
     private readonly Func<float> _brightness;
     private readonly BitmapFont _font;
-    private FlatBatch2D? _flatBatch;
-    private FontBatch2D? _fontBatch;
+    private IMapSurfacePrimitiveQueue? _primitiveQueue;
     private IMapFontQueue? _mapFontQueue;
     private Engine.Matrix _drawTransform;
     private MapTransform _drawMapTransform;
@@ -198,13 +240,24 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<float> brightness)
+        : this(pixelSource, settings, playerPose, waypoints, brightness, font: null)
+    {
+    }
+
+    internal MapSurfaceWidget(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<float> brightness,
+        BitmapFont? font)
     {
         _pixelSource = pixelSource ?? throw new ArgumentNullException(nameof(pixelSource));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _playerPose = playerPose ?? throw new ArgumentNullException(nameof(playerPose));
         _waypoints = waypoints ?? throw new ArgumentNullException(nameof(waypoints));
         _brightness = brightness ?? throw new ArgumentNullException(nameof(brightness));
-        _font = ContentManager.Get<BitmapFont>("Fonts/Pericles");
+        _font = font ?? ContentManager.Get<BitmapFont>("Fonts/Pericles");
         IsDrawRequired = true;
         ClampToBounds = true;
     }
@@ -233,7 +286,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public Rgba32 FrameColor { get; set; } = TravelMapPalette.Moss;
 
-    public Rgba32 FrameShadowColor { get; set; } = new(0x12, 0x12, 0x12, 0x80);
+    public Rgba32 FrameShadowColor { get; set; } = new(
+        0x12,
+        0x12,
+        0x12,
+        MiniMapVisualStyle.FrameShadowAlpha);
 
     public float PlayerArrowSize { get; set; } = 32f;
 
@@ -291,39 +348,59 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public override void Draw(DrawContext dc)
     {
-        var pose = _playerPose();
         var viewport = new NVector2(ActualSize.X, ActualSize.Y);
         if (viewport.X <= 0f || viewport.Y <= 0f)
         {
             return;
         }
 
-        var center = AutoCenterOnPlayer
-            ? new NVector2(pose.Position.X, pose.Position.Z)
-            : Transform.Center;
-        Transform = Transform with { Center = center, ViewportSize = viewport };
-        _drawMapTransform = Transform;
         _drawTransform = GlobalTransform;
-        _flatBatch = dc.PrimitivesRenderer2D.FlatBatch(
+        var flatBatch = dc.PrimitivesRenderer2D.FlatBatch(
             0,
             depthStencilState: DepthStencilState.None,
             blendState: BlendState.AlphaBlend);
-        _fontBatch = dc.PrimitivesRenderer2D.FontBatch(
+        var fontBatch = dc.PrimitivesRenderer2D.FontBatch(
             _font,
             1,
             depthStencilState: DepthStencilState.None,
             blendState: BlendState.AlphaBlend,
             samplerState: SamplerState.PointClamp);
-        _mapFontQueue = new EngineMapFontQueue(_fontBatch);
-        var triangleStart = _flatBatch.TriangleVertices.Count;
-        var lineStart = _flatBatch.LineVertices.Count;
-        var textStart = _fontBatch.TriangleVertices.Count;
+        var triangleStart = flatBatch.TriangleVertices.Count;
+        var lineStart = flatBatch.LineVertices.Count;
+        var textStart = fontBatch.TriangleVertices.Count;
 
-        _flatBatch.QueueQuad(
-            Engine.Vector2.Zero,
-            new Engine.Vector2(ActualSize.X, ActualSize.Y),
-            0f,
-            new Color(ToEngineColor(BackgroundColor), 224));
+        Draw(new MapSurfaceDrawContext(
+            viewport,
+            new EngineMapSurfacePrimitiveQueue(flatBatch),
+            new EngineMapFontQueue(fontBatch)));
+
+        flatBatch.TransformTriangles(_drawTransform, triangleStart);
+        flatBatch.TransformLines(_drawTransform, lineStart);
+        fontBatch.TransformTriangles(_drawTransform, textStart);
+    }
+
+    internal void Draw(MapSurfaceDrawContext context)
+    {
+        var viewport = context.ViewportSize;
+        if (viewport.X <= 0f || viewport.Y <= 0f)
+        {
+            return;
+        }
+
+        var pose = _playerPose();
+        var center = AutoCenterOnPlayer
+            ? new NVector2(pose.Position.X, pose.Position.Z)
+            : Transform.Center;
+        Transform = Transform with { Center = center, ViewportSize = viewport };
+        _drawMapTransform = Transform;
+        _primitiveQueue = context.PrimitiveQueue
+            ?? throw new ArgumentNullException(nameof(context));
+        _mapFontQueue = context.FontQueue;
+        _primitiveQueue.QueueQuad(
+            MapSurfacePrimitiveKind.Background,
+            NVector2.Zero,
+            viewport,
+            new Rgba32(BackgroundColor.R, BackgroundColor.G, BackgroundColor.B, 224));
 
         var terrainBrightness = _settings.UseDayNightTint ? _brightness() : 1f;
         TravelMapRenderModel.RenderTerrain(_pixelSource, Transform, terrainBrightness, this);
@@ -349,30 +426,30 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                      FrameShadowColor,
                      FrameColor))
         {
-            _flatBatch.QueueRectangle(
-                ToEngine(primitive.Minimum),
-                ToEngine(primitive.Maximum),
-                0f,
-                ToEngineColor(primitive.Color));
+            _primitiveQueue.QueueRectangle(primitive);
         }
 
-        _flatBatch.TransformTriangles(_drawTransform, triangleStart);
-        _flatBatch.TransformLines(_drawTransform, lineStart);
-        _fontBatch.TransformTriangles(_drawTransform, textStart);
-        _flatBatch = null;
-        _fontBatch = null;
+        _primitiveQueue = null;
         _mapFontQueue = null;
         _drawWaypoints = Array.Empty<Waypoint>();
     }
 
     public void TerrainCell(MapTerrainCell cell)
     {
-        _flatBatch!.QueueQuad(ToEngine(cell.ScreenMinimum), ToEngine(cell.ScreenMaximum), 0f, ToEngineColor(cell.Color));
+        _primitiveQueue!.QueueQuad(
+            MapSurfacePrimitiveKind.Terrain,
+            cell.ScreenMinimum,
+            cell.ScreenMaximum,
+            cell.Color);
     }
 
     public void ExplorationBoundary(MapBoundaryEdge edge)
     {
-        _flatBatch!.QueueLine(ToEngine(edge.Start), ToEngine(edge.End), 0f, ToEngineColor(edge.Color));
+        _primitiveQueue!.QueueLine(
+            MapSurfacePrimitiveKind.ExplorationBoundary,
+            edge.Start,
+            edge.End,
+            edge.Color);
     }
 
     public void Player(NVector3 position, float heading, float size, Rgba32 color)
@@ -385,12 +462,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                      color,
                      DrawPlayerOutline))
         {
-            _flatBatch!.QueueTriangle(
-                ToEngine(primitive.Tip),
-                ToEngine(primitive.Left),
-                ToEngine(primitive.Right),
-                0f,
-                ToEngineColor(primitive.Color));
+            _primitiveQueue!.QueueTriangle(MapSurfacePrimitiveKind.Player, primitive);
         }
     }
 
@@ -403,13 +475,13 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         }
 
         const float radius = 6f;
-        _flatBatch!.QueueQuad(
-            ToEngine(center + new NVector2(0f, -radius)),
-            ToEngine(center + new NVector2(radius, 0f)),
-            ToEngine(center + new NVector2(0f, radius)),
-            ToEngine(center + new NVector2(-radius, 0f)),
-            0f,
-            ToEngineColor(color));
+        _primitiveQueue!.QueueQuad(
+            MapSurfacePrimitiveKind.Waypoint,
+            center + new NVector2(0f, -radius),
+            center + new NVector2(radius, 0f),
+            center + new NVector2(0f, radius),
+            center + new NVector2(-radius, 0f),
+            color);
         if (ShowWaypointLabels && ShouldDrawWaypointLabel(waypoint, center))
         {
             MiniMapTextRenderer.QueueWaypointLabel(
@@ -440,11 +512,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         {
             var backdrop = MiniMapVisualStyle.CreateCoordinateBackdrop(
                 new NVector2(ActualSize.X, ActualSize.Y));
-            _flatBatch!.QueueQuad(
-                ToEngine(backdrop.Minimum),
-                ToEngine(backdrop.Maximum),
-                0f,
-                ToEngineColor(backdrop.Color));
+            _primitiveQueue!.QueueQuad(
+                MapSurfacePrimitiveKind.CoordinateBackdrop,
+                backdrop.Minimum,
+                backdrop.Maximum,
+                backdrop.Color);
         }
 
         MiniMapTextRenderer.QueueCoordinates(
@@ -500,6 +572,58 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 Engine.Vector2.Zero);
     }
 
+    private sealed class EngineMapSurfacePrimitiveQueue(FlatBatch2D batch) : IMapSurfacePrimitiveQueue
+    {
+        public void QueueQuad(
+            MapSurfacePrimitiveKind kind,
+            NVector2 minimum,
+            NVector2 maximum,
+            Rgba32 color) => batch.QueueQuad(
+                ToEngine(minimum),
+                ToEngine(maximum),
+                0f,
+                ToEngineColor(color));
+
+        public void QueueQuad(
+            MapSurfacePrimitiveKind kind,
+            NVector2 point1,
+            NVector2 point2,
+            NVector2 point3,
+            NVector2 point4,
+            Rgba32 color) => batch.QueueQuad(
+                ToEngine(point1),
+                ToEngine(point2),
+                ToEngine(point3),
+                ToEngine(point4),
+                0f,
+                ToEngineColor(color));
+
+        public void QueueLine(
+            MapSurfacePrimitiveKind kind,
+            NVector2 start,
+            NVector2 end,
+            Rgba32 color) => batch.QueueLine(
+                ToEngine(start),
+                ToEngine(end),
+                0f,
+                ToEngineColor(color));
+
+        public void QueueTriangle(
+            MapSurfacePrimitiveKind kind,
+            MapPlayerPrimitive primitive) => batch.QueueTriangle(
+                ToEngine(primitive.Tip),
+                ToEngine(primitive.Left),
+                ToEngine(primitive.Right),
+                0f,
+                ToEngineColor(primitive.Color));
+
+        public void QueueRectangle(MapFramePrimitive primitive) => batch.QueueRectangle(
+            ToEngine(primitive.Minimum),
+            ToEngine(primitive.Maximum),
+            0f,
+            ToEngineColor(primitive.Color));
+    }
+
     private void QueueSurveyCrosshair(NVector2 center)
     {
         if (!IsInside(center, 24f))
@@ -507,11 +631,26 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             return;
         }
 
-        var c = ToEngine(center);
-        _flatBatch!.QueueLine(c + new Engine.Vector2(-22f, 0f), c + new Engine.Vector2(-9f, 0f), 0f, SurveyCyan);
-        _flatBatch.QueueLine(c + new Engine.Vector2(9f, 0f), c + new Engine.Vector2(22f, 0f), 0f, SurveyCyan);
-        _flatBatch.QueueLine(c + new Engine.Vector2(0f, -22f), c + new Engine.Vector2(0f, -9f), 0f, SurveyCyan);
-        _flatBatch.QueueLine(c + new Engine.Vector2(0f, 9f), c + new Engine.Vector2(0f, 22f), 0f, SurveyCyan);
+        _primitiveQueue!.QueueLine(
+            MapSurfacePrimitiveKind.SurveyCrosshair,
+            center + new NVector2(-22f, 0f),
+            center + new NVector2(-9f, 0f),
+            TravelMapPalette.SurveyCyan);
+        _primitiveQueue.QueueLine(
+            MapSurfacePrimitiveKind.SurveyCrosshair,
+            center + new NVector2(9f, 0f),
+            center + new NVector2(22f, 0f),
+            TravelMapPalette.SurveyCyan);
+        _primitiveQueue.QueueLine(
+            MapSurfacePrimitiveKind.SurveyCrosshair,
+            center + new NVector2(0f, -22f),
+            center + new NVector2(0f, -9f),
+            TravelMapPalette.SurveyCyan);
+        _primitiveQueue.QueueLine(
+            MapSurfacePrimitiveKind.SurveyCrosshair,
+            center + new NVector2(0f, 9f),
+            center + new NVector2(0f, 22f),
+            TravelMapPalette.SurveyCyan);
     }
 
     private bool IsInside(NVector2 point, float margin) =>

@@ -757,6 +757,37 @@ public sealed class TravelMapSettingsStoreTests
 public sealed class TravelMapRenderModelTests
 {
     [Fact]
+    public void Overlay_state_preserves_five_parameter_constructor_and_deconstruct_while_exposing_marker_color()
+    {
+        var constructorArities = typeof(MapOverlayState)
+            .GetConstructors()
+            .Select(constructor => constructor.GetParameters().Length)
+            .Order()
+            .ToArray();
+        var deconstructArities = typeof(MapOverlayState)
+            .GetMethods()
+            .Where(method => method.Name == nameof(MapOverlayState.Deconstruct))
+            .Select(method => method.GetParameters().Length)
+            .Order()
+            .ToArray();
+
+        Assert.Equal([5, 6], constructorArities);
+        Assert.Equal([5, 6], deconstructArities);
+
+        var position = new Vector3(1f, 2f, 3f);
+        IReadOnlyList<Waypoint> waypoints = [];
+        var state = new MapOverlayState(position, 0.75f, 32f, waypoints, ShowCoordinates: true);
+        var (actualPosition, heading, arrowSize, actualWaypoints, showCoordinates) = state;
+
+        Assert.Equal(position, actualPosition);
+        Assert.Equal(0.75f, heading);
+        Assert.Equal(32f, arrowSize);
+        Assert.Same(waypoints, actualWaypoints);
+        Assert.True(showCoordinates);
+        Assert.Null(state.PlayerMarkerColor);
+    }
+
+    [Fact]
     public void Renderer_emits_terrain_only_for_pixels_already_marked_explored()
     {
         var source = new RecordingPixelSource((x, z) =>
