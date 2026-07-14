@@ -1,5 +1,38 @@
 namespace SurvivalcraftTravelMap.Map;
 
+public readonly record struct MinimapExplorationFootprintIdentity(
+    TerrainChunkCoordinate CenterChunk,
+    TerrainChunkCoordinate MinimumChunk,
+    TerrainChunkCoordinate MaximumChunk)
+{
+    public static MinimapExplorationFootprintIdentity Create(
+        float playerX,
+        float playerZ,
+        int sizePixels,
+        float blocksPerPixel)
+    {
+        if (!float.IsFinite(playerX) || !float.IsFinite(playerZ))
+            throw new ArgumentOutOfRangeException(nameof(playerX));
+        if (sizePixels <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sizePixels));
+        if (!float.IsFinite(blocksPerPixel) || blocksPerPixel <= 0f)
+            throw new ArgumentOutOfRangeException(nameof(blocksPerPixel));
+
+        var halfExtent = (double)sizePixels * blocksPerPixel / 2d;
+        var minimumWorldX = CheckedFloor(playerX - halfExtent);
+        var minimumWorldZ = CheckedFloor(playerZ - halfExtent);
+        var maximumWorldX = CheckedCeilingMinusOne(playerX + halfExtent);
+        var maximumWorldZ = CheckedCeilingMinusOne(playerZ + halfExtent);
+        return new MinimapExplorationFootprintIdentity(
+            TerrainChunkCoordinate.FromWorld(CheckedFloor(playerX), CheckedFloor(playerZ)),
+            TerrainChunkCoordinate.FromWorld(minimumWorldX, minimumWorldZ),
+            TerrainChunkCoordinate.FromWorld(maximumWorldX, maximumWorldZ));
+    }
+
+    private static int CheckedFloor(double value) => checked((int)Math.Floor(value));
+    private static int CheckedCeilingMinusOne(double value) => checked((int)Math.Ceiling(value) - 1);
+}
+
 public sealed class MinimapExplorationFootprint
 {
     private MinimapExplorationFootprint(
@@ -25,27 +58,22 @@ public sealed class MinimapExplorationFootprint
         int sizePixels,
         float blocksPerPixel)
     {
-        if (!float.IsFinite(playerX) || !float.IsFinite(playerZ))
-            throw new ArgumentOutOfRangeException(nameof(playerX));
-        if (sizePixels <= 0)
-            throw new ArgumentOutOfRangeException(nameof(sizePixels));
-        if (!float.IsFinite(blocksPerPixel) || blocksPerPixel <= 0f)
-            throw new ArgumentOutOfRangeException(nameof(blocksPerPixel));
-
-        var halfExtent = (double)sizePixels * blocksPerPixel / 2d;
-        var minimumWorldX = CheckedFloor(playerX - halfExtent);
-        var minimumWorldZ = CheckedFloor(playerZ - halfExtent);
-        var maximumWorldX = CheckedCeilingMinusOne(playerX + halfExtent);
-        var maximumWorldZ = CheckedCeilingMinusOne(playerZ + halfExtent);
-        var center = TerrainChunkCoordinate.FromWorld(CheckedFloor(playerX), CheckedFloor(playerZ));
-        var minimum = TerrainChunkCoordinate.FromWorld(minimumWorldX, minimumWorldZ);
-        var maximum = TerrainChunkCoordinate.FromWorld(maximumWorldX, maximumWorldZ);
-        var chunks = Enumerate(minimum, maximum, center);
-        return new MinimapExplorationFootprint(center, minimum, maximum, chunks);
+        return Create(MinimapExplorationFootprintIdentity.Create(
+            playerX,
+            playerZ,
+            sizePixels,
+            blocksPerPixel));
     }
 
-    private static int CheckedFloor(double value) => checked((int)Math.Floor(value));
-    private static int CheckedCeilingMinusOne(double value) => checked((int)Math.Ceiling(value) - 1);
+    public static MinimapExplorationFootprint Create(MinimapExplorationFootprintIdentity identity)
+    {
+        var chunks = Enumerate(identity.MinimumChunk, identity.MaximumChunk, identity.CenterChunk);
+        return new MinimapExplorationFootprint(
+            identity.CenterChunk,
+            identity.MinimumChunk,
+            identity.MaximumChunk,
+            chunks);
+    }
 
     private static IReadOnlyList<TerrainChunkCoordinate> Enumerate(
         TerrainChunkCoordinate minimum,

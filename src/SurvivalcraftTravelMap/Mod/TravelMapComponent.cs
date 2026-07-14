@@ -117,6 +117,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private BitmapButtonWidget? _teleportPanelButton;
     private Texture2D? _teleportButtonTexture;
     private Texture2D? _teleportButtonPressedTexture;
+    private MinimapExplorationFootprintIdentity? _explorationFootprintIdentity;
     private float _flushElapsed;
     private bool _explorationPressureWarningShown;
     private bool _isActive;
@@ -852,12 +853,17 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         var position = Player.ComponentBody.Position;
-        var footprint = MinimapExplorationFootprint.Create(
+        var footprintIdentity = MinimapExplorationFootprintIdentity.Create(
             position.X,
             position.Z,
             _settings.MiniMapSize,
             _settings.MiniMapBlocksPerPixel);
-        _explorationScheduler.ObserveFootprint(footprint);
+        if (_explorationFootprintIdentity != footprintIdentity)
+        {
+            _explorationFootprintIdentity = footprintIdentity;
+            var footprint = MinimapExplorationFootprint.Create(footprintIdentity);
+            _explorationScheduler.ObserveFootprint(footprint);
+        }
 
         foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))
         {
@@ -1170,6 +1176,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     {
         _isActive = false;
         _explorationScheduler.Clear();
+        _explorationFootprintIdentity = null;
         _explorationFailureWarnings.Clear();
         RunCleanupStep(() => _lifetimeCancellation.Cancel());
         RunCleanupStep(() =>

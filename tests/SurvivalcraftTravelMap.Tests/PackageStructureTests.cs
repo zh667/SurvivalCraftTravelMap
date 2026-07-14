@@ -228,23 +228,41 @@ public sealed class PackageStructureTests
             source,
             "private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();",
             "scheduler field");
+        AssertCodeContains(
+            source,
+            "private MinimapExplorationFootprintIdentity? _explorationFootprintIdentity;",
+            "footprint identity cache");
         AssertCodeContains(update, "UpdateExploration();");
         AssertCodeDoesNotContain(update, "UpdateExploration(dt)");
         Assert.True(
             IndexOfCode(update, "UpdateExploration();")
             < IndexOfCode(update, "if (_miniMap is null || _settings is null)"));
 
-        AssertCodeContains(exploration, "MinimapExplorationFootprint.Create(");
+        AssertCodeContains(exploration, "MinimapExplorationFootprintIdentity.Create(");
         AssertCodeContains(exploration, "_settings.MiniMapSize");
         AssertCodeContains(exploration, "_settings.MiniMapBlocksPerPixel");
-        AssertCodeContains(exploration, "_explorationScheduler.ObserveFootprint(footprint);");
+        var identityChange = ExtractBraceBlock(
+            exploration,
+            "if (_explorationFootprintIdentity != footprintIdentity)");
+        AssertCodeContains(identityChange, "_explorationFootprintIdentity = footprintIdentity;");
+        AssertCodeContains(identityChange, "MinimapExplorationFootprint.Create(footprintIdentity);");
+        AssertCodeContains(identityChange, "_explorationScheduler.ObserveFootprint(footprint);");
+        Assert.Equal(1, CountOccurrences(exploration, "MinimapExplorationFootprint.Create("));
+        Assert.Equal(1, CountOccurrences(exploration, "ObserveFootprint("));
         AssertCodeDoesNotContain(exploration, "ObservePlayerPosition");
         AssertCodeDoesNotContain(exploration, "_settings.IsMiniMapVisible");
         AssertCodeContains(
             exploration,
             "_explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame)",
             "bounded pending snapshot");
+        AssertCodeDoesNotContain(identityChange, "GetPendingAttempts");
+        Assert.True(
+            IndexOfCode(exploration, "if (_explorationFootprintIdentity != footprintIdentity)")
+            < IndexOfCode(
+                exploration,
+                "foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))"));
         AssertCodeContains(cleanup, "_explorationScheduler.Clear();");
+        AssertCodeContains(cleanup, "_explorationFootprintIdentity = null;");
         AssertCodeContains(cleanup, "_explorationFailureWarnings.Clear();");
 
         foreach (var legacyReference in new[]

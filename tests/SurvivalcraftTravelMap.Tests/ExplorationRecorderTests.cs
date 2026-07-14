@@ -366,6 +366,38 @@ public sealed class ExplorationRecorderTests
     }
 
     [Fact]
+    public void Unchanged_footprint_identity_skips_rebuild_and_observation_while_pending_attempts_continue()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+        MinimapExplorationFootprintIdentity? observedIdentity = null;
+        var materializedCount = 0;
+        var observationCount = 0;
+
+        IReadOnlyList<TerrainChunkCoordinate> Update(float x, float z)
+        {
+            var footprintIdentity = MinimapExplorationFootprintIdentity.Create(x, z, 16, 1f);
+            if (observedIdentity != footprintIdentity)
+            {
+                observedIdentity = footprintIdentity;
+                materializedCount++;
+                var footprint = MinimapExplorationFootprint.Create(footprintIdentity);
+                scheduler.ObserveFootprint(footprint);
+                observationCount++;
+            }
+
+            return scheduler.GetPendingAttempts(4);
+        }
+
+        var firstAttempts = Update(4f, 4f);
+        var movedAttempts = Update(4.25f, 4.25f);
+
+        Assert.Equal(1, materializedCount);
+        Assert.Equal(1, observationCount);
+        Assert.Equal(4, scheduler.PendingCount);
+        Assert.Equal(firstAttempts, movedAttempts);
+    }
+
+    [Fact]
     public async Task Low_capacity_sampler_failure_preserves_its_exception_and_existing_data()
     {
         using var directory = new TemporaryDirectory();
