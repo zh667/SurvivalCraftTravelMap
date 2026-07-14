@@ -13,7 +13,7 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 
 ## 操作
 
-- 右上角小地图：默认逻辑尺寸为 `192`，显示已探索地形、玩家方向、坐标点和可选 XYZ 坐标。位置按玩家 `GuiWidget.ActualSize` 的逻辑坐标计算，不使用物理视口像素，因此会跟随游戏 UI 缩放；单击小地图或按 `M` 均可打开大地图。
+- 右上角小地图：默认逻辑尺寸为 `192`，显示已探索地形、玩家方向、坐标点和可选 XYZ 坐标。位置按玩家 `GuiWidget.ActualSize` 的逻辑坐标计算，不使用物理视口像素，因此会跟随游戏 UI 缩放；当前实机验收目标约为 `256×256` 物理像素，并需分别在 UI 缩放 `0.75 / 1.0 / 1.25` 下确认。单击小地图或按 `M` 均可打开大地图。
 - `M`：打开或关闭大地图；聊天输入、文本输入或其他模态对话框占用焦点时不会触发。背包、角色、合成、睡眠、大地图或其他模态界面出现时，小地图和邀请图标会自动隐藏，关闭后按原设置恢复。
 - 鼠标滚轮：光标位于地图上时缩放。
 - 按住鼠标左键拖动：平移大地图。
@@ -86,8 +86,9 @@ SCTM 不扫描、统计或上报已安装 Mod 的数量，也不包含旧的 Mod
 - 当前仅针对 Windows PC、Survivalcraft 2.4.40.6 与 NetMod API 1.44 构建。
 - 联机坐标传送要求服务器安装 SCTM；旧服务器只能使用其已有的邀请传送能力。
 - 全细节地图在 64 格瓦片接缝处，探索边界青线可能出现一小段不连续；探索数据本身不受影响。
-- 小地图逻辑坐标、entered-chunk 原子探索与集成主机传送链路均有自动测试覆盖；自动门禁结果以对应提交报告为准，仍待第二轮实机复测，不能视为最终游戏内验收完成。
-- 实际游戏内布局、各地形和主机/客户端场景仍应按 [烟雾测试清单](docs/smoke-test-2026-07-13.md) 完成人工确认。
+- 当前自动 release gate 绑定源码 HEAD `b4f7d4ffa657daa767674e569d753338f903d84b`（`feat: integrate adaptive minimap hud`）：Release 测试 `614/614`，warnings-as-errors 构建 `0 warnings / 0 errors`，`Verify-Package.ps1` 输出 `PACKAGE_OK`。同一 HEAD 连续两次构建的 package 与包内 DLL 均逐字节一致；当前 package SHA-256 为 `698A5EAFBCF0F5506129A18AD522BF127A5363D21F695305B0F70409CC625BED`，包内 DLL SHA-256 为 `9DFB375B4D5763B166D0FA654ABD8780E77F7C726512F1D8FFAF75C90136F48F`。
+- 当前包已按 exact paths 安装到 worktree 的隔离 smoke-game，artifact 与 installed SHA-256 相同；主游戏原 `34GPSFix.netmod` 始终保持 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。隔离 World2 和旧 travel-map cache 均保留，但尚未启动游戏。
+- 小地图逻辑坐标、entered-chunk 原子探索与集成主机传送链路均有自动测试覆盖，但不等于游戏内验收。批准的 10 项实机矩阵仍全部 `PENDING`；实际游戏内布局（含 UI 缩放 `0.75 / 1.0 / 1.25`）、World2 旧缓存补全、地表/坐标点/失败回退传送和多人邀请均须按 [烟雾测试清单](docs/smoke-test-2026-07-13.md) 由用户确认。
 
 更完整的操作、故障恢复与测试步骤见 [用户指南](docs/user-guide.md)。
 
