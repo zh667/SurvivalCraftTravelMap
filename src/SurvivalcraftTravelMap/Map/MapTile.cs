@@ -129,6 +129,37 @@ public sealed class MapTile
         }
     }
 
+    public bool IsRegionFullyExplored(int x, int z, int width, int height)
+    {
+        if ((uint)x >= Size)
+            throw new ArgumentOutOfRangeException(nameof(x));
+        if ((uint)z >= Size)
+            throw new ArgumentOutOfRangeException(nameof(z));
+        if (width <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width));
+        if (height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(height));
+        if (checked(x + width) > Size)
+            throw new ArgumentOutOfRangeException(nameof(width));
+        if (checked(z + height) > Size)
+            throw new ArgumentOutOfRangeException(nameof(height));
+
+        lock (_sync)
+        {
+            for (var localZ = 0; localZ < height; localZ++)
+            {
+                var rowStart = ((z + localZ) * Size) + x;
+                for (var localX = 0; localX < width; localX++)
+                {
+                    if (!TryGetPixelCore(_explored, _colors, rowStart + localX, out _))
+                        return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
     public VersionedMapTileSnapshot CreateVersionedSnapshot()
     {
         lock (_sync)

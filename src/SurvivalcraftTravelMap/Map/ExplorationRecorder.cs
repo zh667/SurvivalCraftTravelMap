@@ -18,6 +18,18 @@ public sealed class ExplorationRecorder(
     private readonly ExplorationTileStore _tileStore = tileStore
         ?? throw new ArgumentNullException(nameof(tileStore));
 
+    public bool IsChunkFullyExplored(TerrainChunkCoordinate chunk)
+    {
+        var coordinate = TileCoordinate.FromWorld(chunk.OriginX, chunk.OriginZ);
+        return _tileStore.IsRegionFullyExplored(
+            coordinate.TileX,
+            coordinate.TileZ,
+            coordinate.LocalX,
+            coordinate.LocalZ,
+            TerrainChunkCoordinate.Size,
+            TerrainChunkCoordinate.Size);
+    }
+
     public ExplorationRecordResult RecordChunk(TerrainChunkCoordinate chunk)
     {
         Span<Rgba32> colors = stackalloc Rgba32[TerrainChunkCoordinate.PixelCount];

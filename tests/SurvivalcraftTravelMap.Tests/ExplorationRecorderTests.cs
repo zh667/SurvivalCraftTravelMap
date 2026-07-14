@@ -7,6 +7,69 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public void Chunk_coverage_requires_all_256_opaque_pixels_and_repairs_after_recording()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path);
+        var chunk = new TerrainChunkCoordinate(2, -3);
+        var coordinate = TileCoordinate.FromWorld(chunk.OriginX, chunk.OriginZ);
+        var tile = store.GetOrLoad(coordinate.TileX, coordinate.TileZ);
+        var recorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1),
+            store,
+            new Rgba32(10, 20, 30, 255));
+
+        var diagnosticsBeforeUnknownQuery = store.Diagnostics;
+        Assert.False(recorder.IsChunkFullyExplored(chunk));
+        Assert.Equal(diagnosticsBeforeUnknownQuery, store.Diagnostics);
+        tile.SetRegion(
+            coordinate.LocalX,
+            coordinate.LocalZ,
+            TerrainChunkCoordinate.Size,
+            TerrainChunkCoordinate.Size,
+            Enumerable.Repeat(
+                new Rgba32(1, 2, 3, 255),
+                TerrainChunkCoordinate.PixelCount).ToArray());
+        tile.SetPixel(coordinate.LocalX + 15, coordinate.LocalZ + 15, default);
+        Assert.False(recorder.IsChunkFullyExplored(chunk));
+
+        Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(chunk));
+        Assert.True(recorder.IsChunkFullyExplored(chunk));
+    }
+
+    [Fact]
+    public void Chunk_coverage_uses_floor_tiles_for_negative_chunk_coordinates()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path);
+        var recorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1),
+            store,
+            new Rgba32(10, 20, 30, 255));
+        var chunk = new TerrainChunkCoordinate(-1, -4);
+
+        Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(chunk));
+
+        Assert.True(recorder.IsChunkFullyExplored(chunk));
+        Assert.True(store.ContainsKnownTile(-1, -1));
+    }
+
+    [Theory]
+    [InlineData(-1, 0, 1, 1)]
+    [InlineData(0, -1, 1, 1)]
+    [InlineData(0, 0, 0, 1)]
+    [InlineData(0, 0, 1, 0)]
+    [InlineData(63, 0, 2, 1)]
+    [InlineData(0, 63, 1, 2)]
+    public void Region_coverage_rejects_invalid_bounds(int x, int z, int width, int height)
+    {
+        var tile = new MapTile(0, 0);
+
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(
+            () => tile.IsRegionFullyExplored(x, z, width, height));
+    }
+
+    [Fact]
     public async Task Ready_chunk_writes_all_256_cells_once_and_releases_its_mutation_lease()
     {
         using var directory = new TemporaryDirectory();

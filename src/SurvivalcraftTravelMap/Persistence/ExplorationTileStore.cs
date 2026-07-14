@@ -155,6 +155,20 @@ public sealed class ExplorationTileStore
         }
     }
 
+    public bool IsRegionFullyExplored(
+        int tileX,
+        int tileZ,
+        int x,
+        int z,
+        int width,
+        int height)
+    {
+        if (!ContainsKnownTile(tileX, tileZ))
+            return false;
+
+        return GetOrLoad(tileX, tileZ).IsRegionFullyExplored(x, z, width, height);
+    }
+
     public MapTile GetOrLoad(int tileX, int tileZ)
     {
         var key = new TileKey(tileX, tileZ);
