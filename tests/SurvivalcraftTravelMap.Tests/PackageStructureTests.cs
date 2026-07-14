@@ -644,7 +644,15 @@ public sealed class PackageStructureTests
         var quoteCount = CountCharacterRun(source, cursor, '"');
         if (quoteCount >= 3)
         {
-            index = SkipRawString(source, cursor + quoteCount, quoteCount);
+            index = dollarCount == 0
+                ? SkipRawString(source, cursor + quoteCount, quoteCount)
+                : SkipRawInterpolatedString(
+                    source,
+                    cursor + quoteCount,
+                    quoteCount,
+                    dollarCount,
+                    interpolatedCodeTokens,
+                    baseOffset);
             return true;
         }
 
@@ -790,6 +798,113 @@ public sealed class PackageStructureTests
         return source.Length;
     }
 
+    private static int SkipRawInterpolatedString(
+        string source,
+        int index,
+        int quoteCount,
+        int dollarCount,
+        List<SourceToken>? interpolatedCodeTokens,
+        int baseOffset)
+    {
+        while (index < source.Length)
+        {
+            if (source[index] == '"')
+            {
+                var quoteRun = CountCharacterRun(source, index, '"');
+                if (quoteRun >= quoteCount)
+                {
+                    return index + quoteRun;
+                }
+
+                index += quoteRun;
+                continue;
+            }
+
+            if (source[index] != '{')
+            {
+                index++;
+                continue;
+            }
+
+            var openingRun = CountCharacterRun(source, index, '{');
+            if (!OpensRawInterpolationHole(openingRun, dollarCount))
+            {
+                index += openingRun;
+                continue;
+            }
+
+            var expressionStart = index + openingRun;
+            var afterExpression = SkipRawInterpolationHole(
+                source,
+                expressionStart,
+                dollarCount,
+                out var expressionEnd);
+            if (interpolatedCodeTokens is not null && expressionEnd > expressionStart)
+            {
+                interpolatedCodeTokens.AddRange(TokenizeCSharp(
+                    source[expressionStart..expressionEnd],
+                    baseOffset + expressionStart));
+            }
+
+            index = afterExpression;
+        }
+
+        return source.Length;
+    }
+
+    private static int SkipRawInterpolationHole(
+        string source,
+        int index,
+        int dollarCount,
+        out int expressionEnd)
+    {
+        var nestedBraceDepth = 0;
+        while (index < source.Length)
+        {
+            if (TrySkipComment(source, ref index)
+                || TrySkipStringLiteral(source, ref index)
+                || TrySkipCharacterLiteral(source, ref index))
+            {
+                continue;
+            }
+
+            if (source[index] == '{')
+            {
+                var nestedOpeningRun = CountCharacterRun(source, index, '{');
+                nestedBraceDepth += nestedOpeningRun;
+                index += nestedOpeningRun;
+                continue;
+            }
+
+            if (source[index] != '}')
+            {
+                index++;
+                continue;
+            }
+
+            var closingRunStart = index;
+            var closingRun = CountCharacterRun(source, index, '}');
+            var nestedClosures = Math.Min(nestedBraceDepth, closingRun);
+            nestedBraceDepth -= nestedClosures;
+            var delimiterCandidateLength = closingRun - nestedClosures;
+            if (nestedBraceDepth == 0
+                && OpensRawInterpolationHole(delimiterCandidateLength, dollarCount))
+            {
+                expressionEnd = closingRunStart + nestedClosures;
+                return closingRunStart + closingRun;
+            }
+
+            index += closingRun;
+        }
+
+        expressionEnd = source.Length;
+        return source.Length;
+    }
+
+    private static bool OpensRawInterpolationHole(int braceRunLength, int dollarCount) =>
+        braceRunLength >= dollarCount
+        && braceRunLength - dollarCount < dollarCount;
+
     private static int CountCharacterRun(string source, int index, char value)
     {
         var start = index;
@@ -871,6 +986,65 @@ public sealed class PackageStructureTests
         Assert.Equal(0, CountOccurrences(source, "break"));
         Assert.Equal(0, CountOccurrences(source, "continue"));
         Assert.Equal(0, CountOccurrences(source, "goto"));
+        Assert.Equal(1, CountOccurrences(source, "throw"));
+    }
+
+    [Fact]
+    public void Single_dollar_raw_interpolation_skips_literal_text_and_preserves_each_code_hole()
+    {
+        var source = """"""
+            {
+                var raw = $""""
+                    literal throw; and a shorter quote run """
+                    {{ literal braces contain throw exception; }}
+                    { GenuineSingle(); throw exception; }
+                    literal after first hole throw;
+                    { NextSingle(); }
+                    """";
+                AfterRaw();
+            }
+            """""";
+
+        Assert.Equal(1, CountOccurrences(source, "GenuineSingle("));
+        Assert.Equal(1, CountOccurrences(source, "NextSingle("));
+        Assert.Equal(1, CountOccurrences(source, "AfterRaw("));
+        Assert.Equal(1, CountOccurrences(source, "throw"));
+    }
+
+    [Fact]
+    public void Multi_dollar_raw_interpolation_honors_brace_delimiters_nested_literals_and_later_holes()
+    {
+        var source = """"""
+            {
+                var raw = $$""""
+                    one brace is literal: { FakeLiteral(); throw exception; }
+                    {{
+                        if (ready) { NestedBlock(); }
+                        var normal = "throw exception; }";
+                        var verbatim = @"throw exception; }}";
+                        var nestedRaw = """throw exception; }}""";
+                        var interpolated = $"{{throw exception;}} {new { Text = "throw" }}";
+                        GenuineDouble();
+                        throw exception;
+                    }}
+                    three opening braces keep surplus literal text and open a real hole:
+                    {{{ GreaterBraceRun(); }}}
+                    four opening braces are literal: {{{{ FakeEvenBraceRun(); throw exception; }}}}
+                    literal after holes: { FakeAfter(); throw exception; }
+                    {{ NextDouble(); }}
+                    """";
+                AfterDoubleRaw();
+            }
+            """""";
+
+        Assert.Equal(0, CountOccurrences(source, "FakeLiteral("));
+        Assert.Equal(0, CountOccurrences(source, "FakeEvenBraceRun("));
+        Assert.Equal(0, CountOccurrences(source, "FakeAfter("));
+        Assert.Equal(1, CountOccurrences(source, "NestedBlock("));
+        Assert.Equal(1, CountOccurrences(source, "GenuineDouble("));
+        Assert.Equal(1, CountOccurrences(source, "GreaterBraceRun("));
+        Assert.Equal(1, CountOccurrences(source, "NextDouble("));
+        Assert.Equal(1, CountOccurrences(source, "AfterDoubleRaw("));
         Assert.Equal(1, CountOccurrences(source, "throw"));
     }
 
