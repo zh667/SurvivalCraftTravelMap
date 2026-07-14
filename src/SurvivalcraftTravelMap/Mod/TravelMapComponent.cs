@@ -92,7 +92,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();
-    private readonly HashSet<(TerrainChunkCoordinate Chunk, string ErrorSignature)> _explorationFailureWarnings = [];
+    private readonly ExplorationFailureReporter _explorationFailureReporter = new(LogExplorationFailure);
     private readonly TravelMapUiController _uiController = new();
     private readonly IdempotentTravelMapCleanup _runtimeCleanup;
     private GameUpdateDispatcher? _dispatcher;
@@ -101,6 +101,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private TravelMapSettings? _settings;
     private ExplorationTileStore? _tileStore;
     private ExplorationRecorder? _explorationRecorder;
+    private ExplorationCoverageProbe? _explorationCoverageProbe;
     private WaypointRepository? _waypointRepository;
     private CurrentPositionWaypointHandler? _currentPositionWaypointHandler;
     private IReadOnlyList<Waypoint> _waypoints = Array.Empty<Waypoint>();
@@ -698,6 +699,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
             {
                 var sampler = new TerrainMapSampler(new SurvivalcraftTerrainMapSource(Terrain), stream);
                 _explorationRecorder = new ExplorationRecorder(sampler, _tileStore);
+                _explorationCoverageProbe = new ExplorationCoverageProbe(
+                    _explorationRecorder.IsChunkFullyExplored,
+                    _explorationFailureReporter);
             });
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException)
@@ -857,7 +861,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void UpdateExploration()
     {
-        if (_explorationRecorder is null || _settings is null)
+        if (_explorationRecorder is null || _explorationCoverageProbe is null || _settings is null)
         {
             return;
         }
@@ -876,7 +880,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         _explorationScheduler.ReconcileCoverage(
-            _explorationRecorder.IsChunkFullyExplored,
+            _explorationCoverageProbe.IsFullyExplored,
             MaximumCoverageChecksPerFrame);
 
         foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))
@@ -898,14 +902,17 @@ public sealed class TravelMapComponent : Component, IUpdateable
             }
             catch (Exception exception)
             {
-                var errorSignature = $"{exception.GetType().FullName}: {exception.Message}";
-                if (_explorationFailureWarnings.Add((chunk, errorSignature)))
-                {
-                    Engine.Log.Warning(
-                        $"[TravelMap] Terrain chunk ({chunk.X}, {chunk.Z}) exploration failed: {errorSignature}");
-                }
+                _explorationFailureReporter.Report(
+                    chunk,
+                    ExplorationFailureOperation.Record,
+                    exception);
             }
         }
+    }
+
+    private static void LogExplorationFailure(string message)
+    {
+        Engine.Log.Warning(message);
     }
 
     private void UpdateFlush(float dt)
@@ -1210,7 +1217,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _isActive = false;
         _explorationScheduler.Clear();
         _explorationFootprintIdentity = null;
-        _explorationFailureWarnings.Clear();
+        _explorationFailureReporter.Clear();
         RunCleanupStep(() => _lifetimeCancellation.Cancel());
         RunCleanupStep(() =>
         {
@@ -1235,6 +1242,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _settings = null;
         _tileStore = null;
         _explorationRecorder = null;
+        _explorationCoverageProbe = null;
         _waypointRepository = null;
         _currentPositionWaypointHandler = null;
         _waypoints = Array.Empty<Waypoint>();

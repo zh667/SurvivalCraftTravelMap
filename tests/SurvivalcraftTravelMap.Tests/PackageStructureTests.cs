@@ -253,7 +253,7 @@ public sealed class PackageStructureTests
         AssertCodeDoesNotContain(exploration, "ObservePlayerPosition");
         AssertCodeDoesNotContain(exploration, "_settings.IsMiniMapVisible");
         AssertCodeContains(exploration, "_explorationScheduler.ReconcileCoverage(");
-        AssertCodeContains(exploration, "_explorationRecorder.IsChunkFullyExplored");
+        AssertCodeContains(exploration, "_explorationCoverageProbe.IsFullyExplored");
         AssertCodeContains(exploration, "MaximumCoverageChecksPerFrame");
         Assert.True(
             exploration.IndexOf("ReconcileCoverage", StringComparison.Ordinal)
@@ -270,7 +270,7 @@ public sealed class PackageStructureTests
                 "foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))"));
         AssertCodeContains(cleanup, "_explorationScheduler.Clear();");
         AssertCodeContains(cleanup, "_explorationFootprintIdentity = null;");
-        AssertCodeContains(cleanup, "_explorationFailureWarnings.Clear();");
+        AssertCodeContains(cleanup, "_explorationFailureReporter.Clear();");
 
         foreach (var legacyReference in new[]
                  {
@@ -305,10 +305,9 @@ public sealed class PackageStructureTests
         AssertCodeContains(attemptLoop, "result == ExplorationRecordResult.Pressure");
         AssertCodeContains(attemptLoop, "!_explorationPressureWarningShown");
 
-        AssertCodeContains(exceptionHandler, "exception.GetType().FullName");
-        AssertCodeContains(exceptionHandler, "exception.Message");
-        AssertCodeContains(exceptionHandler, "_explorationFailureWarnings.Add((chunk, errorSignature))");
-        AssertCodeContains(exceptionHandler, "Engine.Log.Warning");
+        AssertCodeContains(exceptionHandler, "_explorationFailureReporter.Report(");
+        AssertCodeContains(exceptionHandler, "ExplorationFailureOperation.Record");
+        AssertCodeContains(exceptionHandler, "exception");
         AssertCodeDoesNotContain(exceptionHandler, "MarkCompleted");
         foreach (var forbiddenExit in new[] { "return", "break", "continue", "goto", "throw" })
         {
