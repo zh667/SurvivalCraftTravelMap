@@ -7,34 +7,62 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class ExplorationRecorderTests
 {
     [Fact]
+    public void Unknown_chunk_coverage_query_does_not_materialize_or_probe_tile()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path);
+        var chunk = new TerrainChunkCoordinate(2, -3);
+        var recorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1),
+            store,
+            new Rgba32(10, 20, 30, 255));
+
+        Assert.False(recorder.IsChunkFullyExplored(chunk));
+
+        Assert.Equal(0, store.Diagnostics.TileMaterializations);
+        Assert.Equal(0, store.Diagnostics.FileProbeCount);
+        Assert.Equal(0, store.Diagnostics.DiskReadAttempts);
+    }
+
+    [Fact]
     public void Chunk_coverage_requires_all_256_opaque_pixels_and_repairs_after_recording()
     {
         using var directory = new TemporaryDirectory();
         var store = new ExplorationTileStore(directory.Path);
         var chunk = new TerrainChunkCoordinate(2, -3);
         var coordinate = TileCoordinate.FromWorld(chunk.OriginX, chunk.OriginZ);
-        var tile = store.GetOrLoad(coordinate.TileX, coordinate.TileZ);
         var recorder = CreateRecorder(
             new FakeTerrainMapSource(defaultContent: 1),
             store,
             new Rgba32(10, 20, 30, 255));
+        using (var lease = store.AcquireMutation(coordinate.TileX, coordinate.TileZ))
+        {
+            lease.Tile.SetRegion(
+                coordinate.LocalX,
+                coordinate.LocalZ,
+                TerrainChunkCoordinate.Size,
+                TerrainChunkCoordinate.Size,
+                Enumerable.Repeat(
+                    new Rgba32(1, 2, 3, 255),
+                    TerrainChunkCoordinate.PixelCount).ToArray());
+            lease.Tile.SetPixel(coordinate.LocalX + 15, coordinate.LocalZ + 15, default);
+        }
 
-        var diagnosticsBeforeUnknownQuery = store.Diagnostics;
-        Assert.False(recorder.IsChunkFullyExplored(chunk));
-        Assert.Equal(diagnosticsBeforeUnknownQuery, store.Diagnostics);
-        tile.SetRegion(
-            coordinate.LocalX,
-            coordinate.LocalZ,
-            TerrainChunkCoordinate.Size,
-            TerrainChunkCoordinate.Size,
-            Enumerable.Repeat(
-                new Rgba32(1, 2, 3, 255),
-                TerrainChunkCoordinate.PixelCount).ToArray());
-        tile.SetPixel(coordinate.LocalX + 15, coordinate.LocalZ + 15, default);
+        Assert.True(store.ContainsKnownTile(coordinate.TileX, coordinate.TileZ));
         Assert.False(recorder.IsChunkFullyExplored(chunk));
 
         Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(chunk));
         Assert.True(recorder.IsChunkFullyExplored(chunk));
+    }
+
+    [Fact]
+    public void Region_coverage_treats_legacy_explored_bit_with_zero_alpha_as_unexplored()
+    {
+        var explored = new byte[MapTile.ExploredByteCount];
+        explored[0] = 1;
+        var tile = new MapTile(0, 0, explored, new byte[MapTile.ColorByteCount]);
+
+        Assert.False(tile.IsRegionFullyExplored(0, 0, 1, 1));
     }
 
     [Fact]
