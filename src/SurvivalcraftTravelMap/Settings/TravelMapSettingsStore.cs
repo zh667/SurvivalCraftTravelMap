@@ -1,5 +1,3 @@
-using System.Globalization;
-using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
@@ -228,28 +226,156 @@ public sealed class TravelMapSettingsStore
             return SchemaKind.Invalid;
         }
 
-        if (element.TryGetInt32(out var value))
+        return ClassifySchemaNumber(element.GetRawText().AsSpan());
+    }
+
+    private static SchemaKind ClassifySchemaNumber(ReadOnlySpan<char> raw)
+    {
+        if (raw.IsEmpty || raw[0] == '-')
         {
-            return value switch
-            {
-                1 => SchemaKind.Previous,
-                CurrentSchemaVersion => SchemaKind.Current,
-                > CurrentSchemaVersion => SchemaKind.Future,
-                _ => SchemaKind.Invalid,
-            };
+            return SchemaKind.Invalid;
         }
 
-        var raw = element.GetRawText();
-        if ((BigInteger.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer)
-                && integer > CurrentSchemaVersion)
-            || (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
-                && number > CurrentSchemaVersion))
+        var index = 0;
+        if (!IsAsciiDigit(raw[index]))
+        {
+            return SchemaKind.Invalid;
+        }
+
+        var integerStart = index;
+        if (raw[index] == '0' && index + 1 < raw.Length && IsAsciiDigit(raw[index + 1]))
+        {
+            return SchemaKind.Invalid;
+        }
+
+        while (index < raw.Length && IsAsciiDigit(raw[index]))
+        {
+            index++;
+        }
+
+        var integerDigits = index - integerStart;
+        if (index < raw.Length && raw[index] == '.')
+        {
+            index++;
+            var fractionStart = index;
+            while (index < raw.Length && IsAsciiDigit(raw[index]))
+            {
+                index++;
+            }
+
+            if (index == fractionStart)
+            {
+                return SchemaKind.Invalid;
+            }
+        }
+
+        var significandEnd = index;
+        if (!TryReadExponent(raw, ref index, out var exponent) || index != raw.Length)
+        {
+            return SchemaKind.Invalid;
+        }
+
+        var firstNonZero = -1;
+        long leadingZeroDigits = 0;
+        for (var digitIndex = integerStart; digitIndex < significandEnd; digitIndex++)
+        {
+            var digit = raw[digitIndex];
+            if (digit == '.')
+            {
+                continue;
+            }
+
+            if (digit == '0')
+            {
+                leadingZeroDigits++;
+                continue;
+            }
+
+            firstNonZero = digitIndex;
+            break;
+        }
+
+        if (firstNonZero < 0)
+        {
+            return SchemaKind.Invalid;
+        }
+
+        var decimalPositionWithoutExponent = (long)integerDigits - leadingZeroDigits;
+        var exponentForSingleIntegerDigit = 1L - decimalPositionWithoutExponent;
+        if (exponent > exponentForSingleIntegerDigit)
         {
             return SchemaKind.Future;
         }
 
-        return SchemaKind.Invalid;
+        if (exponent < exponentForSingleIntegerDigit)
+        {
+            return SchemaKind.Invalid;
+        }
+
+        var hasNonZeroTail = false;
+        for (var digitIndex = firstNonZero + 1; digitIndex < significandEnd; digitIndex++)
+        {
+            if (raw[digitIndex] is not ('.' or '0'))
+            {
+                hasNonZeroTail = true;
+                break;
+            }
+        }
+
+        return raw[firstNonZero] switch
+        {
+            '1' when !hasNonZeroTail => SchemaKind.Previous,
+            '2' when !hasNonZeroTail => SchemaKind.Current,
+            >= '2' and <= '9' => SchemaKind.Future,
+            _ => SchemaKind.Invalid,
+        };
     }
+
+    private static bool TryReadExponent(
+        ReadOnlySpan<char> raw,
+        ref int index,
+        out long exponent)
+    {
+        exponent = 0;
+        if (index == raw.Length)
+        {
+            return true;
+        }
+
+        if (raw[index] is not ('e' or 'E'))
+        {
+            return false;
+        }
+
+        index++;
+        var isNegative = false;
+        if (index < raw.Length && raw[index] is '+' or '-')
+        {
+            isNegative = raw[index] == '-';
+            index++;
+        }
+
+        var exponentStart = index;
+        long magnitude = 0;
+        while (index < raw.Length && IsAsciiDigit(raw[index]))
+        {
+            var digit = raw[index] - '0';
+            magnitude = magnitude <= (long.MaxValue - digit) / 10
+                ? (magnitude * 10) + digit
+                : long.MaxValue;
+            index++;
+        }
+
+        if (index == exponentStart)
+        {
+            return false;
+        }
+
+        exponent = isNegative ? -magnitude : magnitude;
+        return true;
+    }
+
+    private static bool IsAsciiDigit(char value) => value is >= '0' and <= '9';
 
     private Task SaveCoreAsync(TravelMapSettings settings, CancellationToken cancellationToken)
     {
@@ -373,7 +499,8 @@ public sealed class TravelMapSettingsStore
     private sealed class SettingsDocument
     {
         [JsonPropertyName("schemaVersion")]
-        public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+        public JsonElement SchemaVersion { get; set; } =
+            JsonSerializer.SerializeToElement(CurrentSchemaVersion);
 
         public bool IsMiniMapVisible { get; set; } = true;
 
@@ -413,7 +540,7 @@ public sealed class TravelMapSettingsStore
             TravelMapSettings settings,
             Dictionary<string, JsonElement>? extensionData) => new()
         {
-            SchemaVersion = CurrentSchemaVersion,
+            SchemaVersion = JsonSerializer.SerializeToElement(CurrentSchemaVersion),
             IsMiniMapVisible = settings.IsMiniMapVisible,
             ShowCoordinates = settings.ShowCoordinates,
             UseDayNightTint = settings.UseDayNightTint,
