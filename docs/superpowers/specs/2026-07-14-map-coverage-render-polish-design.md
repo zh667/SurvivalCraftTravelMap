@@ -27,9 +27,11 @@ The game visibility range in the isolated profile is 64 blocks. A 256-pixel mini
 
 The exploration scheduler currently relies primarily on in-memory completion state. It can therefore stop retrying a chunk whose persistent 16×16 coverage is still incomplete. Teleportation and delayed terrain readiness make this failure more visible.
 
-### 2.2 Zoom aggregation drops known terrain
+### 2.2 Zoom and pan aggregation drop known terrain
 
-At coarse rendering levels, multiple stored pixels are aggregated into one display sample. The current aggregate is rejected unless every source pixel in the region is explored. One unknown source pixel can therefore hide all known pixels in the same aggregate, producing flat gray cells during zoom-out and pan operations.
+At coarse rendering levels, multiple stored pixels are aggregated into one display sample. The current aggregate is rejected unless every source pixel in the region is explored. One unknown source pixel can therefore hide all known pixels in the same aggregate, producing flat gray cells during zoom-out.
+
+Dragging can expose the same defect even without changing scale: moving the viewport changes which world pixels fall into a visible aggregate and where partially explored boundaries are clipped. A known region can therefore be re-evaluated as an aggregate containing one unknown pixel and disappear. Separately, dragging onto a genuinely unrecorded cache hole correctly exposes blank background; those holes are repaired by the persistent-coverage reconciliation in Section 3.
 
 ### 2.3 Duplicate large-map player indicators
 
@@ -97,7 +99,9 @@ The renderer must not special-case gray as an error color. Detailed gray, blue-g
 
 ### 4.3 Pan, zoom, and budget behavior
 
-Pan and zoom continue to preserve the selected map center and cursor anchor. The existing render budget remains enforced; partial aggregates count as ordinary rendered samples. Repeated zoom-in, zoom-out, and drag operations must not mutate or discard known map data.
+Pan and zoom continue to preserve the selected map center and cursor anchor. The existing render budget remains enforced; partial aggregates count as ordinary rendered samples.
+
+At a fixed zoom level, dragging away and back to the same world rectangle must reproduce the same known pixels and colors. Viewport clipping, aggregate alignment, tile-descriptor selection, and render-budget culling must never convert persisted explored pixels into unexplored background. Repeated zoom-in, zoom-out, and drag operations must not mutate or discard known map data.
 
 ## 5. Player Marker Consistency
 
@@ -152,9 +156,10 @@ Tests must cover at least:
 5. Hiding the minimap does not disable footprint exploration.
 6. A partially explored 2×2 or larger LOD aggregate renders the average of only its explored pixels.
 7. A zero-explored aggregate stays absent, and a fully explored aggregate produces the previous color.
-8. Repeated pan and zoom transformations retain all known terrain under the render budget.
-9. The large map has no survey crosshair and uses the minimap-style player arrow, including setting-driven size updates.
-10. New settings default to 160, while valid persisted choices and deliberate migrations are preserved.
+8. At a fixed zoom level, dragging across partial exploration boundaries and returning to the original rectangle reproduces the same known pixels and colors.
+9. Repeated pan and zoom transformations retain all known terrain under the render budget and do not lose known tile descriptors through viewport culling.
+10. The large map has no survey crosshair and uses the minimap-style player arrow, including setting-driven size updates.
+11. New settings default to 160, while valid persisted choices and deliberate migrations are preserved.
 
 The full Release test suite and warning-as-error build must pass. Packaging must remain deterministic, contain the expected entries, install only into the isolated smoke-game copy, and leave the protected original `34GPSFix.netmod` unchanged.
 
@@ -168,9 +173,10 @@ Using a fresh isolated install of the exact final package:
 4. Walk into a previously blank nearby square and confirm it appears as soon as its terrain surface is readable.
 5. Hide the minimap, move through loaded terrain, reopen the large map, and confirm the exploration was still persisted.
 6. Reopen the world and confirm repaired coverage remains present.
-7. Repeatedly drag and zoom through the scale that previously produced flat gray cells; all previously known terrain remains visible.
-8. Confirm real exposed rock and mountain regions retain their natural detailed gray colors.
-9. Confirm the large map displays the same red outlined direction arrow as the minimap and no cyan crosshair.
-10. Confirm a pre-existing profile keeps its explicitly saved minimap size.
+7. At the same zoom level, repeatedly drag across the problematic area and back; persisted terrain must reproduce identically instead of turning flat gray.
+8. Repeatedly zoom in and out through the scale that previously produced flat gray cells; all previously known terrain remains visible.
+9. Confirm real exposed rock and mountain regions retain their natural detailed gray colors.
+10. Confirm the large map displays the same red outlined direction arrow as the minimap and no cyan crosshair.
+11. Confirm a pre-existing profile keeps its explicitly saved minimap size.
 
 Implementation is not accepted until these rows are recorded with PASS/FAIL evidence against the exact packaged DLL.
