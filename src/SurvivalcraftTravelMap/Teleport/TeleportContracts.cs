@@ -15,6 +15,7 @@ public enum TeleportResult
 public enum TeleportBlockKind
 {
     Air,
+    Passable,
     SafeSolid,
     Lava,
     Fire,

@@ -76,13 +76,13 @@ public sealed class SurvivalcraftTerrainAccess : ITerrainAccess, IEntityCollisio
         SurvivalcraftBlockHazard.Fire => TeleportBlockKind.Fire,
         SurvivalcraftBlockHazard.Cactus => TeleportBlockKind.Cactus,
         SurvivalcraftBlockHazard.Spikes => TeleportBlockKind.Spikes,
+        _ when metadata.IsDamaging => TeleportBlockKind.Damaging,
+        _ when metadata.IsAir => TeleportBlockKind.Air,
         _ when metadata.IsFluid => TeleportBlockKind.Fluid,
         _ when metadata.IsLeaves => TeleportBlockKind.Leaves,
         _ when metadata.IsFalling => TeleportBlockKind.Falling,
-        _ when metadata.IsDamaging => TeleportBlockKind.Damaging,
-        _ when metadata.IsAir => TeleportBlockKind.Air,
         _ when metadata.IsCollidable => TeleportBlockKind.SafeSolid,
-        _ => TeleportBlockKind.Damaging,
+        _ => TeleportBlockKind.Passable,
     };
 }
 

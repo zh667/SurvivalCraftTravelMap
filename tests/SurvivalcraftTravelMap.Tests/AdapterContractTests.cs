@@ -25,11 +25,12 @@ public sealed class AdapterContractTests
     public static TheoryData<SurvivalcraftBlockMetadata, TeleportBlockKind> BlockKinds => new()
     {
         { new(IsAir: true), TeleportBlockKind.Air },
+        { new(), TeleportBlockKind.Passable },
         { new(IsCollidable: true), TeleportBlockKind.SafeSolid },
         { new(IsFluid: true), TeleportBlockKind.Fluid },
-        { new(IsLeaves: true), TeleportBlockKind.Leaves },
-        { new(IsFalling: true), TeleportBlockKind.Falling },
-        { new(IsDamaging: true), TeleportBlockKind.Damaging },
+        { new(IsLeaves: true, IsCollidable: true), TeleportBlockKind.Leaves },
+        { new(IsFalling: true, IsCollidable: true), TeleportBlockKind.Falling },
+        { new(IsDamaging: true, IsCollidable: true), TeleportBlockKind.Damaging },
         { new(Hazard: SurvivalcraftBlockHazard.Lava), TeleportBlockKind.Lava },
         { new(Hazard: SurvivalcraftBlockHazard.Fire), TeleportBlockKind.Fire },
         { new(Hazard: SurvivalcraftBlockHazard.Cactus), TeleportBlockKind.Cactus },
