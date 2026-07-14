@@ -4,31 +4,46 @@ public sealed class TerrainChunkExplorationScheduler
 {
     private readonly LinkedList<TerrainChunkCoordinate> _pending = new();
     private readonly Dictionary<TerrainChunkCoordinate, LinkedListNode<TerrainChunkCoordinate>> _nodes = new();
-    private TerrainChunkCoordinate? _current;
+    private readonly HashSet<TerrainChunkCoordinate> _visible = [];
+    private TerrainChunkCoordinate? _center;
 
     public int PendingCount => _pending.Count;
 
     public bool ObservePlayerPosition(int worldX, int worldZ)
     {
         var chunk = TerrainChunkCoordinate.FromWorld(worldX, worldZ);
-        if (_current is TerrainChunkCoordinate current && current == chunk)
-        {
-            return false;
-        }
+        var changed = !_visible.SetEquals([chunk]);
 
-        _current = chunk;
-        if (_nodes.TryGetValue(chunk, out var existingNode))
-        {
-            _pending.Remove(existingNode);
-            _pending.AddFirst(existingNode);
-        }
-        else
-        {
-            var newNode = _pending.AddFirst(chunk);
-            _nodes.Add(chunk, newNode);
-        }
+        foreach (var leaving in _visible.Where(visibleChunk => visibleChunk != chunk).ToArray())
+            RemovePending(leaving);
 
-        return true;
+        if (!_visible.Contains(chunk))
+            EnqueueLast(chunk);
+
+        _visible.Clear();
+        _visible.Add(chunk);
+        _center = chunk;
+        MovePendingToFront(chunk);
+        return changed;
+    }
+
+    public bool ObserveFootprint(MinimapExplorationFootprint footprint)
+    {
+        ArgumentNullException.ThrowIfNull(footprint);
+        var nextVisible = footprint.ChunksNearestFirst.ToHashSet();
+        var changed = !_visible.SetEquals(nextVisible);
+
+        foreach (var leaving in _visible.Where(chunk => !nextVisible.Contains(chunk)).ToArray())
+            RemovePending(leaving);
+
+        foreach (var entering in footprint.ChunksNearestFirst.Where(chunk => !_visible.Contains(chunk)))
+            EnqueueLast(entering);
+
+        _visible.Clear();
+        _visible.UnionWith(nextVisible);
+        _center = footprint.CenterChunk;
+        MovePendingToFront(footprint.CenterChunk);
+        return changed;
     }
 
     public IReadOnlyList<TerrainChunkCoordinate> GetPendingAttempts(int maximumCount)
@@ -42,9 +57,9 @@ public sealed class TerrainChunkExplorationScheduler
 
         var attempts = new List<TerrainChunkCoordinate>(Math.Min(maximumCount, _pending.Count));
         LinkedListNode<TerrainChunkCoordinate>? currentNode = null;
-        if (_current is TerrainChunkCoordinate current)
+        if (_center is TerrainChunkCoordinate center)
         {
-            _nodes.TryGetValue(current, out currentNode);
+            _nodes.TryGetValue(center, out currentNode);
         }
 
         if (currentNode is not null)
@@ -78,7 +93,36 @@ public sealed class TerrainChunkExplorationScheduler
     {
         _pending.Clear();
         _nodes.Clear();
-        _current = null;
+        _visible.Clear();
+        _center = null;
+    }
+
+    private void EnqueueLast(TerrainChunkCoordinate chunk)
+    {
+        if (_nodes.ContainsKey(chunk))
+        {
+            return;
+        }
+
+        var node = _pending.AddLast(chunk);
+        _nodes.Add(chunk, node);
+    }
+
+    private void RemovePending(TerrainChunkCoordinate chunk)
+    {
+        if (_nodes.Remove(chunk, out var node))
+        {
+            _pending.Remove(node);
+        }
+    }
+
+    private void MovePendingToFront(TerrainChunkCoordinate chunk)
+    {
+        if (_nodes.TryGetValue(chunk, out var node))
+        {
+            _pending.Remove(node);
+            _pending.AddFirst(node);
+        }
     }
 
     private LinkedListNode<TerrainChunkCoordinate> FindFirstNonCurrentNode(

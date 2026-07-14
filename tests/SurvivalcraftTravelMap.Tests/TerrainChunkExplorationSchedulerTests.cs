@@ -6,142 +6,42 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class TerrainChunkExplorationSchedulerTests
 {
     [Fact]
-    public void Repeated_positions_in_one_chunk_enqueue_once()
+    public void First_observation_enqueues_the_full_footprint_center_first()
     {
         var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(8f, 8f, 64, 1f);
 
-        Assert.True(scheduler.ObservePlayerPosition(0, 0));
-        Assert.False(scheduler.ObservePlayerPosition(15, 15));
-
-        Assert.Equal(1, scheduler.PendingCount);
-        Assert.Equal([new TerrainChunkCoordinate(0, 0)], scheduler.GetPendingAttempts(4));
-    }
-
-    [Theory]
-    [InlineData(16, 15, 1, 0)]
-    [InlineData(15, 16, 0, 1)]
-    public void Crossing_one_boundary_enqueues_only_the_entered_chunk(
-        int worldX,
-        int worldZ,
-        int enteredX,
-        int enteredZ)
-    {
-        var scheduler = new TerrainChunkExplorationScheduler();
-        scheduler.ObservePlayerPosition(15, 15);
-
-        Assert.True(scheduler.ObservePlayerPosition(worldX, worldZ));
-
-        Assert.Equal(2, scheduler.PendingCount);
-        Assert.Equal(
-            [new TerrainChunkCoordinate(enteredX, enteredZ), new TerrainChunkCoordinate(0, 0)],
-            scheduler.GetPendingAttempts(4));
+        Assert.True(scheduler.ObserveFootprint(footprint));
+        Assert.Equal(footprint.ChunksNearestFirst.Count, scheduler.PendingCount);
+        Assert.Equal(footprint.ChunksNearestFirst.Take(4), scheduler.GetPendingAttempts(4));
     }
 
     [Fact]
-    public void Newly_entered_current_chunk_is_attempted_before_older_pending_chunks()
+    public void Same_footprint_does_not_reenqueue_completed_chunks_but_retries_pending_chunks()
     {
         var scheduler = new TerrainChunkExplorationScheduler();
-        scheduler.ObservePlayerPosition(0, 0);
-        scheduler.ObservePlayerPosition(16, 0);
+        var footprint = MinimapExplorationFootprint.Create(8f, 8f, 32, 1f);
+        scheduler.ObserveFootprint(footprint);
+        var completed = footprint.CenterChunk;
+        scheduler.MarkCompleted(completed);
 
-        var attempts = scheduler.GetPendingAttempts(2);
-
-        Assert.Equal(
-            [new TerrainChunkCoordinate(1, 0), new TerrainChunkCoordinate(0, 0)],
-            attempts);
+        Assert.False(scheduler.ObserveFootprint(footprint));
+        Assert.DoesNotContain(completed, scheduler.GetPendingAttempts(32));
+        Assert.Equal(footprint.ChunksNearestFirst.Count - 1, scheduler.PendingCount);
     }
 
     [Fact]
-    public void Reentered_pending_chunk_moves_back_to_the_front()
+    public void Leaving_removes_pending_chunks_and_reentering_enqueues_them_again()
     {
         var scheduler = new TerrainChunkExplorationScheduler();
-        scheduler.ObservePlayerPosition(0, 0);
-        scheduler.ObservePlayerPosition(16, 0);
-        scheduler.ObservePlayerPosition(32, 0);
+        var first = MinimapExplorationFootprint.Create(8f, 8f, 16, 1f);
+        var second = MinimapExplorationFootprint.Create(40f, 8f, 16, 1f);
+        scheduler.ObserveFootprint(first);
+        scheduler.ObserveFootprint(second);
 
-        scheduler.ObservePlayerPosition(0, 0);
-
-        Assert.Equal(
-            [
-                new TerrainChunkCoordinate(0, 0),
-                new TerrainChunkCoordinate(2, 0),
-                new TerrainChunkCoordinate(1, 0),
-            ],
-            scheduler.GetPendingAttempts(4));
-    }
-
-    [Fact]
-    public void Current_chunk_is_retried_while_older_chunks_advance_round_robin()
-    {
-        var scheduler = new TerrainChunkExplorationScheduler();
-        for (var chunkX = 0; chunkX < 6; chunkX++)
-        {
-            scheduler.ObservePlayerPosition(chunkX * TerrainChunkCoordinate.Size, 0);
-        }
-
-        var firstFrame = scheduler.GetPendingAttempts(4);
-        var secondFrame = scheduler.GetPendingAttempts(4);
-
-        Assert.Equal(
-            [
-                new TerrainChunkCoordinate(5, 0),
-                new TerrainChunkCoordinate(4, 0),
-                new TerrainChunkCoordinate(3, 0),
-                new TerrainChunkCoordinate(2, 0),
-            ],
-            firstFrame);
-        Assert.Equal(
-            [
-                new TerrainChunkCoordinate(5, 0),
-                new TerrainChunkCoordinate(1, 0),
-                new TerrainChunkCoordinate(0, 0),
-                new TerrainChunkCoordinate(4, 0),
-            ],
-            secondFrame);
-        Assert.Equal(6, scheduler.PendingCount);
-    }
-
-    [Fact]
-    public void MarkCompleted_removes_only_that_pending_chunk()
-    {
-        var scheduler = new TerrainChunkExplorationScheduler();
-        var older = new TerrainChunkCoordinate(0, 0);
-        var current = new TerrainChunkCoordinate(1, 0);
-        scheduler.ObservePlayerPosition(older.OriginX, older.OriginZ);
-        scheduler.ObservePlayerPosition(current.OriginX, current.OriginZ);
-
-        scheduler.MarkCompleted(current);
-
-        Assert.Equal(1, scheduler.PendingCount);
-        Assert.Equal([older], scheduler.GetPendingAttempts(4));
-    }
-
-    [Fact]
-    public void Returning_to_a_completed_chunk_enqueues_it_again()
-    {
-        var scheduler = new TerrainChunkExplorationScheduler();
-        var chunkA = new TerrainChunkCoordinate(0, 0);
-        var chunkB = new TerrainChunkCoordinate(1, 0);
-        scheduler.ObservePlayerPosition(chunkA.OriginX, chunkA.OriginZ);
-        scheduler.MarkCompleted(chunkA);
-        scheduler.ObservePlayerPosition(chunkB.OriginX, chunkB.OriginZ);
-
-        Assert.True(scheduler.ObservePlayerPosition(chunkA.OriginX, chunkA.OriginZ));
-
-        Assert.Equal(2, scheduler.PendingCount);
-        Assert.Equal([chunkA, chunkB], scheduler.GetPendingAttempts(2));
-    }
-
-    [Fact]
-    public void Uncompleted_chunk_stays_pending_across_repeated_attempts()
-    {
-        var scheduler = new TerrainChunkExplorationScheduler();
-        var chunk = new TerrainChunkCoordinate(-1, -1);
-        scheduler.ObservePlayerPosition(-1, -1);
-
-        Assert.Equal([chunk], scheduler.GetPendingAttempts(1));
-        Assert.Equal([chunk], scheduler.GetPendingAttempts(1));
-        Assert.Equal(1, scheduler.PendingCount);
+        Assert.DoesNotContain(first.CenterChunk, scheduler.GetPendingAttempts(32));
+        Assert.True(scheduler.ObserveFootprint(first));
+        Assert.Equal(first.CenterChunk, scheduler.GetPendingAttempts(1)[0]);
     }
 
     [Theory]
@@ -158,16 +58,59 @@ public sealed class TerrainChunkExplorationSchedulerTests
     }
 
     [Fact]
-    public void Clear_resets_current_identity_and_pending_state()
+    public void Pending_chunks_advance_round_robin_while_the_center_is_retried()
     {
         var scheduler = new TerrainChunkExplorationScheduler();
-        scheduler.ObservePlayerPosition(3, 4);
+        var footprint = MinimapExplorationFootprint.Create(8f, 8f, 32, 1f);
+        scheduler.ObserveFootprint(footprint);
+
+        var firstFrame = scheduler.GetPendingAttempts(4);
+        var secondFrame = scheduler.GetPendingAttempts(4);
+
+        Assert.Equal(
+            footprint.ChunksNearestFirst.Take(4),
+            firstFrame);
+        Assert.Equal(
+            footprint.ChunksNearestFirst.Take(1).Concat(footprint.ChunksNearestFirst.Skip(4).Take(3)),
+            secondFrame);
+        Assert.Equal(footprint.ChunksNearestFirst.Count, scheduler.PendingCount);
+    }
+
+    [Fact]
+    public void MarkCompleted_removes_only_that_pending_chunk()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(8f, 8f, 32, 1f);
+        scheduler.ObserveFootprint(footprint);
+        var completed = footprint.ChunksNearestFirst[1];
+
+        scheduler.MarkCompleted(completed);
+
+        Assert.Equal(footprint.ChunksNearestFirst.Count - 1, scheduler.PendingCount);
+        Assert.DoesNotContain(completed, scheduler.GetPendingAttempts(32));
+        Assert.Contains(footprint.CenterChunk, scheduler.GetPendingAttempts(32));
+    }
+
+    [Fact]
+    public void Clear_resets_visible_identity_and_pending_state()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(8f, 8f, 32, 1f);
+        scheduler.ObserveFootprint(footprint);
 
         scheduler.Clear();
 
         Assert.Equal(0, scheduler.PendingCount);
         Assert.Empty(scheduler.GetPendingAttempts(4));
-        Assert.True(scheduler.ObservePlayerPosition(3, 4));
-        Assert.Equal([new TerrainChunkCoordinate(0, 0)], scheduler.GetPendingAttempts(4));
+        Assert.True(scheduler.ObserveFootprint(footprint));
+        Assert.Equal(footprint.ChunksNearestFirst, scheduler.GetPendingAttempts(32));
+    }
+
+    [Fact]
+    public void Null_footprint_is_rejected()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+
+        Assert.Throws<ArgumentNullException>(() => scheduler.ObserveFootprint(null!));
     }
 }
