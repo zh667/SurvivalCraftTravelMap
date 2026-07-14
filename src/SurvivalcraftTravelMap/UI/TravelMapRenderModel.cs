@@ -45,6 +45,16 @@ public interface IExploredMapReadSession : IDisposable
     bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color);
 }
 
+internal interface IExploredMapAggregateReadSession
+{
+    bool TryGetExploredRegion(
+        int worldX,
+        int worldZ,
+        int width,
+        int height,
+        out Rgba32 color);
+}
+
 public interface ITravelMapRenderSink
 {
     void TerrainCell(MapTerrainCell cell);
@@ -194,7 +204,9 @@ public sealed class TileStoreMapPixelSource : IExploredMapTileIndexSource
         _snapshotLru.AddFirst(entry.Node);
     }
 
-    private sealed class ReadSession(TileStoreMapPixelSource source) : IExploredMapReadSession
+    private sealed class ReadSession(TileStoreMapPixelSource source) :
+        IExploredMapReadSession,
+        IExploredMapAggregateReadSession
     {
         private readonly Dictionary<(int X, int Z), MapTileSnapshot> _tiles = [];
         private readonly HashSet<(int X, int Z)> _unknownTiles = [];
@@ -223,6 +235,51 @@ public sealed class TileStoreMapPixelSource : IExploredMapTileIndexSource
             }
 
             return snapshot.TryGetPixel(coordinate.LocalX, coordinate.LocalZ, out color);
+        }
+
+        public bool TryGetExploredRegion(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out Rgba32 color)
+        {
+            var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
+            if (width <= 0
+                || height <= 0
+                || width > MapTile.Size - coordinate.LocalX
+                || height > MapTile.Size - coordinate.LocalZ)
+            {
+                color = default;
+                return false;
+            }
+
+            var key = (coordinate.TileX, coordinate.TileZ);
+            if (_unknownTiles.Contains(key))
+            {
+                color = default;
+                return false;
+            }
+
+            if (!_tiles.TryGetValue(key, out var snapshot))
+            {
+                if (!source._provider.IsKnownTile(key.TileX, key.TileZ))
+                {
+                    _unknownTiles.Add(key);
+                    color = default;
+                    return false;
+                }
+
+                snapshot = source.GetSnapshot(key.TileX, key.TileZ);
+                _tiles.Add(key, snapshot);
+            }
+
+            return snapshot.TryGetExploredRegion(
+                coordinate.LocalX,
+                coordinate.LocalZ,
+                width,
+                height,
+                out color);
         }
 
         public void Dispose()
@@ -332,13 +389,28 @@ public static class TravelMapRenderModel
                 var x = checked((int)(xIndex * stride));
                 processed++;
                 queries++;
-                if (!session.TryGetExploredPixel(x, z, out var color))
+                var aggregateWidth = Math.Min(stride, checked((int)((endX * stride) - x + 1)));
+                var aggregateHeight = Math.Min(stride, checked((int)((endZ * stride) - z + 1)));
+                var renderWidth = 1;
+                var renderHeight = 1;
+                var found = stride > 1
+                    && session is IExploredMapAggregateReadSession aggregateSession
+                    ? aggregateSession.TryGetExploredRegion(
+                        x,
+                        z,
+                        renderWidth = aggregateWidth,
+                        renderHeight = aggregateHeight,
+                        out var color)
+                    : session.TryGetExploredPixel(x, z, out color);
+                if (!found)
                 {
                     continue;
                 }
 
                 var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
-                var screenMaximum = transform.WorldToScreen(new Vector2((double)x + 1d > int.MaxValue ? x : x + 1, (double)z + 1d > int.MaxValue ? z : z + 1));
+                var screenMaximum = transform.WorldToScreen(new Vector2(
+                    (long)x + renderWidth > int.MaxValue ? int.MaxValue : x + renderWidth,
+                    (long)z + renderHeight > int.MaxValue ? int.MaxValue : z + renderHeight));
                 sink.TerrainCell(new MapTerrainCell(
                     x,
                     z,
@@ -537,15 +609,28 @@ public static class TravelMapRenderModel
                     var x = (int)worldX;
                     processed++;
                     queries++;
-                    if (!session.TryGetExploredPixel(x, z, out var color))
+                    var aggregateWidth = Math.Min(pixelStride, range.EndX - x + 1);
+                    var aggregateHeight = Math.Min(pixelStride, range.EndZ - z + 1);
+                    var renderWidth = 1;
+                    var renderHeight = 1;
+                    var found = pixelStride > 1
+                        && session is IExploredMapAggregateReadSession aggregateSession
+                        ? aggregateSession.TryGetExploredRegion(
+                            x,
+                            z,
+                            renderWidth = aggregateWidth,
+                            renderHeight = aggregateHeight,
+                            out var color)
+                        : session.TryGetExploredPixel(x, z, out color);
+                    if (!found)
                     {
                         continue;
                     }
 
                     var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
                     var screenMaximum = transform.WorldToScreen(new Vector2(
-                        x < int.MaxValue ? x + 1 : x,
-                        z < int.MaxValue ? z + 1 : z));
+                        (long)x + renderWidth > int.MaxValue ? int.MaxValue : x + renderWidth,
+                        (long)z + renderHeight > int.MaxValue ? int.MaxValue : z + renderHeight));
                     sink.TerrainCell(new MapTerrainCell(
                         x,
                         z,
@@ -628,8 +713,6 @@ public static class TravelMapRenderModel
         var endX = Math.Min(tileMinimumX + MapTile.Size - 1L, (long)Math.Floor(maximumX));
         var startZ = Math.Max(tileMinimumZ, (long)Math.Ceiling(minimumZ));
         var endZ = Math.Min(tileMinimumZ + MapTile.Size - 1L, (long)Math.Floor(maximumZ));
-        startX = CeilingToStride(startX, stride);
-        startZ = CeilingToStride(startZ, stride);
         if (startX > endX || startZ > endZ)
         {
             return default;
@@ -643,17 +726,6 @@ public static class TravelMapRenderModel
             checked((int)startZ),
             checked((int)endZ),
             columns * rows);
-    }
-
-    private static long CeilingToStride(long value, int stride)
-    {
-        var remainder = value % stride;
-        if (remainder == 0)
-        {
-            return value;
-        }
-
-        return value >= 0 ? value + stride - remainder : value - remainder;
     }
 
     private readonly record struct TileSampleRange(

@@ -126,6 +126,118 @@ public sealed class TravelMapRenderBudgetTests
         Assert.InRange(cell.ScreenMaximum.Y - cell.ScreenMinimum.Y, 0f, (1f / 32f) + 0.001f);
     }
 
+    [Fact]
+    public void Indexed_stride_two_renders_a_fully_explored_tile_row_without_periodic_gaps()
+    {
+        var tile = new MapTile(0, 0);
+        tile.SetRegion(
+            0,
+            0,
+            MapTile.Size,
+            MapTile.Size,
+            Enumerable.Repeat(new Rgba32(20, 40, 60, 255), MapTile.Size * MapTile.Size).ToArray());
+        var source = new TileStoreMapPixelSource(new KnownTileProvider(tile, tileCount: 65));
+        var sink = new CapturingRenderSink();
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(new Vector2(2079.5f, 31.5f), 1f, new Vector2(4160f, 64f)),
+            1f,
+            sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        var firstTileRow = sink.Terrain
+            .Where(cell => cell.WorldZ == 0 && cell.WorldX is >= 0 and < MapTile.Size)
+            .OrderBy(cell => cell.WorldX)
+            .ToArray();
+        Assert.Equal(MapTile.Size / 2, firstTileRow.Length);
+        Assert.All(firstTileRow, cell =>
+        {
+            Assert.Equal(2f, cell.ScreenMaximum.X - cell.ScreenMinimum.X);
+            Assert.Equal(2f, cell.ScreenMaximum.Y - cell.ScreenMinimum.Y);
+        });
+        for (var index = 1; index < firstTileRow.Length; index++)
+        {
+            Assert.Equal(firstTileRow[index - 1].ScreenMaximum.X, firstTileRow[index].ScreenMinimum.X);
+        }
+    }
+
+    [Fact]
+    public void Indexed_aggregate_does_not_expand_when_any_cell_in_the_region_is_unknown()
+    {
+        var tile = CreateFullyExploredTile(new Rgba32(20, 40, 60, 255));
+        tile.SetPixel(1, 0, default);
+        var source = new TileStoreMapPixelSource(new KnownTileProvider(tile, tileCount: 65));
+        var sink = new CapturingRenderSink();
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(new Vector2(2079.5f, 31.5f), 1f, new Vector2(4160f, 64f)),
+            1f,
+            sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        Assert.DoesNotContain(sink.Terrain, cell => cell.WorldX == 0 && cell.WorldZ == 0);
+        var neighboringCell = Assert.Single(
+            sink.Terrain,
+            cell => cell.WorldX == 2 && cell.WorldZ == 0);
+        Assert.Equal(2f, neighboringCell.ScreenMaximum.X - neighboringCell.ScreenMinimum.X);
+    }
+
+    [Fact]
+    public void Indexed_partial_tile_edge_aggregate_covers_only_the_visible_cell()
+    {
+        var tile = CreateFullyExploredTile(new Rgba32(20, 40, 60, 255));
+        var source = new TileStoreMapPixelSource(new KnownTileProvider(tile, tileCount: 65));
+        var sink = new CapturingRenderSink();
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(new Vector2(63f, 63f), 1f, Vector2.One),
+            1f,
+            sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        var cell = Assert.Single(sink.Terrain);
+        Assert.Equal((63, 63), (cell.WorldX, cell.WorldZ));
+        Assert.Equal(1f, cell.ScreenMaximum.X - cell.ScreenMinimum.X);
+        Assert.Equal(1f, cell.ScreenMaximum.Y - cell.ScreenMinimum.Y);
+    }
+
+    [Fact]
+    public void Generic_aggregate_capability_renders_stride_two_continuously_and_tints_after_aggregation()
+    {
+        var source = new AggregateBudgetPixelSource(new Rgba32(101, 81, 61, 255));
+        var sink = new RowCapturingRenderSink(rowZ: 0);
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(Vector2.Zero, 1f, new Vector2(1024f, 513f)),
+            0.5f,
+            sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        Assert.Equal(0, source.PixelQueries);
+        Assert.NotEmpty(sink.Terrain);
+        Assert.All(sink.Terrain, cell => Assert.Equal(new Rgba32(50, 40, 30, 255), cell.Color));
+        for (var index = 1; index < sink.Terrain.Count; index++)
+        {
+            Assert.Equal(sink.Terrain[index - 1].ScreenMaximum.X, sink.Terrain[index].ScreenMinimum.X);
+        }
+    }
+
+    private static MapTile CreateFullyExploredTile(Rgba32 color)
+    {
+        var tile = new MapTile(0, 0);
+        tile.SetRegion(
+            0,
+            0,
+            MapTile.Size,
+            MapTile.Size,
+            Enumerable.Repeat(color, MapTile.Size * MapTile.Size).ToArray());
+        return tile;
+    }
+
     [Theory]
     [InlineData(float.MaxValue, float.MaxValue)]
     [InlineData(float.MinValue, float.MinValue)]
@@ -146,6 +258,58 @@ public sealed class TravelMapRenderBudgetTests
 
 public sealed class MapTileSnapshotTests
 {
+    [Fact]
+    public void Explored_region_returns_the_rounded_integer_average_of_all_rgba_channels()
+    {
+        var tile = new MapTile(0, 0);
+        tile.SetRegion(
+            2,
+            3,
+            2,
+            2,
+            [
+                new Rgba32(0, 10, 20, 40),
+                new Rgba32(10, 20, 30, 60),
+                new Rgba32(20, 30, 40, 80),
+                new Rgba32(31, 41, 51, 101),
+            ]);
+
+        var found = tile.CreateVersionedSnapshot().Snapshot.TryGetExploredRegion(
+            2,
+            3,
+            2,
+            2,
+            out var average);
+
+        Assert.True(found);
+        Assert.Equal(new Rgba32(15, 25, 35, 70), average);
+    }
+
+    [Fact]
+    public void Explored_region_is_unknown_when_even_a_non_origin_cell_is_unknown()
+    {
+        var tile = new MapTile(0, 0);
+        tile.SetPixel(0, 0, new Rgba32(20, 40, 60, 255));
+
+        Assert.False(
+            tile.CreateVersionedSnapshot().Snapshot.TryGetExploredRegion(0, 0, 2, 1, out _));
+    }
+
+    [Theory]
+    [InlineData(-1, 0, 1, 1)]
+    [InlineData(0, -1, 1, 1)]
+    [InlineData(0, 0, 0, 1)]
+    [InlineData(0, 0, 1, 0)]
+    [InlineData(63, 0, 2, 1)]
+    [InlineData(0, 63, 1, 2)]
+    public void Explored_region_rejects_invalid_bounds(int x, int z, int width, int height)
+    {
+        var snapshot = new MapTile(0, 0).CreateVersionedSnapshot().Snapshot;
+
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(
+            () => snapshot.TryGetExploredRegion(x, z, width, height, out _));
+    }
+
     [Fact]
     public void Transparent_pixels_from_an_old_tile_are_treated_as_unexplored()
     {
@@ -390,6 +554,53 @@ internal sealed class CapturingRenderSink : CountingRenderSink
     public override void TerrainCell(MapTerrainCell cell) => Terrain.Add(cell);
 }
 
+internal sealed class RowCapturingRenderSink(int rowZ) : CountingRenderSink
+{
+    public List<MapTerrainCell> Terrain { get; } = [];
+
+    public override void TerrainCell(MapTerrainCell cell)
+    {
+        if (cell.WorldZ == rowZ)
+        {
+            Terrain.Add(cell);
+        }
+    }
+}
+
+internal sealed class AggregateBudgetPixelSource(Rgba32 aggregateColor) : IExploredMapPixelSource
+{
+    public int PixelQueries { get; private set; }
+
+    public IExploredMapReadSession BeginReadSession() => new Session(this, aggregateColor);
+
+    private sealed class Session(AggregateBudgetPixelSource owner, Rgba32 aggregateColor) :
+        IExploredMapReadSession,
+        IExploredMapAggregateReadSession
+    {
+        public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
+        {
+            owner.PixelQueries++;
+            color = aggregateColor;
+            return true;
+        }
+
+        public bool TryGetExploredRegion(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out Rgba32 color)
+        {
+            color = aggregateColor;
+            return true;
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+}
+
 internal sealed class CountingTileProvider(MapTile tile) : IMapTileProvider
 {
     public int GetOrLoadCalls { get; private set; }
@@ -399,4 +610,14 @@ internal sealed class CountingTileProvider(MapTile tile) : IMapTileProvider
         GetOrLoadCalls++;
         return tile;
     }
+}
+
+internal sealed class KnownTileProvider(MapTile tile, int tileCount) : IMapTileProvider
+{
+    public MapTile GetOrLoad(int tileX, int tileZ) => tile;
+
+    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region, int maximumCount) =>
+        Enumerable.Range(0, Math.Min(tileCount, maximumCount))
+            .Select(tileX => new MapTileCoordinate(tileX, 0))
+            .ToArray();
 }

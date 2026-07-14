@@ -233,6 +233,7 @@ public sealed class MapTileSnapshot
 {
     private readonly byte[] _explored;
     private readonly byte[] _colors;
+    private readonly Lazy<RegionSums> _regionSums;
 
     internal MapTileSnapshot(int tileX, int tileZ, byte[] explored, byte[] colors)
     {
@@ -240,6 +241,7 @@ public sealed class MapTileSnapshot
         TileZ = tileZ;
         _explored = explored;
         _colors = colors;
+        _regionSums = new Lazy<RegionSums>(CreateRegionSums, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     public int TileX { get; }
@@ -259,6 +261,116 @@ public sealed class MapTileSnapshot
         }
 
         return MapTile.TryGetPixelCore(_explored, _colors, (z * MapTile.Size) + x, out color);
+    }
+
+    public bool TryGetExploredRegion(int x, int z, int width, int height, out Rgba32 color)
+    {
+        if ((uint)x >= MapTile.Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x));
+        }
+
+        if ((uint)z >= MapTile.Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(z));
+        }
+
+        if (width <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width));
+        }
+
+        if (height <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height));
+        }
+
+        var endX = checked(x + width);
+        var endZ = checked(z + height);
+        if (endX > MapTile.Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width));
+        }
+
+        if (endZ > MapTile.Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height));
+        }
+
+        if (width == 1 && height == 1)
+        {
+            return TryGetPixel(x, z, out color);
+        }
+
+        var sums = _regionSums.Value;
+        var pixelCount = checked(width * height);
+        if (RegionSum(sums.Explored, x, z, endX, endZ) != pixelCount)
+        {
+            color = default;
+            return false;
+        }
+
+        color = new Rgba32(
+            Average(RegionSum(sums.Red, x, z, endX, endZ), pixelCount),
+            Average(RegionSum(sums.Green, x, z, endX, endZ), pixelCount),
+            Average(RegionSum(sums.Blue, x, z, endX, endZ), pixelCount),
+            Average(RegionSum(sums.Alpha, x, z, endX, endZ), pixelCount));
+        return true;
+    }
+
+    private RegionSums CreateRegionSums()
+    {
+        var sums = new RegionSums();
+        for (var z = 0; z < MapTile.Size; z++)
+        {
+            for (var x = 0; x < MapTile.Size; x++)
+            {
+                var explored = MapTile.TryGetPixelCore(
+                    _explored,
+                    _colors,
+                    (z * MapTile.Size) + x,
+                    out var color);
+                SetIntegralValue(sums.Explored, x, z, explored ? 1 : 0);
+                SetIntegralValue(sums.Red, x, z, explored ? color.R : 0);
+                SetIntegralValue(sums.Green, x, z, explored ? color.G : 0);
+                SetIntegralValue(sums.Blue, x, z, explored ? color.B : 0);
+                SetIntegralValue(sums.Alpha, x, z, explored ? color.A : 0);
+            }
+        }
+
+        return sums;
+    }
+
+    private static void SetIntegralValue(int[] integral, int x, int z, int value)
+    {
+        var stride = MapTile.Size + 1;
+        var index = ((z + 1) * stride) + x + 1;
+        integral[index] = value
+            + integral[index - 1]
+            + integral[index - stride]
+            - integral[index - stride - 1];
+    }
+
+    private static int RegionSum(int[] integral, int startX, int startZ, int endX, int endZ)
+    {
+        var stride = MapTile.Size + 1;
+        return integral[(endZ * stride) + endX]
+            - integral[(startZ * stride) + endX]
+            - integral[(endZ * stride) + startX]
+            + integral[(startZ * stride) + startX];
+    }
+
+    private static byte Average(int sum, int count) => checked((byte)((sum + (count / 2)) / count));
+
+    private sealed class RegionSums
+    {
+        private const int ElementCount = (MapTile.Size + 1) * (MapTile.Size + 1);
+
+        public int[] Explored { get; } = new int[ElementCount];
+        public int[] Red { get; } = new int[ElementCount];
+        public int[] Green { get; } = new int[ElementCount];
+        public int[] Blue { get; } = new int[ElementCount];
+        public int[] Alpha { get; } = new int[ElementCount];
     }
 }
 
