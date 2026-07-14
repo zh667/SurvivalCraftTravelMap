@@ -426,7 +426,23 @@ public interface ICoordinateTeleportExecutor
     Task<TeleportResult> TeleportToWaypointAsync(Vector3 xyz, CancellationToken cancellationToken);
 }
 
-public sealed class SafeTeleportExecutor(SafeTeleportService service) : ICoordinateTeleportExecutor
+internal interface IGuardedCoordinateTeleportExecutor
+{
+    Task<TeleportResult> TeleportToSurfaceAsync(
+        int x,
+        int z,
+        Func<bool> commitGuard,
+        CancellationToken cancellationToken);
+
+    Task<TeleportResult> TeleportToWaypointAsync(
+        Vector3 xyz,
+        Func<bool> commitGuard,
+        CancellationToken cancellationToken);
+}
+
+public sealed class SafeTeleportExecutor(SafeTeleportService service) :
+    ICoordinateTeleportExecutor,
+    IGuardedCoordinateTeleportExecutor
 {
     private readonly SafeTeleportService _service = service ?? throw new ArgumentNullException(nameof(service));
 
@@ -435,6 +451,19 @@ public sealed class SafeTeleportExecutor(SafeTeleportService service) : ICoordin
 
     public Task<TeleportResult> TeleportToWaypointAsync(Vector3 xyz, CancellationToken cancellationToken) =>
         _service.TeleportToWaypointAsync(xyz, cancellationToken);
+
+    Task<TeleportResult> IGuardedCoordinateTeleportExecutor.TeleportToSurfaceAsync(
+        int x,
+        int z,
+        Func<bool> commitGuard,
+        CancellationToken cancellationToken) =>
+        _service.TeleportToSurfaceAsync(x, z, commitGuard, cancellationToken);
+
+    Task<TeleportResult> IGuardedCoordinateTeleportExecutor.TeleportToWaypointAsync(
+        Vector3 xyz,
+        Func<bool> commitGuard,
+        CancellationToken cancellationToken) =>
+        _service.TeleportToWaypointAsync(xyz, commitGuard, cancellationToken);
 }
 
 public sealed class CoordinateTeleportServerSession : IDisposable
@@ -476,9 +505,26 @@ public sealed class CoordinateTeleportServerSession : IDisposable
         }
     }
 
-    public async Task<CoordinateTeleportMessage> HandleAsync(
+    public Task<CoordinateTeleportMessage> HandleAsync(
         string senderPeerId,
         CoordinateTeleportMessage message,
+        CancellationToken cancellationToken) =>
+        HandleCoreAsync(senderPeerId, message, null, cancellationToken);
+
+    internal Task<CoordinateTeleportMessage> HandleBoundAsync(
+        string senderPeerId,
+        CoordinateTeleportMessage message,
+        Func<bool> commitGuard,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(commitGuard);
+        return HandleCoreAsync(senderPeerId, message, commitGuard, cancellationToken);
+    }
+
+    private async Task<CoordinateTeleportMessage> HandleCoreAsync(
+        string senderPeerId,
+        CoordinateTeleportMessage message,
+        Func<bool>? commitGuard,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -551,9 +597,16 @@ public sealed class CoordinateTeleportServerSession : IDisposable
                     cancellationToken,
                     _disconnect.Token,
                     deadline.Token);
-                var serviceResult = message.Kind == CoordinateTeleportMessageKind.SurfaceRequest
-                    ? await _executor.TeleportToSurfaceAsync(message.X, message.Z, linked.Token).ConfigureAwait(false)
-                    : await _executor.TeleportToWaypointAsync(message.Target, linked.Token).ConfigureAwait(false);
+                var serviceResult = commitGuard is null
+                    ? message.Kind == CoordinateTeleportMessageKind.SurfaceRequest
+                        ? await _executor.TeleportToSurfaceAsync(
+                            message.X,
+                            message.Z,
+                            linked.Token).ConfigureAwait(false)
+                        : await _executor.TeleportToWaypointAsync(
+                            message.Target,
+                            linked.Token).ConfigureAwait(false)
+                    : await ExecuteGuardedAsync(message, commitGuard, linked.Token).ConfigureAwait(false);
                 result = MapResult(serviceResult);
             }
         }
@@ -593,6 +646,29 @@ public sealed class CoordinateTeleportServerSession : IDisposable
         }
 
         return CoordinateTeleportMessage.Result(message.RequestId, result);
+    }
+
+    private Task<TeleportResult> ExecuteGuardedAsync(
+        CoordinateTeleportMessage message,
+        Func<bool> commitGuard,
+        CancellationToken cancellationToken)
+    {
+        if (_executor is not IGuardedCoordinateTeleportExecutor guardedExecutor)
+        {
+            throw new InvalidOperationException(
+                "Bound coordinate teleport requires an executor with an atomic commit guard.");
+        }
+
+        return message.Kind == CoordinateTeleportMessageKind.SurfaceRequest
+            ? guardedExecutor.TeleportToSurfaceAsync(
+                message.X,
+                message.Z,
+                commitGuard,
+                cancellationToken)
+            : guardedExecutor.TeleportToWaypointAsync(
+                message.Target,
+                commitGuard,
+                cancellationToken);
     }
 
     public void Disconnect() => Dispose();

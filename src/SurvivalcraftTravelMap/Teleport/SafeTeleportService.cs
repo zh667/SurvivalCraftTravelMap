@@ -12,7 +12,7 @@ public sealed class SafeTeleportService
     private readonly IPlayerMover _playerMover;
     private readonly IEntityCollisionQuery _collisionQuery;
     private readonly ITeleportClock _clock;
-    private readonly Action _onPositionCommitted;
+    private readonly ITeleportPositionCommitter _positionCommitter;
     private readonly Action<TeleportFailureDiagnostic> _reportFailure;
     private int _transactionActive;
 
@@ -27,8 +27,8 @@ public sealed class SafeTeleportService
             chunkLoader,
             playerMover,
             collisionQuery,
+            new DelegateTeleportPositionCommitter(static () => { }),
             clock,
-            static () => { },
             static _ => { })
     {
     }
@@ -45,8 +45,8 @@ public sealed class SafeTeleportService
             chunkLoader,
             playerMover,
             collisionQuery,
+            new DelegateTeleportPositionCommitter(onPositionCommitted),
             clock,
-            onPositionCommitted,
             static _ => { })
     {
     }
@@ -59,6 +59,25 @@ public sealed class SafeTeleportService
         ITeleportClock clock,
         Action onPositionCommitted,
         Action<TeleportFailureDiagnostic> reportFailure)
+        : this(
+            terrain,
+            chunkLoader,
+            playerMover,
+            collisionQuery,
+            new DelegateTeleportPositionCommitter(onPositionCommitted),
+            clock,
+            reportFailure)
+    {
+    }
+
+    internal SafeTeleportService(
+        ITerrainAccess terrain,
+        IChunkLoader chunkLoader,
+        IPlayerMover playerMover,
+        IEntityCollisionQuery collisionQuery,
+        ITeleportPositionCommitter positionCommitter,
+        ITeleportClock clock,
+        Action<TeleportFailureDiagnostic> reportFailure)
     {
         ArgumentNullException.ThrowIfNull(terrain);
         ArgumentNullException.ThrowIfNull(chunkLoader);
@@ -70,15 +89,23 @@ public sealed class SafeTeleportService
         _playerMover = playerMover;
         _collisionQuery = collisionQuery;
         _clock = clock;
-        _onPositionCommitted = onPositionCommitted ?? (static () => { });
+        _positionCommitter = positionCommitter ?? throw new ArgumentNullException(nameof(positionCommitter));
         _reportFailure = reportFailure ?? (static _ => { });
     }
 
-    public async Task<TeleportResult> TeleportToSurfaceAsync(
+    public Task<TeleportResult> TeleportToSurfaceAsync(
         int x,
         int z,
+        CancellationToken cancellationToken) =>
+        TeleportToSurfaceAsync(x, z, static () => true, cancellationToken);
+
+    internal async Task<TeleportResult> TeleportToSurfaceAsync(
+        int x,
+        int z,
+        Func<bool> commitGuard,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(commitGuard);
         cancellationToken.ThrowIfCancellationRequested();
         if (Interlocked.CompareExchange(ref _transactionActive, 1, 0) != 0)
         {
@@ -88,7 +115,12 @@ public sealed class SafeTeleportService
         var trace = new TeleportExecutionTrace();
         try
         {
-            return await TeleportToSurfaceCoreAsync(x, z, cancellationToken, trace).ConfigureAwait(false);
+            return await TeleportToSurfaceCoreAsync(
+                x,
+                z,
+                commitGuard,
+                cancellationToken,
+                trace).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -104,6 +136,7 @@ public sealed class SafeTeleportService
     private async Task<TeleportResult> TeleportToSurfaceCoreAsync(
         int x,
         int z,
+        Func<bool> commitGuard,
         CancellationToken cancellationToken,
         TeleportExecutionTrace trace)
     {
@@ -134,7 +167,11 @@ public sealed class SafeTeleportService
                 {
                     if (best.HasValue)
                     {
-                        return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
+                        return await MoveTransactionallyAsync(
+                            best.Value,
+                            commitGuard,
+                            cancellationToken,
+                            trace).ConfigureAwait(false);
                     }
 
                     currentDistance = distance;
@@ -167,17 +204,28 @@ public sealed class SafeTeleportService
 
             if (best.HasValue)
             {
-                return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
+                return await MoveTransactionallyAsync(
+                    best.Value,
+                    commitGuard,
+                    cancellationToken,
+                    trace).ConfigureAwait(false);
             }
 
             return TeleportResult.NoSafePosition;
         }
     }
 
-    public async Task<TeleportResult> TeleportToWaypointAsync(
+    public Task<TeleportResult> TeleportToWaypointAsync(
         Vector3 xyz,
+        CancellationToken cancellationToken) =>
+        TeleportToWaypointAsync(xyz, static () => true, cancellationToken);
+
+    internal async Task<TeleportResult> TeleportToWaypointAsync(
+        Vector3 xyz,
+        Func<bool> commitGuard,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(commitGuard);
         cancellationToken.ThrowIfCancellationRequested();
         if (Interlocked.CompareExchange(ref _transactionActive, 1, 0) != 0)
         {
@@ -187,7 +235,11 @@ public sealed class SafeTeleportService
         var trace = new TeleportExecutionTrace();
         try
         {
-            return await TeleportToWaypointCoreAsync(xyz, cancellationToken, trace).ConfigureAwait(false);
+            return await TeleportToWaypointCoreAsync(
+                xyz,
+                commitGuard,
+                cancellationToken,
+                trace).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -202,6 +254,7 @@ public sealed class SafeTeleportService
 
     private async Task<TeleportResult> TeleportToWaypointCoreAsync(
         Vector3 xyz,
+        Func<bool> commitGuard,
         CancellationToken cancellationToken,
         TeleportExecutionTrace trace)
     {
@@ -236,7 +289,11 @@ public sealed class SafeTeleportService
                 {
                     if (best.HasValue)
                     {
-                        return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
+                        return await MoveTransactionallyAsync(
+                            best.Value,
+                            commitGuard,
+                            cancellationToken,
+                            trace).ConfigureAwait(false);
                     }
 
                     currentDistance = distance;
@@ -258,7 +315,11 @@ public sealed class SafeTeleportService
 
             if (best.HasValue)
             {
-                return await MoveTransactionallyAsync(best.Value, cancellationToken, trace).ConfigureAwait(false);
+                return await MoveTransactionallyAsync(
+                    best.Value,
+                    commitGuard,
+                    cancellationToken,
+                    trace).ConfigureAwait(false);
             }
 
             return TeleportResult.NoSafePosition;
@@ -468,6 +529,7 @@ public sealed class SafeTeleportService
 
     private async Task<TeleportResult> MoveTransactionallyAsync(
         TeleportCandidate candidate,
+        Func<bool> commitGuard,
         CancellationToken cancellationToken,
         TeleportExecutionTrace trace)
     {
@@ -499,7 +561,7 @@ public sealed class SafeTeleportService
             }
 
             trace.Stage = TeleportExecutionStage.PositionSync;
-            _onPositionCommitted();
+            _positionCommitter.Commit(commitGuard);
             return TeleportResult.Success;
         }
         catch (Exception originalFailure)
@@ -694,6 +756,23 @@ public sealed class SafeTeleportService
     }
 
     private sealed class UnsafePostMoveValidationException : Exception;
+
+    private sealed class DelegateTeleportPositionCommitter(Action? commit) : ITeleportPositionCommitter
+    {
+        private readonly Action _commit = commit ?? (static () => { });
+
+        public void Commit(Func<bool> commitGuard)
+        {
+            ArgumentNullException.ThrowIfNull(commitGuard);
+            if (!commitGuard())
+            {
+                throw new OperationCanceledException(
+                    "The teleport commit guard rejected authoritative position synchronization.");
+            }
+
+            _commit();
+        }
+    }
 
     private sealed class TeleportExecutionTrace
     {

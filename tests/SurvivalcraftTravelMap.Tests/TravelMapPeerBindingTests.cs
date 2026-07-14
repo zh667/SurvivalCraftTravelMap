@@ -17,31 +17,37 @@ public sealed class TravelMapPeerBindingTests
         var token = Guid.NewGuid();
         var current = ValidState(client, playerData, player, playerGuid, token);
         using var removed = new CancellationTokenSource();
-        var binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token);
+        var binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token)!;
 
-        Assert.NotNull(binding);
         Assert.True(binding.IsCurrent);
 
         var reconnectedClient = new object();
         current = current with { OwnerClient = reconnectedClient };
         Assert.False(binding.IsCurrent);
 
-        current = ValidState(client, playerData, player, playerGuid, token) with
+        current = ValidState(client, playerData, player, playerGuid, token);
+        binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token)!;
+        current = current with
         {
             TokenId = Guid.NewGuid(),
         };
         Assert.False(binding.IsCurrent);
 
-        current = ValidState(client, playerData, new object(), playerGuid, token);
+        current = ValidState(client, playerData, player, playerGuid, token);
+        binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token)!;
+        current = current with { Player = new object() };
         Assert.False(binding.IsCurrent);
 
-        current = ValidState(client, playerData, player, playerGuid, token) with
+        current = ValidState(client, playerData, player, playerGuid, token);
+        binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token)!;
+        current = current with
         {
             IsConnected = false,
         };
         Assert.False(binding.IsCurrent);
 
         current = ValidState(client, playerData, player, playerGuid, token);
+        binding = TravelMapBoundPeer.TryCreate(() => current, player, removed.Token)!;
         removed.Cancel();
         Assert.False(binding.IsCurrent);
         Assert.True(binding.OperationToken.IsCancellationRequested);
@@ -204,6 +210,87 @@ public sealed class TravelMapPeerBindingTests
         Assert.Equal(CoordinateTeleportResultCode.Disconnected, response.ResultCode);
     }
 
+    [Fact]
+    public async Task Brief_observed_binding_invalidation_cannot_revalidate_before_the_next_poll()
+    {
+        var client = new object();
+        var playerData = new object();
+        var player = new object();
+        var playerGuid = Guid.NewGuid();
+        var token = Guid.NewGuid();
+        var original = ValidState(client, playerData, player, playerGuid, token);
+        var current = original;
+        TravelMapBoundPeer? binding = null;
+        var executor = new CallbackExecutor(() =>
+        {
+            current = current with { Player = new object() };
+            Assert.False(binding!.IsCurrent);
+            current = original;
+        });
+        binding = TravelMapBoundPeer.TryCreate(
+            () => current,
+            player,
+            CancellationToken.None)!;
+        using var session = new CoordinateTeleportServerSession(
+            binding.Identity,
+            executor,
+            new CoordinateTeleportServerOptions());
+
+        var response = await CoordinateTeleportBoundOperation.ExecuteAsync(
+            binding,
+            session,
+            CoordinateTeleportMessage.WaypointRequest(14, new Vector3(1f, 64f, 1f)),
+            CancellationToken.None);
+
+        Assert.Equal(CoordinateTeleportResultCode.Disconnected, response.ResultCode);
+    }
+
+    [Fact]
+    public async Task Binding_invalidated_at_commit_gate_rolls_back_before_authoritative_sync()
+    {
+        var client = new object();
+        var playerData = new object();
+        var player = new object();
+        var playerGuid = Guid.NewGuid();
+        var token = Guid.NewGuid();
+        var current = ValidState(client, playerData, player, playerGuid, token);
+        var binding = TravelMapBoundPeer.TryCreate(
+            () => current,
+            player,
+            CancellationToken.None)!;
+        var terrain = new FakeTeleportTerrain();
+        terrain.SetSafeFeet(1, 64, 1);
+        var mover = new FakePlayerMover();
+        var positionSyncCount = 0;
+        var committer = new InvalidatingPositionCommitter(
+            () => current = current with { OwnerClient = new object() },
+            () => positionSyncCount++);
+        var service = new SafeTeleportService(
+            terrain,
+            new FakeChunkLoader(),
+            mover,
+            new FakeEntityCollisionQuery(),
+            committer,
+            new FakeTeleportClock(),
+            static _ => { });
+        using var session = new CoordinateTeleportServerSession(
+            binding.Identity,
+            new SafeTeleportExecutor(service),
+            new CoordinateTeleportServerOptions());
+
+        var response = await CoordinateTeleportBoundOperation.ExecuteAsync(
+            binding,
+            session,
+            CoordinateTeleportMessage.WaypointRequest(15, new Vector3(1f, 64f, 1f)),
+            CancellationToken.None);
+
+        Assert.Equal(CoordinateTeleportResultCode.Disconnected, response.ResultCode);
+        Assert.Single(mover.Movements);
+        Assert.Single(mover.RestoredSnapshots);
+        Assert.Equal(mover.Snapshot.Position, mover.RestoredSnapshots[0].Position);
+        Assert.Equal(0, positionSyncCount);
+    }
+
     private static TravelMapPeerState ValidState(
         object client,
         object playerData,
@@ -221,7 +308,9 @@ public sealed class TravelMapPeerBindingTests
             7,
             true);
 
-    private sealed class CancellationGateExecutor : ICoordinateTeleportExecutor
+    private sealed class CancellationGateExecutor :
+        ICoordinateTeleportExecutor,
+        IGuardedCoordinateTeleportExecutor
     {
         internal TaskCompletionSource Entered { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -241,6 +330,17 @@ public sealed class TravelMapPeerBindingTests
             Vector3 xyz,
             CancellationToken cancellationToken) => ExecuteAsync(cancellationToken);
 
+        Task<TeleportResult> IGuardedCoordinateTeleportExecutor.TeleportToSurfaceAsync(
+            int x,
+            int z,
+            Func<bool> commitGuard,
+            CancellationToken cancellationToken) => ExecuteAsync(cancellationToken);
+
+        Task<TeleportResult> IGuardedCoordinateTeleportExecutor.TeleportToWaypointAsync(
+            Vector3 xyz,
+            Func<bool> commitGuard,
+            CancellationToken cancellationToken) => ExecuteAsync(cancellationToken);
+
         private async Task<TeleportResult> ExecuteAsync(CancellationToken cancellationToken)
         {
             Entered.TrySetResult();
@@ -255,6 +355,69 @@ public sealed class TravelMapPeerBindingTests
                 await Release.Task;
                 throw;
             }
+        }
+    }
+
+    private sealed class CallbackExecutor(Action callback) :
+        ICoordinateTeleportExecutor,
+        IGuardedCoordinateTeleportExecutor
+    {
+        private readonly Action _callback = callback;
+
+        public Task<TeleportResult> TeleportToSurfaceAsync(
+            int x,
+            int z,
+            CancellationToken cancellationToken) => ExecuteAsync();
+
+        public Task<TeleportResult> TeleportToWaypointAsync(
+            Vector3 xyz,
+            CancellationToken cancellationToken) => ExecuteAsync();
+
+        Task<TeleportResult> IGuardedCoordinateTeleportExecutor.TeleportToSurfaceAsync(
+            int x,
+            int z,
+            Func<bool> commitGuard,
+            CancellationToken cancellationToken) => ExecuteGuardedAsync(commitGuard);
+
+        Task<TeleportResult> IGuardedCoordinateTeleportExecutor.TeleportToWaypointAsync(
+            Vector3 xyz,
+            Func<bool> commitGuard,
+            CancellationToken cancellationToken) => ExecuteGuardedAsync(commitGuard);
+
+        private Task<TeleportResult> ExecuteAsync()
+        {
+            _callback();
+            return Task.FromResult(TeleportResult.Success);
+        }
+
+        private Task<TeleportResult> ExecuteGuardedAsync(Func<bool> commitGuard)
+        {
+            _callback();
+            if (!commitGuard())
+            {
+                throw new OperationCanceledException("The bound peer changed before commit.");
+            }
+
+            return Task.FromResult(TeleportResult.Success);
+        }
+    }
+
+    private sealed class InvalidatingPositionCommitter(
+        Action beforeGuard,
+        Action synchronizePosition) : ITeleportPositionCommitter
+    {
+        private readonly Action _beforeGuard = beforeGuard;
+        private readonly Action _synchronizePosition = synchronizePosition;
+
+        public void Commit(Func<bool> commitGuard)
+        {
+            _beforeGuard();
+            if (!commitGuard())
+            {
+                throw new OperationCanceledException("The bound peer changed before position commit.");
+            }
+
+            _synchronizePosition();
         }
     }
 

@@ -50,6 +50,31 @@ public sealed class SurvivalcraftPlayerMover : IPlayerMover
     });
 }
 
+internal sealed class GameUpdateTeleportPositionCommitter(
+    GameUpdateDispatcher dispatcher,
+    Action synchronizePosition) : ITeleportPositionCommitter
+{
+    private readonly GameUpdateDispatcher _dispatcher =
+        dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+    private readonly Action _synchronizePosition =
+        synchronizePosition ?? throw new ArgumentNullException(nameof(synchronizePosition));
+
+    public void Commit(Func<bool> commitGuard)
+    {
+        ArgumentNullException.ThrowIfNull(commitGuard);
+        _dispatcher.Invoke(() =>
+        {
+            if (!commitGuard())
+            {
+                throw new OperationCanceledException(
+                    "The network peer binding changed before authoritative position commit.");
+            }
+
+            _synchronizePosition();
+        });
+    }
+}
+
 public readonly record struct SurvivalcraftEngineMovementState(
     System.Numerics.Vector3 Position,
     System.Numerics.Quaternion Rotation,

@@ -85,6 +85,11 @@ public interface ITeleportClock
     Task WaitForNextUpdateAsync(CancellationToken cancellationToken);
 }
 
+internal interface ITeleportPositionCommitter
+{
+    void Commit(Func<bool> commitGuard);
+}
+
 public sealed class TeleportRollbackException : Exception
 {
     public TeleportRollbackException(Exception originalFailure, Exception restoreFailure)

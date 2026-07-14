@@ -28,6 +28,7 @@ internal sealed class TravelMapBoundPeer
     private readonly Func<TravelMapPeerState> _currentState;
     private readonly TravelMapPeerState _boundState;
     private readonly object _expectedPlayer;
+    private int _invalidated;
 
     private TravelMapBoundPeer(
         Func<TravelMapPeerState> currentState,
@@ -50,19 +51,29 @@ internal sealed class TravelMapBoundPeer
     {
         get
         {
-            if (OperationToken.IsCancellationRequested)
+            if (Volatile.Read(ref _invalidated) != 0)
             {
                 return false;
             }
 
+            var matches = false;
             try
             {
-                return Matches(_currentState(), _boundState, _expectedPlayer);
+                matches = !OperationToken.IsCancellationRequested
+                    && Matches(_currentState(), _boundState, _expectedPlayer);
             }
             catch
             {
+                matches = false;
+            }
+
+            if (!matches)
+            {
+                Interlocked.Exchange(ref _invalidated, 1);
                 return false;
             }
+
+            return Volatile.Read(ref _invalidated) == 0;
         }
     }
 
@@ -170,9 +181,10 @@ internal static class CoordinateTeleportBoundOperation
                 cancellationToken,
                 binding.OperationToken,
                 bindingInvalidated.Token);
-            var response = await session.HandleAsync(
+            var response = await session.HandleBoundAsync(
                 binding.Identity,
                 message,
+                () => binding.IsCurrent,
                 linked.Token).ConfigureAwait(false);
             return bindingInvalidated.IsCancellationRequested || !binding.IsCurrent
                 ? CoordinateTeleportMessage.Result(

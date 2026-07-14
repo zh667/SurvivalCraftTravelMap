@@ -498,10 +498,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _chunkLoader,
             playerMover,
             terrainAccess,
-            clock,
             WorkType == TravelMapWorkType.Server
-                ? SynchronizeAuthoritativePosition
-                : static () => { },
+                ? new GameUpdateTeleportPositionCommitter(
+                    _dispatcher,
+                    QueueAuthoritativePositionSync)
+                : new GameUpdateTeleportPositionCommitter(
+                    _dispatcher,
+                    static () => { }),
+            clock,
             TeleportDiagnosticReporter.Report);
         if (TravelMapRuntimePolicy.UsesAuthoritativeHostTeleport(RuntimeContext))
         {
@@ -513,15 +517,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
     }
 
-    private void SynchronizeAuthoritativePosition()
-    {
-        var dispatcher = _dispatcher
-            ?? throw new InvalidOperationException("The travel-map update dispatcher is unavailable.");
-        dispatcher.Invoke(() => CommonLib.Net.QueuePackage(
+    private void QueueAuthoritativePositionSync() =>
+        CommonLib.Net.QueuePackage(
             new ComponentPlayerPackage(
                 Player,
-                ComponentPlayerPackage.PlayerAction.PositionSet)));
-    }
+                ComponentPlayerPackage.PlayerAction.PositionSet));
 
     private static void ReportCoordinateTeleportResult(
         string route,

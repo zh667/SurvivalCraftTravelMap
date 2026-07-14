@@ -336,6 +336,39 @@ public sealed class AdapterContractTests
     }
 
     [Fact]
+    public async Task Teleport_position_commit_guard_and_sync_share_one_update_thread_fence()
+    {
+        using var dispatcher = new GameUpdateDispatcher();
+        var updateThread = Environment.CurrentManagedThreadId;
+        var guardThread = 0;
+        var syncThread = 0;
+        var order = new List<string>();
+        var committer = new GameUpdateTeleportPositionCommitter(
+            dispatcher,
+            () =>
+            {
+                syncThread = Environment.CurrentManagedThreadId;
+                order.Add("sync");
+            });
+        var worker = Task.Run(
+            () => committer.Commit(() =>
+            {
+                guardThread = Environment.CurrentManagedThreadId;
+                order.Add("guard");
+                return true;
+            }),
+            TestContext.Current.CancellationToken);
+        Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
+
+        dispatcher.Pump();
+        await worker;
+
+        Assert.Equal(updateThread, guardThread);
+        Assert.Equal(updateThread, syncThread);
+        Assert.Equal(["guard", "sync"], order);
+    }
+
+    [Fact]
     public async Task Update_dispatcher_next_update_wait_honors_cancellation()
     {
         using var dispatcher = new GameUpdateDispatcher();
