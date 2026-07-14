@@ -960,6 +960,15 @@ public sealed class TravelMapRenderModelTests
         Assert.Equal(TravelMapPalette.MiniMapPlayer, miniMapSink.PlayerColor);
     }
 
+    [Theory]
+    [InlineData(160, 15f)]
+    [InlineData(192, 18f)]
+    [InlineData(384, 24f)]
+    public void Shared_minimap_arrow_sizing_rule_is_stable(int mapSize, float expected)
+    {
+        Assert.Equal(expected, TravelMapRenderModel.MiniMapPlayerArrowSize(mapSize));
+    }
+
     [Fact]
     public void Coordinates_and_player_arrow_size_follow_the_design()
     {

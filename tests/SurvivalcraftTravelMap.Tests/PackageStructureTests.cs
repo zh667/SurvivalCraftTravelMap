@@ -423,6 +423,27 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
+    public void Large_map_uses_the_shared_minimap_player_marker_style()
+    {
+        var dialog = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "TravelMapDialog.cs"));
+        var dialogConstructor = ExtractBraceBlock(dialog, "public TravelMapDialog(");
+        var dialogUpdate = ExtractBraceBlock(dialog, "public override void Update()");
+
+        AssertCodeContains(dialogConstructor, "ShowSurveyCrosshair = false");
+        AssertCodeContains(dialogConstructor, "PlayerMarkerColor = TravelMapPalette.MiniMapPlayer");
+        AssertCodeContains(dialogConstructor, "DrawPlayerOutline = true");
+        AssertCodeContains(
+            dialogUpdate,
+            "_surface.PlayerArrowSize = TravelMapRenderModel.MiniMapPlayerArrowSize(_settings.MiniMapSize);");
+        AssertCodeDoesNotContain(dialogConstructor, "PlayerArrowSize = 32f");
+    }
+
+    [Fact]
     public void Large_map_notice_layer_is_above_settings_and_context_and_uses_one_timed_adaptive_toast()
     {
         var dialog = File.ReadAllText(Path.Combine(

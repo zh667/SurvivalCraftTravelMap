@@ -108,7 +108,10 @@ public sealed class TravelMapDialog : Dialog
         {
             AutoCenterOnPlayer = false,
             ShowWaypointLabels = true,
-            PlayerArrowSize = 32f,
+            ShowSurveyCrosshair = false,
+            PlayerMarkerColor = TravelMapPalette.MiniMapPlayer,
+            DrawPlayerOutline = true,
+            PlayerArrowSize = TravelMapRenderModel.MiniMapPlayerArrowSize(settings.MiniMapSize),
             Transform = new MapTransform(
                 new NVector2(playerPose().Position.X, playerPose().Position.Z),
                 settings.LargeMapBlocksPerPixel,
@@ -271,6 +274,9 @@ public sealed class TravelMapDialog : Dialog
         {
             _noticeHost.IsVisible = false;
         }
+
+        _surface.PlayerArrowSize = TravelMapRenderModel.MiniMapPlayerArrowSize(
+            _settings.MiniMapSize);
 
         if (_scaleSavePending && Time.FrameStartTime >= _scaleSaveTime)
         {
