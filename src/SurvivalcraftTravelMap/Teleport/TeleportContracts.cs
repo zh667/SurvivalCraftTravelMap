@@ -28,6 +28,16 @@ public enum TeleportBlockKind
     Damaging,
 }
 
+public enum TeleportCandidateRejectionReason
+{
+    OutOfWorld,
+    HarmfulContent,
+    NoSupport,
+    BlockedBody,
+    NonBreathableHead,
+    EntityCollision,
+}
+
 public readonly record struct PlayerMovementSnapshot(
     Vector3 Position,
     Quaternion Rotation,

@@ -6,6 +6,7 @@ namespace SurvivalcraftTravelMap.Teleport;
 public sealed class SafeTeleportService
 {
     private static readonly TimeSpan ChunkLoadTimeout = TimeSpan.FromSeconds(10);
+    private const int MaximumDecorationScanDepth = 8;
 
     private readonly ITerrainAccess _terrain;
     private readonly IChunkLoader _chunkLoader;
@@ -183,15 +184,12 @@ public sealed class SafeTeleportService
                     continue;
                 }
 
-                var groundY = GetSurfaceHeight(column.X, column.Z, cancellationToken);
-                var feetY = (long)groundY + 1L;
-                if (feetY is < int.MinValue or > int.MaxValue)
-                {
-                    continue;
-                }
-
-                var candidate = new TeleportCandidate(column.X, (int)feetY, column.Z);
-                if (IsSafe(candidate, cancellationToken))
+                var assessment = AssessSurfaceCandidate(
+                    column.X,
+                    column.Z,
+                    cancellationToken,
+                    out var candidate);
+                if (assessment.IsSafe)
                 {
                     var score = GetSurroundingSafetyScore(candidate, cancellationToken);
                     if (!best.HasValue || score > bestScore)
@@ -300,7 +298,7 @@ public sealed class SafeTeleportService
                     bestScore = (int.MinValue, int.MinValue);
                 }
 
-                if (IsSafe(candidate, cancellationToken))
+                if (AssessCandidate(candidate, cancellationToken).IsSafe)
                 {
                     var score = (
                         GetSurroundingSafetyScore(candidate, cancellationToken),
@@ -418,12 +416,55 @@ public sealed class SafeTeleportService
         return null;
     }
 
-    private bool IsSafe(TeleportCandidate candidate, CancellationToken cancellationToken)
+    private CandidateAssessment AssessSurfaceCandidate(
+        int x,
+        int z,
+        CancellationToken cancellationToken,
+        out TeleportCandidate candidate)
+    {
+        candidate = default;
+        var surfaceY = GetSurfaceHeight(x, z, cancellationToken);
+        for (var decorationDepth = 0; decorationDepth <= MaximumDecorationScanDepth; decorationDepth++)
+        {
+            var supportYLong = (long)surfaceY - decorationDepth;
+            if (supportYLong is < int.MinValue or > int.MaxValue)
+            {
+                return CandidateAssessment.Reject(TeleportCandidateRejectionReason.OutOfWorld);
+            }
+
+            var supportY = (int)supportYLong;
+            if (!IsCellInWorld(x, supportY, z, cancellationToken))
+            {
+                return CandidateAssessment.Reject(TeleportCandidateRejectionReason.OutOfWorld);
+            }
+
+            var supportKind = GetBlockKind(x, supportY, z, cancellationToken);
+            if (supportKind is TeleportBlockKind.Air or TeleportBlockKind.Passable)
+            {
+                continue;
+            }
+
+            var feetYLong = supportYLong + 1L;
+            if (feetYLong is < int.MinValue or > int.MaxValue)
+            {
+                return CandidateAssessment.Reject(TeleportCandidateRejectionReason.OutOfWorld);
+            }
+
+            candidate = new TeleportCandidate(x, (int)feetYLong, z);
+            return AssessCandidate(candidate, cancellationToken);
+        }
+
+        return CandidateAssessment.Reject(TeleportCandidateRejectionReason.NoSupport);
+    }
+
+    private CandidateAssessment AssessCandidate(
+        TeleportCandidate candidate,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (candidate.Y is not { } feetY)
         {
-            return false;
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.OutOfWorld);
         }
 
         var groundYLong = (long)feetY - 1L;
@@ -431,44 +472,56 @@ public sealed class SafeTeleportService
         if (groundYLong is < int.MinValue or > int.MaxValue
             || headYLong is < int.MinValue or > int.MaxValue)
         {
-            return false;
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.OutOfWorld);
         }
 
         var groundY = (int)groundYLong;
         var headY = (int)headYLong;
         if (!IsColumnInWorld(candidate.X, candidate.Z, cancellationToken))
         {
-            return false;
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.OutOfWorld);
         }
 
         if (!IsCellInWorld(candidate.X, groundY, candidate.Z, cancellationToken)
             || !IsCellInWorld(candidate.X, feetY, candidate.Z, cancellationToken)
             || !IsCellInWorld(candidate.X, headY, candidate.Z, cancellationToken))
         {
-            return false;
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.OutOfWorld);
         }
 
         var groundKind = GetBlockKind(candidate.X, groundY, candidate.Z, cancellationToken);
-        if (groundKind != TeleportBlockKind.SafeSolid)
-        {
-            return false;
-        }
-
         var feetKind = GetBlockKind(candidate.X, feetY, candidate.Z, cancellationToken);
-        if (feetKind != TeleportBlockKind.Air)
+        var headKind = GetBlockKind(candidate.X, headY, candidate.Z, cancellationToken);
+        if (TeleportBlockSafetyPolicy.IsHarmful(groundKind)
+            || TeleportBlockSafetyPolicy.IsHarmful(feetKind)
+            || TeleportBlockSafetyPolicy.IsHarmful(headKind))
         {
-            return false;
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.HarmfulContent);
         }
 
-        var headKind = GetBlockKind(candidate.X, headY, candidate.Z, cancellationToken);
-        if (headKind != TeleportBlockKind.Air)
+        if (!TeleportBlockSafetyPolicy.IsStableSupport(groundKind)
+            && !TeleportBlockSafetyPolicy.IsWater(groundKind))
         {
-            return false;
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.NoSupport);
+        }
+
+        if (!TeleportBlockSafetyPolicy.IsFeetPassable(feetKind))
+        {
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.BlockedBody);
+        }
+
+        if (!TeleportBlockSafetyPolicy.IsHeadBreathable(headKind))
+        {
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.NonBreathableHead);
         }
 
         var position = GetPosition(candidate.X, feetY, candidate.Z);
-        var hasCollision = HasBlockingCollisionExcludingPlayer(position, cancellationToken);
-        return !hasCollision;
+        if (HasBlockingCollisionExcludingPlayer(position, cancellationToken))
+        {
+            return CandidateAssessment.Reject(TeleportCandidateRejectionReason.EntityCollision);
+        }
+
+        return CandidateAssessment.Safe;
     }
 
     private int GetSurroundingSafetyScore(
@@ -500,14 +553,8 @@ public sealed class SafeTeleportService
 
                 var neighborX = (int)xLong;
                 var neighborZ = (int)zLong;
-                var groundY = (int)groundLong;
-                var headY = (int)headLong;
-                if (IsCellInWorld(neighborX, groundY, neighborZ, cancellationToken)
-                    && IsCellInWorld(neighborX, feetY, neighborZ, cancellationToken)
-                    && IsCellInWorld(neighborX, headY, neighborZ, cancellationToken)
-                    && GetBlockKind(neighborX, groundY, neighborZ, cancellationToken) == TeleportBlockKind.SafeSolid
-                    && GetBlockKind(neighborX, feetY, neighborZ, cancellationToken) == TeleportBlockKind.Air
-                    && GetBlockKind(neighborX, headY, neighborZ, cancellationToken) == TeleportBlockKind.Air)
+                var neighbor = new TeleportCandidate(neighborX, feetY, neighborZ);
+                if (AssessCandidate(neighbor, cancellationToken).IsSafe)
                 {
                     score++;
                 }
@@ -555,7 +602,7 @@ public sealed class SafeTeleportService
             trace.Stage = TeleportExecutionStage.PostMoveValidation;
             await _clock.WaitForNextUpdateAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            if (!IsSafe(candidate, cancellationToken))
+            if (!AssessCandidate(candidate, cancellationToken).IsSafe)
             {
                 throw new UnsafePostMoveValidationException();
             }
@@ -756,6 +803,16 @@ public sealed class SafeTeleportService
     }
 
     private sealed class UnsafePostMoveValidationException : Exception;
+
+    private readonly record struct CandidateAssessment(
+        bool IsSafe,
+        TeleportCandidateRejectionReason? Rejection)
+    {
+        public static CandidateAssessment Safe { get; } = new(true, null);
+
+        public static CandidateAssessment Reject(TeleportCandidateRejectionReason reason) =>
+            new(false, reason);
+    }
 
     private sealed class DelegateTeleportPositionCommitter(Action? commit) : ITeleportPositionCommitter
     {

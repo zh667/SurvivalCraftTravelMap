@@ -544,12 +544,8 @@ public sealed class SafeTeleportServiceTests
     [InlineData(TeleportBlockKind.Fire)]
     [InlineData(TeleportBlockKind.Cactus)]
     [InlineData(TeleportBlockKind.Spikes)]
-    [InlineData(TeleportBlockKind.Water)]
-    [InlineData(TeleportBlockKind.Fluid)]
-    [InlineData(TeleportBlockKind.Leaves)]
-    [InlineData(TeleportBlockKind.Falling)]
     [InlineData(TeleportBlockKind.Damaging)]
-    public async Task Hazardous_or_unstable_ground_is_rejected(TeleportBlockKind ground)
+    public async Task Hazardous_ground_is_rejected(TeleportBlockKind ground)
     {
         var context = new TeleportTestContext();
         context.Terrain.SetBlock(0, 64, 0, ground);
@@ -570,12 +566,10 @@ public sealed class SafeTeleportServiceTests
     [InlineData(TeleportBlockKind.Fire)]
     [InlineData(TeleportBlockKind.Cactus)]
     [InlineData(TeleportBlockKind.Spikes)]
-    [InlineData(TeleportBlockKind.Water)]
-    [InlineData(TeleportBlockKind.Fluid)]
     [InlineData(TeleportBlockKind.Leaves)]
     [InlineData(TeleportBlockKind.Falling)]
     [InlineData(TeleportBlockKind.Damaging)]
-    public async Task Both_player_cells_must_be_clear(TeleportBlockKind obstruction)
+    public async Task Collidable_or_harmful_player_cells_are_rejected(TeleportBlockKind obstruction)
     {
         foreach (var obstructedY in new[] { 65, 66 })
         {
@@ -591,6 +585,68 @@ public sealed class SafeTeleportServiceTests
             Assert.Equal(TeleportResult.NoSafePosition, result);
             Assert.Empty(context.Mover.Movements);
         }
+    }
+
+    [Theory]
+    [InlineData(TeleportBlockKind.SafeSolid)]
+    [InlineData(TeleportBlockKind.Leaves)]
+    [InlineData(TeleportBlockKind.Falling)]
+    public async Task Ordinary_collidable_surfaces_accept_waypoint_teleport(TeleportBlockKind ground)
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.SetBlock(0, 64, 0, ground);
+        context.Terrain.SetBlock(0, 65, 0, TeleportBlockKind.Air);
+        context.Terrain.SetBlock(0, 66, 0, TeleportBlockKind.Air);
+
+        var result = await context.Service.TeleportToWaypointAsync(
+            new Vector3(0f, 65f, 0f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Success, result);
+        Assert.Equal(new Vector3(0.5f, 65f, 0.5f), Assert.Single(context.Mover.Movements).Position);
+    }
+
+    [Fact]
+    public async Task Surface_search_steps_through_harmless_plants_to_real_ground()
+    {
+        var context = new TeleportTestContext();
+        context.Terrain.DefaultSurfaceHeight = 66;
+        context.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.SafeSolid);
+        context.Terrain.SetBlock(0, 65, 0, TeleportBlockKind.Passable);
+        context.Terrain.SetBlock(0, 66, 0, TeleportBlockKind.Passable);
+        context.Terrain.SetBlock(0, 67, 0, TeleportBlockKind.Air);
+
+        var result = await context.Service.TeleportToSurfaceAsync(
+            0,
+            0,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Success, result);
+        Assert.Equal(65f, Assert.Single(context.Mover.Movements).Position.Y);
+    }
+
+    [Fact]
+    public async Task Water_surface_is_allowed_only_with_breathable_head_space()
+    {
+        var safe = new TeleportTestContext();
+        safe.Terrain.DefaultSurfaceHeight = 64;
+        safe.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Water);
+        safe.Terrain.SetBlock(0, 65, 0, TeleportBlockKind.Air);
+        safe.Terrain.SetBlock(0, 66, 0, TeleportBlockKind.Air);
+        Assert.Equal(
+            TeleportResult.Success,
+            await safe.Service.TeleportToSurfaceAsync(0, 0, TestContext.Current.CancellationToken));
+
+        var submergedHead = new TeleportTestContext();
+        submergedHead.Terrain.MaxY = 66;
+        submergedHead.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Water);
+        submergedHead.Terrain.SetBlock(0, 65, 0, TeleportBlockKind.Water);
+        submergedHead.Terrain.SetBlock(0, 66, 0, TeleportBlockKind.Water);
+        Assert.Equal(
+            TeleportResult.NoSafePosition,
+            await submergedHead.Service.TeleportToWaypointAsync(
+                new Vector3(0f, 65f, 0f),
+                TestContext.Current.CancellationToken));
     }
 
     [Fact]
