@@ -128,9 +128,9 @@ SCTM 不读取 Mod 列表来统计数量，不建立扫描线程，不发送 Mod
 
 当前已知限制：全细节地图在 64 格瓦片接缝处的青色探索边界可能不连续，但瓦片像素、持久化和传送探索判定不受影响。小地图定位、entered-chunk 原子探索和集成主机传送修复已有自动测试覆盖，但尚未启动当前修复包进行游戏内复测。
 
-当前自动证据绑定源码 HEAD `b4f7d4ffa657daa767674e569d753338f903d84b`（提交主题 `feat: integrate adaptive minimap hud`）：Release 测试 `614/614`，warnings-as-errors 构建 `0 warnings / 0 errors`，封包校验为 `PACKAGE_OK`。从同一 HEAD 连续两次构建得到相同 package SHA-256 `698A5EAFBCF0F5506129A18AD522BF127A5363D21F695305B0F70409CC625BED` 和包内 DLL SHA-256 `9DFB375B4D5763B166D0FA654ABD8780E77F7C726512F1D8FFAF75C90136F48F`。隔离安装包 SHA-256 与 artifact 相同；受保护的主游戏 `34GPSFix.netmod` 前后均为 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。
+当前自动证据绑定源码 HEAD `5c3e38ddf777f4520f740a18fda1ccf7376ee856`（提交主题 `fix: preserve global map lod coverage`）：Release 测试 `642/642`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。从同一 clean HEAD 连续两次构建得到相同 package SHA-256 `492863FB137CB20FEE36FB7E351F5C711C2CB67D6F48079306FB67935DD2EC5D`（166181 bytes，精确 8 entries），包内 DLL 与 Release DLL SHA-256 均为 `1D4C36157AD4730A6E51D9C0C64E5ECFE2C55C04B3A75080A82EB1D640869593`（374784 bytes），每次封包校验均为 `PACKAGE_OK`。隔离安装包 SHA-256 与 artifact 相同；受保护的主游戏 `34GPSFix.netmod` 前后均为 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。
 
-隔离 smoke-game 已保留 World2 和旧 travel-map cache，并已准备 fresh-process 环境，但没有启动 GUI/native game。批准的 10 项游戏内矩阵全部为 `PENDING`；UI 缩放 `0.75 / 1.0 / 1.25`、16×16 区块完整揭示、World2 旧透明/partial cache 补全、地表和坐标点传送、失败回退及多人邀请都必须由用户实测。当前构建不得据此宣称游戏内 PASS、可公开分享或可发布；完整步骤见 [烟雾测试矩阵](smoke-test-2026-07-13.md)。
+隔离 smoke-game 已保留 World2（4 files）和旧 travel-map cache（8 个 `.sctm`），并已准备 fresh-process 环境，但没有启动 GUI/native game。批准的 10 项基础矩阵和 7 项公开分享前扩展矩阵（共 17 项）全部为 `PENDING`；UI 缩放 `0.75 / 1.0 / 1.25`、16×16 区块完整揭示、World2 旧透明/partial cache 补全、地表和坐标点传送、失败回退、运行模式/绑定同步及多人邀请都必须由用户实测。当前构建不得据此宣称游戏内 PASS、可公开分享或可发布；完整步骤见 [烟雾测试矩阵](smoke-test-2026-07-13.md)。
 
 ## 9. 公开发布与再分发前置检查
 

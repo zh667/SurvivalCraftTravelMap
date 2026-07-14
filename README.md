@@ -86,9 +86,9 @@ SCTM 不扫描、统计或上报已安装 Mod 的数量，也不包含旧的 Mod
 - 当前仅针对 Windows PC、Survivalcraft 2.4.40.6 与 NetMod API 1.44 构建。
 - 联机坐标传送要求服务器安装 SCTM；旧服务器只能使用其已有的邀请传送能力。
 - 全细节地图在 64 格瓦片接缝处，探索边界青线可能出现一小段不连续；探索数据本身不受影响。
-- 当前自动 release gate 绑定源码 HEAD `b4f7d4ffa657daa767674e569d753338f903d84b`（`feat: integrate adaptive minimap hud`）：Release 测试 `614/614`，warnings-as-errors 构建 `0 warnings / 0 errors`，`Verify-Package.ps1` 输出 `PACKAGE_OK`。同一 HEAD 连续两次构建的 package 与包内 DLL 均逐字节一致；当前 package SHA-256 为 `698A5EAFBCF0F5506129A18AD522BF127A5363D21F695305B0F70409CC625BED`，包内 DLL SHA-256 为 `9DFB375B4D5763B166D0FA654ABD8780E77F7C726512F1D8FFAF75C90136F48F`。
+- 当前自动 release gate 绑定源码 HEAD `5c3e38ddf777f4520f740a18fda1ccf7376ee856`（`fix: preserve global map lod coverage`）：Release 测试 `642/642`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。同一 clean HEAD 连续两次封包，每次 `Verify-Package.ps1` 均输出 `PACKAGE_OK`；两次 package SHA-256 都是 `492863FB137CB20FEE36FB7E351F5C711C2CB67D6F48079306FB67935DD2EC5D`（166181 bytes，精确 8 entries），包内 DLL 与 Release DLL 的 SHA-256 都是 `1D4C36157AD4730A6E51D9C0C64E5ECFE2C55C04B3A75080A82EB1D640869593`（374784 bytes），逐字节一致。
 - 当前包已按 exact paths 安装到 worktree 的隔离 smoke-game，artifact 与 installed SHA-256 相同；主游戏原 `34GPSFix.netmod` 始终保持 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。隔离 World2 和旧 travel-map cache 均保留，但尚未启动游戏。
-- 小地图逻辑坐标、entered-chunk 原子探索与集成主机传送链路均有自动测试覆盖，但不等于游戏内验收。批准的 10 项实机矩阵仍全部 `PENDING`；实际游戏内布局（含 UI 缩放 `0.75 / 1.0 / 1.25`）、World2 旧缓存补全、地表/坐标点/失败回退传送和多人邀请均须按 [烟雾测试清单](docs/smoke-test-2026-07-13.md) 由用户确认。
+- 小地图逻辑坐标、entered-chunk 原子探索、全局地图 LOD 与集成主机/联机传送链路均有自动测试覆盖，但不等于游戏内验收。批准的 10 项基础矩阵和 7 项公开分享前扩展矩阵（共 17 项）仍全部 `PENDING`；实际游戏内布局（含 UI 缩放 `0.75 / 1.0 / 1.25`）、World2 旧缓存补全、地表/坐标点/失败回退传送、运行模式/绑定同步和多人邀请均须按 [烟雾测试清单](docs/smoke-test-2026-07-13.md) 由用户确认。
 
 更完整的操作、故障恢复与测试步骤见 [用户指南](docs/user-guide.md)。
 

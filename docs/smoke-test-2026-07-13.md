@@ -42,25 +42,25 @@
 ## 当前 release/package/隔离部署证据
 
 - 执行日期：2026-07-14
-- 已测试源码 HEAD：`b4f7d4ffa657daa767674e569d753338f903d84b`
-- 提交证据：`b4f7d4ffa657daa767674e569d753338f903d84b`，`feat: integrate adaptive minimap hud`，作者 `zh667 <3257696116@qq.com>`，提交时间 `2026-07-14T10:44:30+09:00`
+- 已测试源码 HEAD：`5c3e38ddf777f4520f740a18fda1ccf7376ee856`
+- 提交证据：`5c3e38ddf777f4520f740a18fda1ccf7376ee856`，`fix: preserve global map lod coverage`，作者 `zh667 <3257696116@qq.com>`，提交时间 `2026-07-14T13:43:42+09:00`
 - 当前文档记录的是该源码 HEAD 的构建产物；后续仅文档提交不改变已测试 DLL/package 的源码输入。
 
 | 项目 | 状态 | 当前证据 |
 |---|---|---|
-| 完整 Release 测试 | PASS（自动） | `dotnet test SurvivalCraftTravelMap.sln -c Release -p:SurvivalcraftDir='E:\game\SurvivalcraftNet2.4\'`：614/614 通过，0 failed，0 skipped。 |
-| warnings-as-errors 构建 | PASS（自动） | `dotnet build SurvivalCraftTravelMap.sln -c Release -warnaserror -p:SurvivalcraftDir='E:\game\SurvivalcraftNet2.4\'`：0 warnings / 0 errors。 |
-| 当前封包结构 | PASS（自动） | 连续两次从同一 clean HEAD 构建，每次 `Verify-Package.ps1` 均输出 `PACKAGE_OK`。 |
-| 可复现 package | PASS（自动） | 两次 package SHA-256 均为 `698A5EAFBCF0F5506129A18AD522BF127A5363D21F695305B0F70409CC625BED`。 |
-| 可复现包内 DLL | PASS（自动） | 两次 `SurvivalcraftTravelMap.dll` SHA-256 均为 `9DFB375B4D5763B166D0FA654ABD8780E77F7C726512F1D8FFAF75C90136F48F`。 |
+| 完整 Release 测试 | PASS（自动） | `dotnet test SurvivalCraftTravelMap.sln -c Release -p:SurvivalcraftDir='E:\game\SurvivalcraftNet2.4\'`：642/642 通过，0 failed，0 skipped。 |
+| warnings-as-errors 构建 | PASS（自动） | `dotnet build SurvivalCraftTravelMap.sln -c Release -p:TreatWarningsAsErrors=true -p:SurvivalcraftDir='E:\game\SurvivalcraftNet2.4\' --no-restore`：0 warnings / 0 errors。 |
+| 当前封包结构 | PASS（自动） | 连续两次从同一 clean HEAD 构建，每次紧接运行 `Verify-Package.ps1` 均输出 `PACKAGE_OK`；精确 8-entry allowlist 为 DLL、manifest、XDB、调色表和 4 个 PNG，包中无游戏 DLL/SDK/source/debug 文件，也无 ID 60、`AntiCheatReportPackage`、Mod 数量上报或旧 marker。 |
+| 可复现 package | PASS（自动） | 两次 package SHA-256 均为 `492863FB137CB20FEE36FB7E351F5C711C2CB67D6F48079306FB67935DD2EC5D`，大小均为 166181 bytes。 |
+| 可复现包内 DLL | PASS（自动） | 两次包内 `SurvivalcraftTravelMap.dll` 与 Release DLL SHA-256 均为 `1D4C36157AD4730A6E51D9C0C64E5ECFE2C55C04B3A75080A82EB1D640869593`，大小均为 374784 bytes，逐字节一致。 |
 | 原始 34GPSFix 保护 | PASS（自动） | 所有构建、校验和隔离部署前后只读复核；主游戏 `E:\game\SurvivalcraftNet2.4\NetMods\34GPSFix.netmod` 始终为 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。 |
-| 隔离安装 | PASS（自动准备） | artifact 与 `.superpowers/smoke-game/NetMods/SurvivalcraftTravelMap.netmod` SHA-256 均为 `698A5EAFBCF0F5506129A18AD522BF127A5363D21F695305B0F70409CC625BED`；isolated `NetMods` 不含 `34GPSFix.netmod` 或 `CompassMenu.netmod`。 |
-| exact cache invalidation | PASS（自动准备） | 仅删除 isolated `ModsCache` 中 `34GPSFix.netmod`、`CompassMenu.netmod`、`SurvivalcraftTravelMap.netmod` 三个 exact entries。 |
+| 隔离安装 | PASS（自动准备） | artifact 与 `.superpowers/smoke-game/NetMods/SurvivalcraftTravelMap.netmod` SHA-256 均为 `492863FB137CB20FEE36FB7E351F5C711C2CB67D6F48079306FB67935DD2EC5D`；所有目标的绝对解析路径均在 isolated root 内；isolated `NetMods` 不含 `34GPSFix.netmod` 或 `CompassMenu.netmod`，二者仍在 `DisabledNetMods`。 |
+| exact cache invalidation | PASS（自动准备） | isolated `ModsCache/SurvivalcraftTravelMap.netmod` 在部署前已不存在，因此本轮无需删除缓存；未删除或重置 World2 和旧 travel-map `.sctm` 数据。 |
 | fresh-process 数据前提 | PASS（自动准备） | 部署前匹配的 Survivalcraft/smoke-game 进程为 0；isolated `Worlds/World2` 仍存在（4 files），旧 travel-map cache 仍存在（8 个 `.sctm`）。未删除或重置二者，也未启动 GUI/native game。 |
 
 ## 当前批准的 10 项游戏内矩阵
 
-以下 10 项全部是 `PENDING（未启动游戏）`，不能冒充 PASS。必须由用户从全新 isolated process 进入保留旧 travel-map cache 的 World2 实测；当前自动证据只证明构建、封包和隔离环境准备完成，不证明游戏内行为或可公开分享。
+以下 10 项与后续 7 项扩展矩阵共 17 项，全部是 `PENDING（未启动游戏）`，不能冒充 PASS。必须由用户从全新 isolated process 进入保留旧 travel-map cache 的 World2 实测；当前自动证据只证明构建、封包和隔离环境准备完成，不证明游戏内行为或可公开分享/可发布。
 
 | 场景 | 状态 | 最小复现步骤 | 通过标准 |
 |---|---|---|---|
