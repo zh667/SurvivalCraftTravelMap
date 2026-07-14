@@ -31,10 +31,44 @@ public sealed class AdapterContractTests
         { new(IsLeaves: true, IsCollidable: true), TeleportBlockKind.Leaves },
         { new(IsFalling: true, IsCollidable: true), TeleportBlockKind.Falling },
         { new(IsDamaging: true, IsCollidable: true), TeleportBlockKind.Damaging },
-        { new(Hazard: SurvivalcraftBlockHazard.Lava), TeleportBlockKind.Lava },
-        { new(Hazard: SurvivalcraftBlockHazard.Fire), TeleportBlockKind.Fire },
-        { new(Hazard: SurvivalcraftBlockHazard.Cactus), TeleportBlockKind.Cactus },
-        { new(Hazard: SurvivalcraftBlockHazard.Spikes), TeleportBlockKind.Spikes },
+        { new(IsLeaves: true), TeleportBlockKind.Passable },
+        { new(IsFalling: true), TeleportBlockKind.Passable },
+        {
+            new(IsAir: true, IsCollidable: true, IsFluid: true, IsLeaves: true, IsFalling: true, IsDamaging: true),
+            TeleportBlockKind.Damaging
+        },
+        {
+            new(IsAir: true, IsCollidable: true, IsFluid: true, IsLeaves: true, IsFalling: true),
+            TeleportBlockKind.Air
+        },
+        {
+            new(IsCollidable: true, IsFluid: true, IsLeaves: true, IsFalling: true),
+            TeleportBlockKind.Fluid
+        },
+        {
+            new(IsCollidable: true, IsLeaves: true, IsFalling: true),
+            TeleportBlockKind.Leaves
+        },
+        {
+            new(IsAir: true, IsCollidable: true, IsFluid: true, IsLeaves: true, IsFalling: true, IsDamaging: true,
+                Hazard: SurvivalcraftBlockHazard.Lava),
+            TeleportBlockKind.Lava
+        },
+        {
+            new(IsAir: true, IsCollidable: true, IsFluid: true, IsLeaves: true, IsFalling: true, IsDamaging: true,
+                Hazard: SurvivalcraftBlockHazard.Fire),
+            TeleportBlockKind.Fire
+        },
+        {
+            new(IsAir: true, IsCollidable: true, IsFluid: true, IsLeaves: true, IsFalling: true, IsDamaging: true,
+                Hazard: SurvivalcraftBlockHazard.Cactus),
+            TeleportBlockKind.Cactus
+        },
+        {
+            new(IsAir: true, IsCollidable: true, IsFluid: true, IsLeaves: true, IsFalling: true, IsDamaging: true,
+                Hazard: SurvivalcraftBlockHazard.Spikes),
+            TeleportBlockKind.Spikes
+        },
     };
 
     [Fact]

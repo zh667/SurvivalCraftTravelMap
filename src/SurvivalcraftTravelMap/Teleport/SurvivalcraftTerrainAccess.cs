@@ -79,8 +79,8 @@ public sealed class SurvivalcraftTerrainAccess : ITerrainAccess, IEntityCollisio
         _ when metadata.IsDamaging => TeleportBlockKind.Damaging,
         _ when metadata.IsAir => TeleportBlockKind.Air,
         _ when metadata.IsFluid => TeleportBlockKind.Fluid,
-        _ when metadata.IsLeaves => TeleportBlockKind.Leaves,
-        _ when metadata.IsFalling => TeleportBlockKind.Falling,
+        _ when metadata.IsLeaves && metadata.IsCollidable => TeleportBlockKind.Leaves,
+        _ when metadata.IsFalling && metadata.IsCollidable => TeleportBlockKind.Falling,
         _ when metadata.IsCollidable => TeleportBlockKind.SafeSolid,
         _ => TeleportBlockKind.Passable,
     };

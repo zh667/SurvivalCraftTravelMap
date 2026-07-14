@@ -5,28 +5,36 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TeleportBlockSafetyPolicyTests
 {
-    [Theory]
-    [InlineData(TeleportBlockKind.SafeSolid)]
-    [InlineData(TeleportBlockKind.Leaves)]
-    [InlineData(TeleportBlockKind.Falling)]
-    public void Ordinary_collidable_ground_is_stable_support(TeleportBlockKind kind) =>
-        Assert.True(TeleportBlockSafetyPolicy.IsStableSupport(kind));
+    public static TheoryData<TeleportBlockKind, bool, bool, bool, bool> SafetySemantics => new()
+    {
+        { TeleportBlockKind.Air, false, false, true, true },
+        { TeleportBlockKind.Passable, false, false, true, true },
+        { TeleportBlockKind.SafeSolid, true, false, false, false },
+        { TeleportBlockKind.Lava, false, false, false, false },
+        { TeleportBlockKind.Fire, false, false, false, false },
+        { TeleportBlockKind.Cactus, false, false, false, false },
+        { TeleportBlockKind.Spikes, false, false, false, false },
+        { TeleportBlockKind.Water, false, true, true, false },
+        { TeleportBlockKind.Fluid, false, true, true, false },
+        { TeleportBlockKind.Leaves, true, false, false, false },
+        { TeleportBlockKind.Falling, true, false, false, false },
+        { TeleportBlockKind.Damaging, false, false, false, false },
+    };
 
     [Theory]
-    [InlineData(TeleportBlockKind.Air)]
-    [InlineData(TeleportBlockKind.Passable)]
-    [InlineData(TeleportBlockKind.Water)]
-    [InlineData(TeleportBlockKind.Fluid)]
-    public void Harmless_noncollidable_content_is_feet_passable(TeleportBlockKind kind) =>
-        Assert.True(TeleportBlockSafetyPolicy.IsFeetPassable(kind));
-
-    [Theory]
-    [InlineData(TeleportBlockKind.Air, true)]
-    [InlineData(TeleportBlockKind.Passable, true)]
-    [InlineData(TeleportBlockKind.Water, false)]
-    [InlineData(TeleportBlockKind.Fluid, false)]
-    public void Head_must_remain_breathable(TeleportBlockKind kind, bool expected) =>
-        Assert.Equal(expected, TeleportBlockSafetyPolicy.IsHeadBreathable(kind));
+    [MemberData(nameof(SafetySemantics))]
+    public void Every_block_kind_has_exact_safety_semantics(
+        TeleportBlockKind kind,
+        bool stableSupport,
+        bool water,
+        bool feetPassable,
+        bool headBreathable)
+    {
+        Assert.Equal(stableSupport, TeleportBlockSafetyPolicy.IsStableSupport(kind));
+        Assert.Equal(water, TeleportBlockSafetyPolicy.IsWater(kind));
+        Assert.Equal(feetPassable, TeleportBlockSafetyPolicy.IsFeetPassable(kind));
+        Assert.Equal(headBreathable, TeleportBlockSafetyPolicy.IsHeadBreathable(kind));
+    }
 
     [Fact]
     public void Only_explicit_hazards_and_damaging_blocks_are_harmful()
@@ -45,10 +53,4 @@ public sealed class TeleportBlockSafetyPolicyTests
             Assert.Equal(harmful.Contains(kind), TeleportBlockSafetyPolicy.IsHarmful(kind));
         }
     }
-
-    [Theory]
-    [InlineData(TeleportBlockKind.Water)]
-    [InlineData(TeleportBlockKind.Fluid)]
-    public void Water_semantics_include_both_water_kinds(TeleportBlockKind kind) =>
-        Assert.True(TeleportBlockSafetyPolicy.IsWater(kind));
 }
