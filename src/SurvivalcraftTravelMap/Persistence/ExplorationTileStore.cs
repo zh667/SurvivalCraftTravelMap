@@ -14,6 +14,7 @@ public sealed class ExplorationTileStore
     private long _tileMaterializations;
     private long _fileProbeCount;
     private long _diskReadAttempts;
+    private long _mutationVersion;
     private bool _isUnderPressure;
 
     public ExplorationTileStore(
@@ -81,9 +82,31 @@ public sealed class ExplorationTileStore
         }
     }
 
-    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(
-        MapTileRegion region,
-        int maximumCount)
+    internal long MutationVersion
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _mutationVersion;
+            }
+        }
+    }
+
+    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region)
+    {
+        lock (_sync)
+        {
+            return _knownTiles
+                .Where(key => region.Contains(key.X, key.Z))
+                .OrderBy(key => key.Z)
+                .ThenBy(key => key.X)
+                .Select(key => new MapTileCoordinate(key.X, key.Z))
+                .ToArray();
+        }
+    }
+
+    public MapTileCatalog GetKnownTileCatalog(MapTileRegion region, int maximumCount)
     {
         if (maximumCount <= 0)
         {
@@ -92,55 +115,35 @@ public sealed class ExplorationTileStore
 
         lock (_sync)
         {
-            var smallCandidateSet = new List<TileKey>(maximumCount + 1);
+            var candidates = new List<TileKey>(Math.Min(maximumCount, _knownTiles.Count));
             foreach (var key in _knownTiles)
             {
-                if (region.Contains(key.X, key.Z) && smallCandidateSet.Count <= maximumCount)
-                {
-                    smallCandidateSet.Add(key);
-                }
-            }
-
-            if (smallCandidateSet.Count <= maximumCount)
-            {
-                return smallCandidateSet
-                    .OrderBy(key => key.Z)
-                    .ThenBy(key => key.X)
-                    .Select(key => new MapTileCoordinate(key.X, key.Z))
-                    .ToArray();
-            }
-
-            long bucketStride = 1;
-            while (BucketCount(region, bucketStride) > maximumCount)
-            {
-                bucketStride *= 2;
-            }
-
-            var buckets = new Dictionary<(long X, long Z), TileKey>();
-            foreach (var candidate in _knownTiles)
-            {
-                if (!region.Contains(candidate.X, candidate.Z))
+                if (!region.Contains(key.X, key.Z))
                 {
                     continue;
                 }
 
-                var bucket = (
-                    FloorDivide(candidate.X, bucketStride),
-                    FloorDivide(candidate.Z, bucketStride));
-                if (!buckets.TryGetValue(bucket, out var current)
-                    || candidate.Z < current.Z
-                    || (candidate.Z == current.Z && candidate.X < current.X))
+                if (candidates.Count == maximumCount)
                 {
-                    buckets[bucket] = candidate;
+                    return new MapTileCatalog(
+                        candidates
+                            .OrderBy(candidate => candidate.Z)
+                            .ThenBy(candidate => candidate.X)
+                            .Select(candidate => new MapTileCoordinate(candidate.X, candidate.Z))
+                            .ToArray(),
+                        IsTruncated: true);
                 }
+
+                candidates.Add(key);
             }
 
-            return buckets.Values
-                .OrderBy(key => key.Z)
-                .ThenBy(key => key.X)
-                .Take(maximumCount)
-                .Select(key => new MapTileCoordinate(key.X, key.Z))
-                .ToArray();
+            return new MapTileCatalog(
+                candidates
+                    .OrderBy(candidate => candidate.Z)
+                    .ThenBy(candidate => candidate.X)
+                    .Select(candidate => new MapTileCoordinate(candidate.X, candidate.Z))
+                    .ToArray(),
+                IsTruncated: false);
         }
     }
 
@@ -330,17 +333,6 @@ public sealed class ExplorationTileStore
         }
     }
 
-    private static long BucketCount(MapTileRegion region, long stride)
-    {
-        var columns = FloorDivide(region.MaximumX, stride) - FloorDivide(region.MinimumX, stride) + 1;
-        var rows = FloorDivide(region.MaximumZ, stride) - FloorDivide(region.MinimumZ, stride) + 1;
-        return columns * rows;
-    }
-
-    private static long FloorDivide(long value, long divisor) => value >= 0
-        ? value / divisor
-        : -(((-value) + divisor - 1) / divisor);
-
     private string GetPath(TileKey key) => Path.Combine(_directory, $"{key.X}_{key.Z}.sctm");
 
     private void Touch(CacheEntry entry)
@@ -362,6 +354,7 @@ public sealed class ExplorationTileStore
         {
             SetDirty(entry);
             _knownTiles.Add(key);
+            _mutationVersion++;
             entry.PinCount--;
             TrimCleanEntries();
         }
@@ -467,6 +460,10 @@ public sealed class ExplorationTileStore
 }
 
 public readonly record struct MapTileCoordinate(int X, int Z);
+
+public readonly record struct MapTileCatalog(
+    IReadOnlyList<MapTileCoordinate> Tiles,
+    bool IsTruncated);
 
 public readonly record struct MapTileRegion(int MinimumX, int MaximumX, int MinimumZ, int MaximumZ)
 {

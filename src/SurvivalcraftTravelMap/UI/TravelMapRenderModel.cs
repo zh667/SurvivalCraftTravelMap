@@ -122,23 +122,60 @@ internal interface IMapTileProvider
 
     bool IsKnownTile(int tileX, int tileZ) => true;
 
-    IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region, int maximumCount) => [];
+    IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region) => [];
+
+    MapTileCatalog GetKnownTileCatalog(MapTileRegion region, int maximumCount)
+    {
+        var tiles = GetKnownTiles(region);
+        return tiles.Count <= maximumCount
+            ? new MapTileCatalog(tiles, IsTruncated: false)
+            : new MapTileCatalog(tiles.Take(maximumCount).ToArray(), IsTruncated: true);
+    }
+
+    long MutationVersion => 0;
 }
 
 public interface IExploredMapTileIndexSource : IExploredMapPixelSource
 {
-    IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region, int maximumCount);
+    IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region);
 }
 
-public sealed class TileStoreMapPixelSource : IExploredMapTileIndexSource
+internal interface IExploredMapLodSource
 {
-    public const int MaximumTilesPerFrame = 128;
+    IExploredMapReadSession BeginLodReadSession(
+        IReadOnlyList<MapTileSamplePlan> plans,
+        int stride,
+        int maximumNewTiles);
+}
+
+internal interface IBoundedExploredMapTileIndexSource
+{
+    MapTileCatalog GetKnownTileCatalog(MapTileRegion region, int maximumCount);
+}
+
+internal readonly record struct MapTileSamplePlan(
+    MapTileCoordinate Tile,
+    int StartX,
+    int EndX,
+    int StartZ,
+    int EndZ,
+    long SampleCount);
+
+public sealed class TileStoreMapPixelSource :
+    IExploredMapTileIndexSource,
+    IExploredMapLodSource,
+    IBoundedExploredMapTileIndexSource
+{
+    public const int MaximumLodTileMaterializationsPerFrame = 512;
 
     private readonly object _sync = new();
     private readonly IMapTileProvider _provider;
     private readonly int _snapshotCapacity;
     private readonly Dictionary<(int X, int Z), SnapshotCacheEntry> _snapshotCache = [];
     private readonly LinkedList<(int X, int Z)> _snapshotLru = [];
+    private readonly Dictionary<LodCacheKey, LodCacheEntry> _lodCache = [];
+    private int _cachedLodSampleCount;
+    private long _lodMutationVersion;
 
     public TileStoreMapPixelSource(ExplorationTileStore store, int snapshotCapacity = 128)
         : this(new StoreTileProvider(store), snapshotCapacity)
@@ -158,10 +195,141 @@ public sealed class TileStoreMapPixelSource : IExploredMapTileIndexSource
 
     internal long SnapshotCloneCount { get; private set; }
 
+    internal int CachedLodSampleCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _cachedLodSampleCount;
+            }
+        }
+    }
+
     public IExploredMapReadSession BeginReadSession() => new ReadSession(this);
 
-    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region, int maximumCount) =>
-        _provider.GetKnownTiles(region, maximumCount);
+    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region) =>
+        _provider.GetKnownTiles(region);
+
+    MapTileCatalog IBoundedExploredMapTileIndexSource.GetKnownTileCatalog(
+        MapTileRegion region,
+        int maximumCount) => _provider.GetKnownTileCatalog(region, maximumCount);
+
+    IExploredMapReadSession IExploredMapLodSource.BeginLodReadSession(
+        IReadOnlyList<MapTileSamplePlan> plans,
+        int stride,
+        int maximumNewTiles)
+    {
+        ArgumentNullException.ThrowIfNull(plans);
+        if (stride <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(stride));
+        }
+
+        if (maximumNewTiles <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumNewTiles));
+        }
+
+        if (plans.Sum(plan => plan.SampleCount) > TravelMapRenderModel.MaximumTerrainSamplesPerFrame)
+        {
+            throw new ArgumentOutOfRangeException(nameof(plans));
+        }
+
+        lock (_sync)
+        {
+            RefreshLodGeneration();
+            var activeKeys = plans
+                .Select(plan => LodCacheKey.From(plan, stride))
+                .ToHashSet();
+            foreach (var stale in _lodCache.Keys.Where(key => !activeKeys.Contains(key)).ToArray())
+            {
+                _cachedLodSampleCount -= _lodCache[stale].SampleCount;
+                _lodCache.Remove(stale);
+            }
+        }
+
+        return new LodReadSession(this, plans, stride, maximumNewTiles);
+    }
+
+    private LodCacheEntry? GetOrBuildLodEntry(
+        MapTileSamplePlan plan,
+        int stride,
+        ref int remainingNewTiles)
+    {
+        lock (_sync)
+        {
+            RefreshLodGeneration();
+            var key = LodCacheKey.From(plan, stride);
+            if (_lodCache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+
+            if (remainingNewTiles == 0)
+            {
+                return null;
+            }
+
+            remainingNewTiles--;
+            var generation = _provider.MutationVersion;
+            var snapshot = GetSnapshot(plan.Tile.X, plan.Tile.Z);
+            var columns = checked(((plan.EndX - plan.StartX) / stride) + 1);
+            var rows = checked(((plan.EndZ - plan.StartZ) / stride) + 1);
+            var cells = new LodCell[checked(columns * rows)];
+            var index = 0;
+            for (long worldZ = plan.StartZ; worldZ <= plan.EndZ; worldZ += stride)
+            {
+                var localZ = TileCoordinate.FromWorld(0, checked((int)worldZ)).LocalZ;
+                for (long worldX = plan.StartX; worldX <= plan.EndX; worldX += stride)
+                {
+                    var localX = TileCoordinate.FromWorld(checked((int)worldX), 0).LocalX;
+                    var width = Math.Min(stride, plan.EndX - worldX + 1);
+                    var height = Math.Min(stride, plan.EndZ - worldZ + 1);
+                    var found = stride == 1
+                        ? snapshot.TryGetPixel(localX, localZ, out var color)
+                        : snapshot.TryGetExploredRegion(
+                            localX,
+                            localZ,
+                            checked((int)width),
+                            checked((int)height),
+                            out color);
+                    cells[index++] = new LodCell(found, color);
+                }
+            }
+
+            if (_provider.MutationVersion != generation)
+            {
+                RefreshLodGeneration();
+                return null;
+            }
+
+            var created = new LodCacheEntry(plan, stride, columns, cells);
+            if (_cachedLodSampleCount
+                > TravelMapRenderModel.MaximumTerrainSamplesPerFrame - created.SampleCount)
+            {
+                _lodCache.Clear();
+                _cachedLodSampleCount = 0;
+            }
+
+            _lodCache.Add(key, created);
+            _cachedLodSampleCount += created.SampleCount;
+            return created;
+        }
+    }
+
+    private void RefreshLodGeneration()
+    {
+        var generation = _provider.MutationVersion;
+        if (_lodMutationVersion == generation)
+        {
+            return;
+        }
+
+        _lodCache.Clear();
+        _cachedLodSampleCount = 0;
+        _lodMutationVersion = generation;
+    }
 
     private MapTileSnapshot GetSnapshot(int tileX, int tileZ)
     {
@@ -289,6 +457,58 @@ public sealed class TileStoreMapPixelSource : IExploredMapTileIndexSource
         }
     }
 
+    private sealed class LodReadSession(
+        TileStoreMapPixelSource source,
+        IReadOnlyList<MapTileSamplePlan> plans,
+        int stride,
+        int maximumNewTiles) :
+        IExploredMapReadSession,
+        IExploredMapAggregateReadSession
+    {
+        private readonly Dictionary<(int X, int Z), MapTileSamplePlan> _plans = plans.ToDictionary(
+            plan => (plan.Tile.X, plan.Tile.Z));
+        private int _remainingNewTiles = maximumNewTiles;
+
+        public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color) =>
+            TryGet(worldX, worldZ, 1, 1, out color);
+
+        public bool TryGetExploredRegion(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out Rgba32 color) => TryGet(worldX, worldZ, width, height, out color);
+
+        public void Dispose()
+        {
+            _plans.Clear();
+        }
+
+        private bool TryGet(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out Rgba32 color)
+        {
+            var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
+            if (!_plans.TryGetValue((coordinate.TileX, coordinate.TileZ), out var plan))
+            {
+                color = default;
+                return false;
+            }
+
+            var entry = source.GetOrBuildLodEntry(plan, stride, ref _remainingNewTiles);
+            if (entry is null)
+            {
+                color = default;
+                return false;
+            }
+
+            return entry.TryGet(worldX, worldZ, width, height, out color);
+        }
+    }
+
     private sealed class StoreTileProvider(ExplorationTileStore store) : IMapTileProvider
     {
         public ExplorationTileStore Store { get; } = store ?? throw new ArgumentNullException(nameof(store));
@@ -297,8 +517,71 @@ public sealed class TileStoreMapPixelSource : IExploredMapTileIndexSource
 
         public bool IsKnownTile(int tileX, int tileZ) => Store.ContainsKnownTile(tileX, tileZ);
 
-        public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region, int maximumCount) =>
-            Store.GetKnownTiles(region, maximumCount);
+        public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region) =>
+            Store.GetKnownTiles(region);
+
+        public MapTileCatalog GetKnownTileCatalog(MapTileRegion region, int maximumCount) =>
+            Store.GetKnownTileCatalog(region, maximumCount);
+
+        public long MutationVersion => Store.MutationVersion;
+    }
+
+    private readonly record struct LodCacheKey(
+        int TileX,
+        int TileZ,
+        int StartX,
+        int EndX,
+        int StartZ,
+        int EndZ,
+        int Stride)
+    {
+        public static LodCacheKey From(MapTileSamplePlan plan, int stride) => new(
+            plan.Tile.X,
+            plan.Tile.Z,
+            plan.StartX,
+            plan.EndX,
+            plan.StartZ,
+            plan.EndZ,
+            stride);
+    }
+
+    private readonly record struct LodCell(bool IsExplored, Rgba32 Color);
+
+    private sealed class LodCacheEntry(
+        MapTileSamplePlan plan,
+        int stride,
+        int columns,
+        LodCell[] cells)
+    {
+        public int SampleCount => cells.Length;
+
+        public bool TryGet(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out Rgba32 color)
+        {
+            var offsetX = worldX - plan.StartX;
+            var offsetZ = worldZ - plan.StartZ;
+            if (offsetX < 0
+                || offsetZ < 0
+                || worldX > plan.EndX
+                || worldZ > plan.EndZ
+                || offsetX % stride != 0
+                || offsetZ % stride != 0
+                || width != Math.Min(stride, plan.EndX - worldX + 1)
+                || height != Math.Min(stride, plan.EndZ - worldZ + 1))
+            {
+                color = default;
+                return false;
+            }
+
+            var index = checked(((offsetZ / stride) * columns) + (offsetX / stride));
+            var cell = cells[index];
+            color = cell.Color;
+            return cell.IsExplored;
+        }
     }
 
     private sealed class SnapshotCacheEntry(
@@ -317,6 +600,7 @@ public sealed class TileStoreMapPixelSource : IExploredMapTileIndexSource
 public static class TravelMapRenderModel
 {
     public const int MaximumTerrainSamplesPerFrame = 262_144;
+    public const int MaximumIndexedTileDescriptorsPerFrame = MaximumTerrainSamplesPerFrame;
 
     public static MapRenderStatistics RenderTerrain(
         IExploredMapPixelSource source,
@@ -592,11 +876,15 @@ public static class TravelMapRenderModel
             TileCoordinate.FromWorld((int)Math.Floor(maximumX), 0).TileX,
             TileCoordinate.FromWorld(0, (int)Math.Floor(minimumZ)).TileZ,
             TileCoordinate.FromWorld(0, (int)Math.Floor(maximumZ)).TileZ);
-        var tiles = source.GetKnownTiles(region, TileStoreMapPixelSource.MaximumTilesPerFrame);
-        if (tiles.Count == 0)
+        var catalog = source is IBoundedExploredMapTileIndexSource boundedSource
+            ? boundedSource.GetKnownTileCatalog(region, MaximumIndexedTileDescriptorsPerFrame)
+            : CreateBoundedCatalog(source.GetKnownTiles(region));
+        if (catalog.IsTruncated || catalog.Tiles.Count == 0)
         {
             return default;
         }
+
+        var tiles = catalog.Tiles;
 
         var pixelStride = 1;
         while ((long)tiles.Count * SamplesPerWholeTile(pixelStride) > MaximumTerrainSamplesPerFrame)
@@ -618,7 +906,12 @@ public static class TravelMapRenderModel
         var processed = 0L;
         var queries = 0;
         var primitives = 0;
-        using var session = source.BeginReadSession();
+        using var session = source is IExploredMapLodSource lodSource
+            ? lodSource.BeginLodReadSession(
+                sampleRanges,
+                pixelStride,
+                TileStoreMapPixelSource.MaximumLodTileMaterializationsPerFrame)
+            : source.BeginReadSession();
         foreach (var range in sampleRanges)
         {
             for (long worldZ = range.StartZ; worldZ <= range.EndZ; worldZ += pixelStride)
@@ -678,6 +971,13 @@ public static class TravelMapRenderModel
         return new MapRenderStatistics(queries, primitives, pixelStride);
     }
 
+    private static MapTileCatalog CreateBoundedCatalog(IReadOnlyList<MapTileCoordinate> tiles) =>
+        tiles.Count <= MaximumIndexedTileDescriptorsPerFrame
+            ? new MapTileCatalog(tiles, IsTruncated: false)
+            : new MapTileCatalog(
+                tiles.Take(MaximumIndexedTileDescriptorsPerFrame).ToArray(),
+                IsTruncated: true);
+
     private static long SamplesPerWholeTile(int stride)
     {
         var samplesPerAxis = ((MapTile.Size - 1) / stride) + 1;
@@ -719,7 +1019,7 @@ public static class TravelMapRenderModel
         }
     }
 
-    private static TileSampleRange CreateSampleRange(
+    private static MapTileSamplePlan CreateSampleRange(
         MapTileCoordinate tile,
         int stride,
         double minimumX,
@@ -740,20 +1040,14 @@ public static class TravelMapRenderModel
 
         var columns = ((endX - startX) / stride) + 1;
         var rows = ((endZ - startZ) / stride) + 1;
-        return new TileSampleRange(
+        return new MapTileSamplePlan(
+            tile,
             checked((int)startX),
             checked((int)endX),
             checked((int)startZ),
             checked((int)endZ),
             columns * rows);
     }
-
-    private readonly record struct TileSampleRange(
-        int StartX,
-        int EndX,
-        int StartZ,
-        int EndZ,
-        long SampleCount);
 }
 
 public readonly record struct MapRenderStatistics(int PixelQueries, int PrimitiveCount, int WorldStride)

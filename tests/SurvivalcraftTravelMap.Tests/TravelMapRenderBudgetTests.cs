@@ -40,12 +40,15 @@ public sealed class TravelMapRenderBudgetTests
     {
         using var directory = new TemporaryDirectory();
         var seed = new ExplorationTileStore(directory.Path, capacity: 512);
+        var colors = Enumerable.Repeat(
+            new Rgba32(10, 20, 30, 255),
+            MapTile.Size * MapTile.Size).ToArray();
         for (var tileZ = -7; tileZ < 8; tileZ++)
         {
             for (var tileX = -10; tileX < 10; tileX++)
             {
                 using var mutation = seed.AcquireMutation(tileX, tileZ);
-                mutation.Tile.SetPixel(0, 0, new Rgba32(10, 20, 30, 255));
+                mutation.Tile.SetRegion(0, 0, MapTile.Size, MapTile.Size, colors);
             }
         }
 
@@ -61,6 +64,11 @@ public sealed class TravelMapRenderBudgetTests
         var firstStatistics = TravelMapRenderModel.RenderTerrain(source, transform, 1f, firstSink);
         var firstFrameDiagnostics = store.Diagnostics;
         var firstFrameClones = source.SnapshotCloneCount;
+        var secondSink = new CapturingRenderSink();
+        var secondStatistics = TravelMapRenderModel.RenderTerrain(source, transform, 1f, secondSink);
+        var secondFrameDiagnostics = store.Diagnostics;
+        var secondFrameClones = source.SnapshotCloneCount;
+        var secondFrameCachedLodSamples = source.CachedLodSampleCount;
         TravelMapRenderModel.RenderTerrain(source, transform, 1f, new CountingRenderSink());
 
         Assert.Equal(300, store.Diagnostics.KnownTileCount);
@@ -73,21 +81,228 @@ public sealed class TravelMapRenderBudgetTests
             firstStatistics.PrimitiveCount,
             1,
             TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
-        Assert.InRange(
-            firstFrameDiagnostics.TileMaterializations,
-            1,
-            TileStoreMapPixelSource.MaximumTilesPerFrame);
+        Assert.Equal(300, firstFrameDiagnostics.TileMaterializations);
         Assert.Equal(
             firstFrameDiagnostics.TileMaterializations,
             firstFrameDiagnostics.FileProbeCount);
         Assert.Equal(
             firstFrameDiagnostics.TileMaterializations,
             firstFrameDiagnostics.DiskReadAttempts);
-        Assert.InRange(firstFrameClones, 1, TileStoreMapPixelSource.MaximumTilesPerFrame);
-        Assert.Equal(firstFrameDiagnostics.TileMaterializations, store.Diagnostics.TileMaterializations);
-        Assert.Equal(firstFrameDiagnostics.FileProbeCount, store.Diagnostics.FileProbeCount);
-        Assert.Equal(firstFrameDiagnostics.DiskReadAttempts, store.Diagnostics.DiskReadAttempts);
-        Assert.Equal(firstFrameClones, source.SnapshotCloneCount);
+        Assert.Equal(300, firstFrameClones);
+        Assert.NotEmpty(secondSink.Terrain);
+        Assert.InRange(
+            secondStatistics.PixelQueries,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            secondStatistics.PrimitiveCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.Equal(
+            300,
+            secondSink.Terrain
+                .Select(cell => TileCoordinate.FromWorld(cell.WorldX, cell.WorldZ))
+                .Select(coordinate => (coordinate.TileX, coordinate.TileZ))
+                .Distinct()
+                .Count());
+        Assert.Equal(300, secondFrameDiagnostics.TileMaterializations);
+        Assert.Equal(300, secondFrameDiagnostics.FileProbeCount);
+        Assert.Equal(300, secondFrameDiagnostics.DiskReadAttempts);
+        Assert.Equal(300, secondFrameClones);
+        Assert.Equal(secondFrameDiagnostics.TileMaterializations, store.Diagnostics.TileMaterializations);
+        Assert.Equal(secondFrameDiagnostics.FileProbeCount, store.Diagnostics.FileProbeCount);
+        Assert.Equal(secondFrameDiagnostics.DiskReadAttempts, store.Diagnostics.DiskReadAttempts);
+        Assert.Equal(secondFrameClones, source.SnapshotCloneCount);
+        Assert.InRange(store.Diagnostics.CachedTileCount, 1, store.Capacity);
+        Assert.InRange(
+            secondFrameCachedLodSamples,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.Equal(secondFrameCachedLodSamples, source.CachedLodSampleCount);
+    }
+
+    [Fact]
+    public async Task Production_store_lod_covers_all_129_contiguous_tiles_with_negative_unaligned_edges()
+    {
+        const int firstTileX = -64;
+        const int lastTileX = 64;
+        const int tileZ = -2;
+        const int tileCount = lastTileX - firstTileX + 1;
+        const int visibleStartX = (firstTileX * MapTile.Size) + 1;
+        const int visibleEndX = ((lastTileX + 1) * MapTile.Size) - 2;
+        const int visibleStartZ = (tileZ * MapTile.Size) + 1;
+        const int visibleEndZ = ((tileZ + 1) * MapTile.Size) - 2;
+        using var directory = new TemporaryDirectory();
+        var seed = new ExplorationTileStore(directory.Path, capacity: tileCount);
+        var colors = Enumerable.Repeat(
+            new Rgba32(20, 40, 60, 255),
+            MapTile.Size * MapTile.Size).ToArray();
+        for (var tileX = firstTileX; tileX <= lastTileX; tileX++)
+        {
+            using var mutation = seed.AcquireMutation(tileX, tileZ);
+            mutation.Tile.SetRegion(0, 0, MapTile.Size, MapTile.Size, colors);
+        }
+
+        await seed.FlushAsync(TestContext.Current.CancellationToken);
+        var store = new ExplorationTileStore(directory.Path, capacity: 128);
+        var source = new TileStoreMapPixelSource(store);
+        var sink = new RowCapturingRenderSink(visibleStartZ);
+        var transform = new MapTransform(
+            new Vector2(
+                (visibleStartX + visibleEndX) / 2f,
+                (visibleStartZ + visibleEndZ) / 2f),
+            1f,
+            new Vector2(
+                visibleEndX - visibleStartX,
+                visibleEndZ - visibleStartZ));
+
+        var statistics = TravelMapRenderModel.RenderTerrain(source, transform, 1f, sink);
+        var diagnostics = store.Diagnostics;
+
+        Assert.Equal(2, statistics.WorldStride);
+        Assert.Equal(tileCount, diagnostics.TileMaterializations);
+        Assert.Equal(tileCount, diagnostics.FileProbeCount);
+        Assert.Equal(tileCount, diagnostics.DiskReadAttempts);
+        Assert.Equal(tileCount, source.SnapshotCloneCount);
+        Assert.InRange(diagnostics.CachedTileCount, 1, store.Capacity);
+        Assert.InRange(
+            source.CachedLodSampleCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            statistics.PixelQueries,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            statistics.PrimitiveCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+
+        Assert.NotEmpty(sink.Terrain);
+        Assert.Equal(
+            transform.WorldToScreen(new Vector2(visibleStartX, visibleStartZ)).X,
+            sink.Terrain[0].ScreenMinimum.X);
+        Assert.Equal(
+            transform.WorldToScreen(new Vector2(visibleEndX + 1, visibleStartZ)).X,
+            sink.Terrain[^1].ScreenMaximum.X);
+        for (var index = 1; index < sink.Terrain.Count; index++)
+        {
+            Assert.Equal(sink.Terrain[index - 1].ScreenMaximum.X, sink.Terrain[index].ScreenMinimum.X);
+        }
+    }
+
+    [Fact]
+    public void Lod_cache_progressively_completes_513_tiles_with_bounded_builds_and_no_permanent_gaps()
+    {
+        const int tileCount = TileStoreMapPixelSource.MaximumLodTileMaterializationsPerFrame + 1;
+        var tile = CreateFullyExploredTile(new Rgba32(20, 40, 60, 255));
+        var provider = new KnownTileProvider(tile, tileCount);
+        var source = new TileStoreMapPixelSource(provider);
+        var transform = new MapTransform(
+            new Vector2(((tileCount * MapTile.Size) - 1) / 2f, (MapTile.Size - 1) / 2f),
+            1f,
+            new Vector2((tileCount * MapTile.Size) - 1, MapTile.Size - 1));
+
+        var firstStatistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            transform,
+            1f,
+            new CountingRenderSink());
+        var firstFrameCalls = provider.GetOrLoadCalls;
+        var secondSink = new CapturingRenderSink();
+        var secondStatistics = TravelMapRenderModel.RenderTerrain(source, transform, 1f, secondSink);
+        var secondFrameCalls = provider.GetOrLoadCalls;
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, new CountingRenderSink());
+
+        Assert.Equal(TileStoreMapPixelSource.MaximumLodTileMaterializationsPerFrame, firstFrameCalls);
+        Assert.Equal(tileCount, secondFrameCalls);
+        Assert.Equal(secondFrameCalls, provider.GetOrLoadCalls);
+        Assert.Equal(tileCount, source.SnapshotCloneCount);
+        Assert.InRange(
+            source.CachedLodSampleCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            firstStatistics.PixelQueries,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            secondStatistics.PixelQueries,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            secondStatistics.PrimitiveCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.Equal(
+            tileCount,
+            secondSink.Terrain
+                .Select(cell => TileCoordinate.FromWorld(cell.WorldX, cell.WorldZ).TileX)
+                .Distinct()
+                .Count());
+    }
+
+    [Fact]
+    public void Catalog_larger_than_the_one_command_per_tile_limit_terminates_without_materialization()
+    {
+        const int tileCount = TravelMapRenderModel.MaximumTerrainSamplesPerFrame + 1;
+        var provider = new KnownTileProvider(CreateFullyExploredTile(new Rgba32(20, 40, 60, 255)), tileCount);
+        var source = new TileStoreMapPixelSource(provider);
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(Vector2.Zero, 32f, new Vector2(1920f, 1080f)),
+            1f,
+            new CountingRenderSink());
+
+        Assert.Equal(default, statistics);
+        Assert.InRange(
+            provider.CatalogCoordinatesReturned,
+            0,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.Equal(0, provider.GetOrLoadCalls);
+        Assert.Equal(0, source.SnapshotCloneCount);
+        Assert.Equal(0, source.CachedLodSampleCount);
+    }
+
+    [Fact]
+    public void Production_lod_cache_invalidates_after_a_tile_mutation()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path, capacity: 128);
+        var firstColor = new Rgba32(20, 40, 60, 255);
+        var secondColor = new Rgba32(80, 100, 120, 255);
+        var firstColors = Enumerable.Repeat(firstColor, MapTile.Size * MapTile.Size).ToArray();
+        var secondColors = Enumerable.Repeat(secondColor, MapTile.Size * MapTile.Size).ToArray();
+        using (var mutation = store.AcquireMutation(0, 0))
+        {
+            mutation.Tile.SetRegion(0, 0, MapTile.Size, MapTile.Size, firstColors);
+        }
+
+        var source = new TileStoreMapPixelSource(store);
+        var transform = new MapTransform(
+            new Vector2((MapTile.Size - 1) / 2f),
+            1f,
+            new Vector2(MapTile.Size - 1));
+        var firstSink = new CapturingRenderSink();
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, firstSink);
+        using (var mutation = store.AcquireMutation(0, 0))
+        {
+            mutation.Tile.SetRegion(0, 0, MapTile.Size, MapTile.Size, secondColors);
+        }
+
+        var secondSink = new CapturingRenderSink();
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, secondSink);
+
+        Assert.NotEmpty(firstSink.Terrain);
+        Assert.All(firstSink.Terrain, cell => Assert.Equal(firstColor, cell.Color));
+        Assert.NotEmpty(secondSink.Terrain);
+        Assert.All(secondSink.Terrain, cell => Assert.Equal(secondColor, cell.Color));
+        Assert.Equal(2, source.SnapshotCloneCount);
+        Assert.InRange(
+            source.CachedLodSampleCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
     }
 
     [Theory]
@@ -763,10 +978,31 @@ internal sealed class CountingTileProvider(MapTile tile) : IMapTileProvider
 
 internal sealed class KnownTileProvider(MapTile tile, int tileCount) : IMapTileProvider
 {
-    public MapTile GetOrLoad(int tileX, int tileZ) => tile;
+    public int GetOrLoadCalls { get; private set; }
 
-    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region, int maximumCount) =>
-        Enumerable.Range(0, Math.Min(tileCount, maximumCount))
+    public int CatalogCoordinatesReturned { get; private set; }
+
+    public MapTile GetOrLoad(int tileX, int tileZ)
+    {
+        GetOrLoadCalls++;
+        return tile;
+    }
+
+    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region)
+    {
+        CatalogCoordinatesReturned = tileCount;
+        return Enumerable.Range(0, tileCount)
             .Select(tileX => new MapTileCoordinate(tileX, 0))
             .ToArray();
+    }
+
+    public MapTileCatalog GetKnownTileCatalog(MapTileRegion region, int maximumCount)
+    {
+        CatalogCoordinatesReturned = Math.Min(tileCount, maximumCount);
+        return new MapTileCatalog(
+            Enumerable.Range(0, CatalogCoordinatesReturned)
+                .Select(tileX => new MapTileCoordinate(tileX, 0))
+                .ToArray(),
+            IsTruncated: tileCount > maximumCount);
+    }
 }
