@@ -66,6 +66,37 @@ public sealed class ExplorationRecorderTests
     }
 
     [Fact]
+    public async Task Known_coverage_query_waits_for_cache_admission_without_loading_then_recovers()
+    {
+        using var directory = new TemporaryDirectory();
+        var seedStore = new ExplorationTileStore(directory.Path);
+        var seedRecorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1),
+            seedStore,
+            new Rgba32(10, 20, 30, 255));
+        Assert.Equal(
+            ExplorationRecordResult.Recorded,
+            seedRecorder.RecordChunk(new TerrainChunkCoordinate(0, 0)));
+        await seedStore.FlushAsync(TestContext.Current.CancellationToken);
+
+        var store = new ExplorationTileStore(directory.Path, capacity: 1);
+        using (var blocker = store.AcquireMutation(9, 9))
+        {
+            blocker.Tile.SetPixel(0, 0, new Rgba32(40, 50, 60, 255));
+            var diagnosticsBeforeQueries = store.Diagnostics;
+
+            Assert.False(store.IsRegionFullyExplored(0, 0, 0, 0, 16, 16));
+            Assert.False(store.IsRegionFullyExplored(0, 0, 0, 0, 16, 16));
+
+            Assert.Equal(diagnosticsBeforeQueries, store.Diagnostics);
+        }
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(store.IsRegionFullyExplored(0, 0, 0, 0, 16, 16));
+    }
+
+    [Fact]
     public void Chunk_coverage_uses_floor_tiles_for_negative_chunk_coordinates()
     {
         using var directory = new TemporaryDirectory();
@@ -89,12 +120,27 @@ public sealed class ExplorationRecorderTests
     [InlineData(0, 0, 1, 0)]
     [InlineData(63, 0, 2, 1)]
     [InlineData(0, 63, 1, 2)]
+    [InlineData(1, 0, int.MaxValue, 1)]
+    [InlineData(0, 1, 1, int.MaxValue)]
     public void Region_coverage_rejects_invalid_bounds(int x, int z, int width, int height)
     {
         var tile = new MapTile(0, 0);
 
         Assert.ThrowsAny<ArgumentOutOfRangeException>(
             () => tile.IsRegionFullyExplored(x, z, width, height));
+    }
+
+    [Fact]
+    public void Unknown_store_region_coverage_validates_arguments_before_catalog_fast_return()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path);
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => store.IsRegionFullyExplored(123, 456, 0, 0, int.MaxValue, 1));
+        Assert.Equal(0, store.Diagnostics.TileMaterializations);
+        Assert.Equal(0, store.Diagnostics.FileProbeCount);
+        Assert.Equal(0, store.Diagnostics.DiskReadAttempts);
     }
 
     [Fact]

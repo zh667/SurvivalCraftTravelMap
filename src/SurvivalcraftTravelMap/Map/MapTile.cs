@@ -131,18 +131,7 @@ public sealed class MapTile
 
     public bool IsRegionFullyExplored(int x, int z, int width, int height)
     {
-        if ((uint)x >= Size)
-            throw new ArgumentOutOfRangeException(nameof(x));
-        if ((uint)z >= Size)
-            throw new ArgumentOutOfRangeException(nameof(z));
-        if (width <= 0)
-            throw new ArgumentOutOfRangeException(nameof(width));
-        if (height <= 0)
-            throw new ArgumentOutOfRangeException(nameof(height));
-        if (checked(x + width) > Size)
-            throw new ArgumentOutOfRangeException(nameof(width));
-        if (checked(z + height) > Size)
-            throw new ArgumentOutOfRangeException(nameof(height));
+        ValidateRegion(x, z, width, height);
 
         lock (_sync)
         {
@@ -157,6 +146,29 @@ public sealed class MapTile
             }
 
             return true;
+        }
+    }
+
+    internal static void ValidateRegion(int x, int z, int width, int height)
+    {
+        if ((uint)x >= Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x));
+        }
+
+        if ((uint)z >= Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(z));
+        }
+
+        if (width <= 0 || width > Size - x)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width));
+        }
+
+        if (height <= 0 || height > Size - z)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height));
         }
     }
 
