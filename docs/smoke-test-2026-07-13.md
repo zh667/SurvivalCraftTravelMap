@@ -9,13 +9,14 @@
 ## 状态规则
 
 - `PASS（自动）`：已执行命令并保存可重复证据。
+- `PENDING（未启动游戏）`：当前修复包尚未启动对应游戏内场景，不得视为通过或 release 授权。
 - `待人工游戏内验证`：当前修复包尚未在该场景完成可见游戏 GUI 验证；不得视为通过。
 - `待第二轮实机复测`：旧候选包已复现问题，代码修复和专项测试已完成，但修复包尚未重新进入同一场景确认。
 - `FAIL`：已复现失败，必须记录日志和坐标。
 
 ## 自动集成结果（历史 RC）
 
-下表记录的是首次进入世界前的 RC 验证。实机诊断后的修复已使该包失效为历史候选，不能沿用下表的 414/414 或旧包 SHA-256 作为最终结果；当前修复版的自动验证和哈希记录见后面的“实机诊断记录”。
+下表记录的是首次进入世界前的 RC 验证。实机诊断后的修复已使该包失效为历史候选，不能沿用下表的 414/414 或旧包 SHA-256 作为最终结果；当前修复版的自动验证和哈希记录见后面的“当前 release/package/隔离部署证据”。
 
 | 项目 | 状态 | 复现与证据 |
 |---|---|---|
@@ -73,6 +74,20 @@
 | 8. 不安全/无位置回退 | PENDING（未启动游戏） | 选择故意不安全或无有效落点的目标。 | 玩家保持未移动，或已移动时完整回退且保持安全静止。 |
 | 9. 多人邀请图标与传送 | PENDING（未启动游戏） | 先以单人观察，再添加第二名玩家，打开图标并执行邀请传送。 | 单人隐藏邀请图标；第二名玩家出现后图标位于地图下方，邀请传送仍工作。 |
 | 10. 结果日志坐标保护 | PENDING（未启动游戏） | 完成正常地图/坐标点成功和失败操作，检查日志；内部强制失败仅采用自动测试证据。 | 正常结果日志不包含精确 map/waypoint target 坐标；强制内部失败的格式、阶段和脱敏路径由自动测试覆盖，不向 release DLL 注入故障。 |
+
+## 公开分享/release 前后续矩阵
+
+下表是对当前 10 项矩阵的 release 前扩展覆盖，不替代或缩减上面的 10 项。所有条目同样为 `PENDING（未启动游戏）`；只有逐项保留日志/截图和重启证据后才能改为 PASS。完成自动构建或当前 10 项中的一部分，均不能跳过本节或据此宣称可公开分享/release。
+
+| 扩展场景 | 状态 | 最小复现步骤 | 通过标准 |
+|---|---|---|---|
+| A. 正/负 chunk 与 64×64 tile 边界 | PENDING（未启动游戏） | 分别验证 `15→16`（chunk `0→1`）、`-1→-17`（chunk `-1→-2`）、`63→64`（tile `0→1`，chunk `3→4`）和 `-64→-65`（tile `-1→-2`，chunk `-4→-5`）；每次只让玩家进入目标 `16×16` 区块。 | 坐标使用向下取整语义；每次只揭示当前进入的完整 `16×16` 区块（256 像素），不揭示相邻区块；跨 `64×64` tile 边界后无镜像、错位、漏写或额外揭示。 |
+| B. 昼/暮/夜/黎明亮度 | PENDING（未启动游戏） | 在同一已探索位置依次观察正午、黄昏、深夜和黎明，并切换日夜明暗设置。 | terrain brightness 平滑变化且关闭设置后恢复 `1.0`；frame、玩家/坐标点 marker、文字与其他 UI 不被 terrain brightness 染色。 |
+| C. fresh restart 持久化 | PENDING（未启动游戏） | 在当前进程探索新区块、创建/修改 waypoints、保存全局 settings v2，并完成一次 World2 legacy repair；完全退出进程后从同一隔离副本重新启动。 | 探索、完整 XYZ waypoints、settings v2 与 World2 已修复 256 像素均在 fresh restart 后保留；显式 v1 迁移规则可追溯，future `>2` 文件字节不被覆盖。 |
+| D. terrain/safe-Y hazard 矩阵 | PENDING（未启动游戏） | 对平地、山坡/悬崖、树叶或固体顶部、洞穴/低顶、水、冰、深水和明确无安全点分别执行 surface 与 waypoint teleport。 | 可用目标在安全 Y 成功且无坠落/窒息；树叶、危险/流体表面或不足两格净空不作为落点；不可用目标不移动或 clean rollback，速度/坠落状态安全清零。 |
+| E. runtime/权限/同步矩阵 | PENDING（未启动游戏） | 分别运行 pure single/local、integrated host、dedicated server、remote client + new SCTM server；切换 surface/waypoint 服务器开关并以有权/无权玩家请求。 | 每种 runtime 只创建其应有 UI/服务；权限和服务器开关被权威执行；host/remote 成功结果与 rollback 均正确同步绑定玩家，不重复注册或跨玩家写位置。 |
+| F. legacy/unsupported remote 与 ID 41 | PENDING（未启动游戏） | 连接不支持 ID 61 的 legacy/unsupported remote server 请求 surface/waypoint teleport；随后以两名玩家验证旧 ID 41 邀请兼容流程。 | ID 61 不支持时客户端不误写本地位置并收到清晰失败/超时；ID 41 在既定邀请、接受/拒绝/超时兼容范围内工作；单人隐藏邀请 icon，多人时在地图下方显示。 |
+| G. fresh process/type-init 回归 | PENDING（未启动游戏） | 确认旧 isolated Survivalcraft 进程完全退出，再启动全新进程并首次执行会触发 `SurvivalcraftPlayerFacade` 的传送；不得以 DLL hot swap 代替重启。 | 旧进程缓存的 type-initialization failure 不被沿用；全新进程首次 surface/waypoint 路径返回明确成功或安全失败，而不是因旧类型初始化缓存产生 `InternalError`。 |
 
 ## 人工测试记录模板
 

@@ -4,6 +4,8 @@
 日期：2026-07-13  
 目标平台：Survivalcraft 联机版 2.4.40.6 / NetMod API 1.44 / Windows PC  
 
+> **2026-07-14 superseded note：** 本文保留 2026-07-13 获批时的历史正文。后续 [小地图、整区块探索与传送修复设计](2026-07-14-minimap-chunk-teleport-repair-design.md) 与 [adaptive minimap HUD 实现计划](../plans/2026-07-14-adaptive-minimap-hud.md) 仅将全局 `settings.json` 从本文所述 v1 更新为 `schemaVersion: 2`；地图瓦片格式、`waypoints.json`、`server-settings.json` 及其他 JSON/协议版本仍按本文各自约定。下文“所有 JSON 均包含 `schemaVersion: 1`”应按这一例外阅读，不应改写历史正文。
+
 ## 1. 项目目标
 
 构建一个独立、可维护的旅行地图 NetMod。提供小地图、玩家列表和邀请传送能力，删除 Mod 数量扫描与上报，新增以下能力：
@@ -200,6 +202,8 @@
 - 联机世界：规范化服务器主机名、端口和服务器世界标识组合后的 SHA-256 前 24 个十六进制字符。
 
 所有 JSON 均包含 `schemaVersion: 1`。未知更高版本只读保护，不覆盖原文件。
+
+> **2026-07-14 superseded note（全局设置例外）：** 当前全局 `settings.json` 为 v2。显式 v1 以 `MigratedPreviousSchema` 加载并重写 v2；仅显式 v1 `MiniMapSize=384` 一次迁移为 `192`，v1 `160 / 192 / 256 / 320` 保持不变。无版本 JSON 与 v2 `384` 不执行该尺寸迁移；`schemaVersion > 2` 全程只读并保持原文件字节不变。`waypoints.json`、`server-settings.json` 等其余 v1 JSON 不受此例外影响。
 
 ## 8. 日夜明暗
 

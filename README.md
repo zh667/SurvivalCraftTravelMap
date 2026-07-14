@@ -42,7 +42,7 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 
 所有路径均位于游戏的 `app:/SurvivalcraftTravelMap`：
 
-- 全局界面设置：`settings.json`（`schemaVersion: 1`；旧 `travel-map-settings.json` 会一次性迁移且保留原文件）
+- 全局界面设置：`settings.json`（当前 `schemaVersion: 2`；显式 v1 加载结果为 `MigratedPreviousSchema` 并重写为 v2，其中仅 v1 `MiniMapSize=384` 会一次改为 `192`，v1 的 `160 / 192 / 256 / 320` 保持不变；无版本 JSON 与 v2 的 `384` 不执行这项尺寸迁移；旧 `travel-map-settings.json` 仍会一次性迁移且保留原文件）
 - 每世界、每玩家地图：`maps/<world-key>/<player-guid>/tiles/*.sctm`
 - 每世界、每玩家坐标点：`maps/<world-key>/<player-guid>/waypoints.json`
 - 服务器开关：`server-settings.json`
@@ -53,7 +53,7 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 
 玩家离开后再次进入同一区块会重新调度并刷新完整 256 像素，因此 World2 等旧世界里已经存在的 partial legacy cache 会在重入时补全，无需删除地图目录。格式版本 1 将 `A=0` 保留给空气/不可用采样哨兵；旧缓存中“探索位已设置但颜色透明”的像素仍会自动按未探索处理。
 
-一般设置文件读取失败时会使用只读的安全默认设置继续初始化；检测到更高版本的 `settings.json` 时，本版本同样只在内存中使用安全默认值并提示一次，不会归一化、保存或覆盖原文件。地图已成功初始化后，若后续瓦片写入持续失败，缓存达到上限会暂停接收新区块探索并提示一次；已有脏瓦片继续保留和重试，成功刷新后自动恢复。
+一般设置文件读取失败时会使用只读的安全默认设置继续初始化；检测到 `schemaVersion > 2` 的 `settings.json` 时，本版本同样只在内存中使用安全默认值并提示一次，所有保存均被禁止，原文件字节保持不变。地图已成功初始化后，若后续瓦片写入持续失败，缓存达到上限会暂停接收新区块探索并提示一次；已有脏瓦片继续保留和重试，成功刷新后自动恢复。
 
 备份时退出游戏，然后复制整个 `SurvivalcraftTravelMap` 数据目录。卸载 Mod 前也建议这样做。
 
