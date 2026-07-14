@@ -64,8 +64,8 @@
 
 | 场景 | 状态 | 最小复现步骤 | 通过标准 |
 |---|---|---|---|
-| 1. 默认小地图与自适应边距 | PENDING（未启动游戏） | 在 UI 缩放 `0.75 / 1.0 / 1.25` 分别进入 World2，观察默认小地图、上/右边距和附近 HUD。 | 小地图视觉上约 `256×256` 物理像素；边距自适应正确；没有文字传送按钮。 |
-| 2. HUD 隐藏与恢复 | PENDING（未启动游戏） | 每个 UI 缩放值依次打开背包、角色、合成、睡眠、其他模态对话框和大地图，再逐项关闭。 | 小地图和邀请图标同时隐藏；关闭后按原设置恢复。 |
+| 1. 默认小地图与自适应边距 | PENDING（未启动游戏） | 将 isolated game 窗口分别设为 `1280×720`（16:9）与 `1440×960`（3:2）；每种窗口尺寸都在 UI 缩放 `0.75 / 1.0 / 1.25` 进入 World2，观察默认小地图、邀请按钮、上/右边距和附近 HUD。 | 六种窗口×缩放组合中，小地图视觉体量正确，map/button 均不越界、不互相或与关键 HUD 遮挡；right/top margins 自适应稳定；没有文字传送按钮。 |
+| 2. HUD 隐藏与恢复 | PENDING（未启动游戏） | 在 `1280×720` 与 `1440×960` 的每个 `0.75 / 1.0 / 1.25` 缩放组合中，依次打开背包、角色、合成、睡眠、其他模态对话框和大地图，再逐项关闭。 | 小地图和邀请图标同时隐藏；关闭 modal 后按原设置与当前窗口边界恢复，不漂移、不越界、不新增遮挡。 |
 | 3. 大地图入口 | PENDING（未启动游戏） | 分别单击小地图和按 `M`。 | 两种方式都打开大地图。 |
 | 4. 16×16 区块边界原子揭示 | PENDING（未启动游戏） | 从一个区块跨入相邻 `16×16` 区块，打开地图观察新旧边界和未进入的相邻区块。 | 只立即揭示新进入的完整区块，共 256 像素；不揭示任何相邻未进入区块。 |
 | 5. World2 旧 partial cache 修复 | PENDING（未启动游戏） | 使用保留的 World2 和 8 个旧 `.sctm`，离开旧透明/partial 区块后重新进入。 | 无需删除缓存，重入区块时修复全部 256 像素。 |
@@ -85,7 +85,7 @@
 | B. 昼/暮/夜/黎明亮度 | PENDING（未启动游戏） | 在同一已探索位置依次观察正午、黄昏、深夜和黎明，并切换日夜明暗设置。 | terrain brightness 平滑变化且关闭设置后恢复 `1.0`；frame、玩家/坐标点 marker、文字与其他 UI 不被 terrain brightness 染色。 |
 | C. fresh restart 持久化 | PENDING（未启动游戏） | 在当前进程探索新区块、创建/修改 waypoints、保存全局 settings v2，并完成一次 World2 legacy repair；完全退出进程后从同一隔离副本重新启动。 | 探索、完整 XYZ waypoints、settings v2 与 World2 已修复 256 像素均在 fresh restart 后保留；显式 v1 迁移规则可追溯，future `>2` 文件字节不被覆盖。 |
 | D. terrain/safe-Y hazard 矩阵 | PENDING（未启动游戏） | 对平地、山坡/悬崖、树叶或固体顶部、洞穴/低顶、水、冰、深水和明确无安全点分别执行 surface 与 waypoint teleport。 | 可用目标在安全 Y 成功且无坠落/窒息；树叶、危险/流体表面或不足两格净空不作为落点；不可用目标不移动或 clean rollback，速度/坠落状态安全清零。 |
-| E. runtime/权限/同步矩阵 | PENDING（未启动游戏） | 分别运行 pure single/local、integrated host、dedicated server、remote client + new SCTM server；切换 surface/waypoint 服务器开关并以有权/无权玩家请求。 | 每种 runtime 只创建其应有 UI/服务；权限和服务器开关被权威执行；host/remote 成功结果与 rollback 均正确同步绑定玩家，不重复注册或跨玩家写位置。 |
+| E. runtime/权威/binding/同步矩阵 | PENDING（未启动游戏） | 分别运行 pure single/local、integrated host、dedicated server、remote client + new SCTM server；在服务器级分别启用/禁用 `SurfaceTeleportEnabled` 与 `WaypointTeleportEnabled`；分别发送 legitimate bound sender 和 mismatched/unbound sender 的请求。 | 每种 runtime 只创建其应有 UI/服务；启用模式仅处理与目标玩家正确绑定的 sender，禁用模式或 bad sender 均不移动玩家、不产生成功 position sync，并返回清晰 result；integrated host 与 remote 成功请求只向正确绑定玩家同步权威位置，不重复注册或跨玩家写位置。 |
 | F. legacy/unsupported remote 与 ID 41 | PENDING（未启动游戏） | 连接不支持 ID 61 的 legacy/unsupported remote server 请求 surface/waypoint teleport；随后以两名玩家验证旧 ID 41 邀请兼容流程。 | ID 61 不支持时客户端不误写本地位置并收到清晰失败/超时；ID 41 在既定邀请、接受/拒绝/超时兼容范围内工作；单人隐藏邀请 icon，多人时在地图下方显示。 |
 | G. fresh process/type-init 回归 | PENDING（未启动游戏） | 确认旧 isolated Survivalcraft 进程完全退出，再启动全新进程并首次执行会触发 `SurvivalcraftPlayerFacade` 的传送；不得以 DLL hot swap 代替重启。 | 旧进程缓存的 type-initialization failure 不被沿用；全新进程首次 surface/waypoint 路径返回明确成功或安全失败，而不是因旧类型初始化缓存产生 `InternalError`。 |
 
