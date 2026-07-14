@@ -13,24 +13,28 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
     private readonly TravelMapSettings _settings;
     private readonly TravelMapSettingsStore _store;
     private readonly Action<string> _notify;
+    private readonly Action _requestClose;
     private readonly CoalescingSaveQueue _saveQueue;
     private readonly SliderWidget _miniMapZoom;
     private readonly SliderWidget _largeMapZoom;
+    private readonly BevelledButtonWidget _doneButton;
     private readonly List<BevelledButtonWidget> _sizeButtons = [];
 
     public TravelMapSettingsWidget(
         TravelMapSettings settings,
         TravelMapSettingsStore store,
-        Action<string> notify)
+        Action<string> notify,
+        Action requestClose)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _notify = notify ?? throw new ArgumentNullException(nameof(notify));
+        _requestClose = requestClose ?? throw new ArgumentNullException(nameof(requestClose));
         _saveQueue = new CoalescingSaveQueue(
             PersistAsync,
             _ => _notify("地图设置未能保存，本次会话仍保留当前值"),
             TimeSpan.FromMilliseconds(150));
-        Size = new Vector2(420f, 430f);
+        Size = new Vector2(420f, 470f);
         HorizontalAlignment = WidgetAlignment.Center;
         VerticalAlignment = WidgetAlignment.Center;
 
@@ -116,6 +120,16 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             _sizeButtons.Add(button);
             sizeStack.Children.Add(button);
         }
+
+        _doneButton = new BevelledButtonWidget
+        {
+            Text = "完成",
+            Size = new Vector2(120f, 40f),
+            Color = SnowText,
+            CenterColor = Moss,
+        };
+        Children.Add(_doneButton);
+        SetWidgetPosition(_doneButton, new Vector2(150f, 418f));
     }
 
     public override void Update()
@@ -144,6 +158,12 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
                 SetMiniMapSize(size);
             }
         }
+
+        if (_doneButton.IsClicked)
+        {
+            RequestPersist();
+            _requestClose();
+        }
     }
 
     public override void Dispose()
@@ -154,6 +174,8 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
 
     internal Task WhenSaveIdleAsync(CancellationToken cancellationToken = default) =>
         _saveQueue.WhenIdleAsync(cancellationToken);
+
+    public void RequestPersist() => _saveQueue.RequestSave();
 
     private CheckboxWidget CreateToggle(string text, bool value, Action<bool> assign)
     {
@@ -217,7 +239,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         Persist();
     }
 
-    private void Persist() => _saveQueue.RequestSave();
+    private void Persist() => RequestPersist();
 
     private async Task PersistAsync(CancellationToken cancellationToken)
     {

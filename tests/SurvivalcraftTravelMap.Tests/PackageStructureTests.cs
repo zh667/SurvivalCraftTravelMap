@@ -450,6 +450,51 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
+    public void Settings_close_independently_after_requesting_persistence()
+    {
+        var settings = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "TravelMapSettingsWidget.cs"));
+        var dialog = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "TravelMapDialog.cs"));
+        var settingsConstructor = ExtractBraceBlock(settings, "public TravelMapSettingsWidget(");
+        var settingsUpdate = ExtractBraceBlock(settings, "public override void Update()");
+        var dialogUpdate = ExtractBraceBlock(dialog, "public override void Update()");
+        var closeSettings = ExtractBraceBlock(dialog, "private void CloseSettings()");
+
+        AssertCodeContains(settings, "private readonly Action _requestClose;");
+        AssertCodeContains(settingsConstructor, "Size = new Vector2(420f, 470f);");
+        AssertCodeContains(settingsConstructor, "Text = \"完成\"");
+        AssertCodeContains(settingsConstructor, "Size = new Vector2(120f, 40f)");
+        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(150f, 418f));");
+        AssertCodeContains(settings, "public void RequestPersist() => _saveQueue.RequestSave();");
+        AssertCodeContains(settingsUpdate, "RequestPersist();");
+        AssertCodeContains(settingsUpdate, "_requestClose();");
+        Assert.True(
+            settingsUpdate.IndexOf("RequestPersist();", StringComparison.Ordinal)
+            < settingsUpdate.IndexOf("_requestClose();", StringComparison.Ordinal));
+
+        AssertCodeContains(closeSettings, "_settingsWidget.RequestPersist();");
+        AssertCodeContains(closeSettings, "_settingsWidget.IsVisible = false;");
+        AssertCodeContains(closeSettings, "_lastDragPosition = null;");
+        AssertCodeContains(dialogUpdate, "TravelMapDialogCancelPolicy.Resolve(_settingsWidget.IsVisible)");
+        AssertCodeContains(dialogUpdate, "CloseSettings();");
+        Assert.True(
+            dialogUpdate.IndexOf("CloseSettings();", StringComparison.Ordinal)
+            < dialogUpdate.IndexOf("DialogsManager.HideDialog(this);", StringComparison.Ordinal));
+        Assert.True(
+            dialogUpdate.IndexOf("if (_closeButton.IsClicked)", StringComparison.Ordinal)
+            < dialogUpdate.LastIndexOf("DialogsManager.HideDialog(this);", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Component_routes_notices_into_open_map_and_uses_hud_only_as_fallback()
     {
         var component = File.ReadAllText(TestPaths.Component);

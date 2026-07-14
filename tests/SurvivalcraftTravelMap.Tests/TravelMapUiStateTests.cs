@@ -207,6 +207,14 @@ public sealed class TravelMapUiStateTests
     private readonly TravelMapUiController _controller = new();
 
     [Theory]
+    [InlineData(true, TravelMapDialogCancelAction.CloseSettings)]
+    [InlineData(false, TravelMapDialogCancelAction.CloseDialog)]
+    public void Cancel_closes_the_innermost_surface_first(
+        bool settingsVisible,
+        TravelMapDialogCancelAction expected) =>
+        Assert.Equal(expected, TravelMapDialogCancelPolicy.Resolve(settingsVisible));
+
+    [Theory]
     [InlineData(true, true, false, TravelMapUiCommandKind.OpenLargeMap)]
     [InlineData(false, true, false, TravelMapUiCommandKind.None)]
     [InlineData(true, false, false, TravelMapUiCommandKind.None)]

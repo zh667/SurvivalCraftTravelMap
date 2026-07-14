@@ -22,6 +22,20 @@ public delegate Task<TravelMapActionStatus> TravelMapContextActionHandler(
     TravelMapContextMenu menu,
     CancellationToken cancellationToken);
 
+public enum TravelMapDialogCancelAction
+{
+    CloseSettings,
+    CloseDialog,
+}
+
+public static class TravelMapDialogCancelPolicy
+{
+    public static TravelMapDialogCancelAction Resolve(bool settingsVisible) =>
+        settingsVisible
+            ? TravelMapDialogCancelAction.CloseSettings
+            : TravelMapDialogCancelAction.CloseDialog;
+}
+
 public sealed class TravelMapDialog : Dialog
 {
     private static readonly Color Basalt = new(0x1B, 0x26, 0x28, 0xFF);
@@ -140,7 +154,8 @@ public sealed class TravelMapDialog : Dialog
         _settingsWidget = new TravelMapSettingsWidget(
             settings,
             settingsStore,
-            message => Notify(message, TravelMapNoticeKind.Failure))
+            message => Notify(message, TravelMapNoticeKind.Failure),
+            CloseSettings)
         {
             IsVisible = false,
         };
@@ -262,7 +277,21 @@ public sealed class TravelMapDialog : Dialog
             PersistScale();
         }
 
-        if (Input.Cancel || _closeButton.IsClicked)
+        if (Input.Cancel)
+        {
+            if (TravelMapDialogCancelPolicy.Resolve(_settingsWidget.IsVisible)
+                == TravelMapDialogCancelAction.CloseSettings)
+            {
+                CloseSettings();
+                return;
+            }
+
+            PersistScale();
+            DialogsManager.HideDialog(this);
+            return;
+        }
+
+        if (_closeButton.IsClicked)
         {
             PersistScale();
             DialogsManager.HideDialog(this);
@@ -476,6 +505,13 @@ public sealed class TravelMapDialog : Dialog
     {
         _activeMenu = null;
         _contextCard.IsVisible = false;
+    }
+
+    private void CloseSettings()
+    {
+        _settingsWidget.RequestPersist();
+        _settingsWidget.IsVisible = false;
+        _lastDragPosition = null;
     }
 
     private void PersistScale()
