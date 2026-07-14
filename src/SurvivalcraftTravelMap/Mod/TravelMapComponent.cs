@@ -85,6 +85,7 @@ public static class TravelMapRuntimePolicy
 public sealed class TravelMapComponent : Component, IUpdateable
 {
     private const int MaximumChunkAttemptsPerFrame = 4;
+    private const int MaximumCoverageChecksPerFrame = 4;
     private static int s_nextUpdateLocationId = -1_000_000;
     private static readonly CoordinateTeleportFutureSchemaWarningGate ServerSettingsWarningGate = new();
     private static readonly TravelMapSettingsFutureSchemaWarningGate SettingsWarningGate = new();
@@ -873,6 +874,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
             var footprint = MinimapExplorationFootprint.Create(footprintIdentity);
             _explorationScheduler.ObserveFootprint(footprint);
         }
+
+        _explorationScheduler.ReconcileCoverage(
+            _explorationRecorder.IsChunkFullyExplored,
+            MaximumCoverageChecksPerFrame);
 
         foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))
         {

@@ -503,6 +503,35 @@ public sealed class ExplorationRecorderTests
     }
 
     [Fact]
+    public void Reconciled_teleport_footprint_survives_not_ready_then_records_when_ready()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path);
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var footprint = MinimapExplorationFootprint.Create(1000f, -1000f, 16, 1f);
+        var chunk = footprint.CenterChunk;
+        scheduler.ObserveFootprint(footprint);
+        scheduler.MarkCompleted(chunk);
+        var notReadyRecorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1, isReady: false),
+            store,
+            new Rgba32(10, 20, 30, 255));
+        scheduler.ReconcileCoverage(notReadyRecorder.IsChunkFullyExplored, maximumChecks: 4);
+        Assert.Equal(ExplorationRecordResult.NotReady, notReadyRecorder.RecordChunk(chunk));
+        Assert.Equal(chunk, scheduler.GetPendingAttempts(1)[0]);
+
+        var readyRecorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1, isReady: true),
+            store,
+            new Rgba32(10, 20, 30, 255));
+        Assert.Equal(ExplorationRecordResult.Recorded, readyRecorder.RecordChunk(chunk));
+        scheduler.MarkCompleted(chunk);
+
+        Assert.True(readyRecorder.IsChunkFullyExplored(chunk));
+        Assert.Equal(0, scheduler.PendingCount);
+    }
+
+    [Fact]
     public void Unchanged_footprint_identity_skips_rebuild_and_observation_while_pending_attempts_continue()
     {
         var scheduler = new TerrainChunkExplorationScheduler();

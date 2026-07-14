@@ -224,6 +224,7 @@ public sealed class PackageStructureTests
 
         AssertCodeContains(source, "public UpdateOrder UpdateOrder => UpdateOrder.Views;");
         AssertCodeContains(source, "private const int MaximumChunkAttemptsPerFrame = 4;");
+        AssertCodeContains(source, "private const int MaximumCoverageChecksPerFrame = 4;");
         AssertCodeContains(
             source,
             "private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();",
@@ -251,6 +252,12 @@ public sealed class PackageStructureTests
         Assert.Equal(1, CountOccurrences(exploration, "ObserveFootprint("));
         AssertCodeDoesNotContain(exploration, "ObservePlayerPosition");
         AssertCodeDoesNotContain(exploration, "_settings.IsMiniMapVisible");
+        AssertCodeContains(exploration, "_explorationScheduler.ReconcileCoverage(");
+        AssertCodeContains(exploration, "_explorationRecorder.IsChunkFullyExplored");
+        AssertCodeContains(exploration, "MaximumCoverageChecksPerFrame");
+        Assert.True(
+            exploration.IndexOf("ReconcileCoverage", StringComparison.Ordinal)
+            < exploration.IndexOf("GetPendingAttempts", StringComparison.Ordinal));
         AssertCodeContains(
             exploration,
             "_explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame)",
