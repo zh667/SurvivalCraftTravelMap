@@ -37,6 +37,72 @@ public sealed class TravelMapUiStateTests
     }
 
     [Fact]
+    public void Hud_positions_use_the_gui_logical_size_and_shared_right_edge()
+    {
+        var positions = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1062.5f, 597.65625f),
+            miniMapSize: 192f);
+
+        Assert.Equal(new Vector2(794.5f, 24f), positions.MiniMap);
+        Assert.Equal(new Vector2(938.5f, 220f), positions.TeleportButton);
+    }
+
+    [Fact]
+    public void Hud_widgets_are_clamped_independently_to_a_small_gui()
+    {
+        var positions = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(220f, 210f),
+            miniMapSize: 192f);
+
+        Assert.Equal(new Vector2(0f, 18f), positions.MiniMap);
+        Assert.Equal(new Vector2(144f, 164f), positions.TeleportButton);
+    }
+
+    [Theory]
+    [InlineData(40f, 40f)]
+    [InlineData(0f, 0f)]
+    public void Hud_widgets_pin_to_nonnegative_coordinates_when_the_gui_is_smaller_than_them(
+        float guiWidth,
+        float guiHeight)
+    {
+        var positions = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(guiWidth, guiHeight),
+            miniMapSize: 192f);
+
+        Assert.Equal(Vector2.Zero, positions.MiniMap);
+        Assert.Equal(Vector2.Zero, positions.TeleportButton);
+    }
+
+    [Theory]
+    [InlineData(-100f, -80f, -192f)]
+    [InlineData(float.NaN, float.PositiveInfinity, float.NegativeInfinity)]
+    [InlineData(float.PositiveInfinity, float.NaN, float.NaN)]
+    public void Hud_layout_does_not_propagate_negative_or_non_finite_inputs(
+        float guiWidth,
+        float guiHeight,
+        float miniMapSize)
+    {
+        var positions = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(guiWidth, guiHeight),
+            miniMapSize);
+
+        AssertFiniteAndNonnegative(positions.MiniMap);
+        AssertFiniteAndNonnegative(positions.TeleportButton);
+    }
+
+    [Fact]
+    public void Existing_top_right_layout_does_not_propagate_non_finite_inputs()
+    {
+        var position = TravelMapOverlayLayout.PlaceTopRight(
+            new Vector2(float.NaN, float.PositiveInfinity),
+            new Vector2(float.NegativeInfinity, float.NaN),
+            rightMargin: float.NaN,
+            topMargin: float.PositiveInfinity);
+
+        AssertFiniteAndNonnegative(position);
+    }
+
+    [Fact]
     public async Task Minimap_wheel_requires_hover_and_unblocked_input_then_persists_sqrt2_zoom()
     {
         var settings = new TravelMapSettings { MiniMapBlocksPerPixel = 2f };
@@ -255,6 +321,14 @@ public sealed class TravelMapUiStateTests
         settings.Normalize();
 
         Assert.Equal("M", settings.LargeMapHotkey);
+    }
+
+    private static void AssertFiniteAndNonnegative(Vector2 position)
+    {
+        Assert.True(float.IsFinite(position.X));
+        Assert.True(float.IsFinite(position.Y));
+        Assert.True(position.X >= 0f);
+        Assert.True(position.Y >= 0f);
     }
 }
 
