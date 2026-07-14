@@ -288,6 +288,38 @@ public sealed class TerrainMapSamplerTests
         Assert.Empty(source.HumidityCalls);
     }
 
+    [Theory]
+    [InlineData(262)]
+    [InlineData(263)]
+    [InlineData(int.MaxValue)]
+    public void Future_modded_content_uses_a_stable_opaque_fallback_instead_of_dropping_the_chunk(int content)
+    {
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: content);
+        var sampler = new TerrainMapSampler(source, CreatePixelData());
+
+        var first = sampler.Sample(-21, -36);
+        var second = sampler.Sample(-21, -36);
+
+        Assert.Equal(first, second);
+        Assert.Equal(byte.MaxValue, first.A);
+        Assert.NotEqual(default, first);
+        Assert.Empty(source.TemperatureCalls);
+        Assert.Empty(source.HumidityCalls);
+    }
+
+    [Fact]
+    public void Chunk_with_future_modded_content_is_sampled_completely()
+    {
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 263);
+        var sampler = new TerrainMapSampler(source, CreatePixelData());
+        var destination = new Rgba32[TerrainChunkCoordinate.PixelCount];
+
+        var sampled = sampler.TrySampleChunk(new TerrainChunkCoordinate(-2, -3), destination);
+
+        Assert.True(sampled);
+        Assert.All(destination, color => Assert.Equal(byte.MaxValue, color.A));
+    }
+
     [Fact]
     public void Json_dictionary_is_loaded_once_and_sampling_does_not_read_the_stream_again()
     {

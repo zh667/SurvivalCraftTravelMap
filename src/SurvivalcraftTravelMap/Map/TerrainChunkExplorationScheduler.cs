@@ -38,25 +38,33 @@ public sealed class TerrainChunkExplorationScheduler
     public bool ObserveFootprint(MinimapExplorationFootprint footprint)
     {
         ArgumentNullException.ThrowIfNull(footprint);
-        var nextVisible = footprint.ChunksNearestFirst.ToHashSet();
+        return ObserveChunks(footprint.CenterChunk, footprint.ChunksNearestFirst);
+    }
+
+    public bool ObserveChunks(
+        TerrainChunkCoordinate center,
+        IReadOnlyList<TerrainChunkCoordinate> chunksNearestFirst)
+    {
+        ArgumentNullException.ThrowIfNull(chunksNearestFirst);
+        var nextVisible = chunksNearestFirst.ToHashSet();
         var changed = !_visible.SetEquals(nextVisible);
 
         foreach (var leaving in _visible.Where(chunk => !nextVisible.Contains(chunk)).ToArray())
             RemovePending(leaving);
 
-        foreach (var entering in footprint.ChunksNearestFirst.Where(chunk => !_visible.Contains(chunk)))
+        foreach (var entering in chunksNearestFirst.Where(chunk => !_visible.Contains(chunk)))
             EnqueueLast(entering);
 
         _visible.Clear();
         _visible.UnionWith(nextVisible);
         if (changed)
         {
-            _visibleNearestFirst = footprint.ChunksNearestFirst.ToArray();
+            _visibleNearestFirst = chunksNearestFirst.Distinct().ToArray();
             _coverageCursor = 0;
         }
 
-        _center = footprint.CenterChunk;
-        MovePendingToFront(footprint.CenterChunk);
+        _center = center;
+        MovePendingToFront(center);
         return changed;
     }
 

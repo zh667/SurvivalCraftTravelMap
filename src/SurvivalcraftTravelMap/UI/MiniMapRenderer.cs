@@ -217,6 +217,31 @@ internal readonly record struct MapSurfaceDrawContext(
     IMapSurfacePrimitiveQueue PrimitiveQueue,
     IMapFontQueue? FontQueue = null);
 
+internal static class MapSurfaceBatchGuard
+{
+    public const int MaximumAddressableVertices = ushort.MaxValue + 1;
+
+    public static bool RequiresFlush(
+        int triangleVertexCount,
+        int additionalTriangleVertices,
+        int lineVertexCount,
+        int additionalLineVertices)
+    {
+        if (triangleVertexCount < 0
+            || additionalTriangleVertices < 0
+            || lineVertexCount < 0
+            || additionalLineVertices < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(triangleVertexCount));
+        }
+
+        return additionalTriangleVertices > MaximumAddressableVertices
+            || triangleVertexCount > MaximumAddressableVertices - additionalTriangleVertices
+            || additionalLineVertices > MaximumAddressableVertices
+            || lineVertexCount > MaximumAddressableVertices - additionalLineVertices;
+    }
+}
+
 public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 {
     private readonly IExploredMapPixelSource _pixelSource;
@@ -365,17 +390,15 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             depthStencilState: DepthStencilState.None,
             blendState: BlendState.AlphaBlend,
             samplerState: SamplerState.PointClamp);
-        var triangleStart = flatBatch.TriangleVertices.Count;
-        var lineStart = flatBatch.LineVertices.Count;
         var textStart = fontBatch.TriangleVertices.Count;
+        var primitiveQueue = new EngineMapSurfacePrimitiveQueue(flatBatch, _drawTransform);
 
         Draw(new MapSurfaceDrawContext(
             viewport,
-            new EngineMapSurfacePrimitiveQueue(flatBatch),
+            primitiveQueue,
             new EngineMapFontQueue(fontBatch)));
 
-        flatBatch.TransformTriangles(_drawTransform, triangleStart);
-        flatBatch.TransformLines(_drawTransform, lineStart);
+        primitiveQueue.Complete();
         fontBatch.TransformTriangles(_drawTransform, textStart);
     }
 
@@ -572,17 +595,27 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 Engine.Vector2.Zero);
     }
 
-    private sealed class EngineMapSurfacePrimitiveQueue(FlatBatch2D batch) : IMapSurfacePrimitiveQueue
+    private sealed class EngineMapSurfacePrimitiveQueue(
+        FlatBatch2D batch,
+        Engine.Matrix transform) : IMapSurfacePrimitiveQueue
     {
+        private int _triangleStart = batch.TriangleVertices.Count;
+        private int _lineStart = batch.LineVertices.Count;
+        private bool _completed;
+
         public void QueueQuad(
             MapSurfacePrimitiveKind kind,
             NVector2 minimum,
             NVector2 maximum,
-            Rgba32 color) => batch.QueueQuad(
+            Rgba32 color)
+        {
+            EnsureCapacity(additionalTriangleVertices: 4, additionalLineVertices: 0);
+            batch.QueueQuad(
                 ToEngine(minimum),
                 ToEngine(maximum),
                 0f,
                 ToEngineColor(color));
+        }
 
         public void QueueQuad(
             MapSurfacePrimitiveKind kind,
@@ -590,38 +623,97 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             NVector2 point2,
             NVector2 point3,
             NVector2 point4,
-            Rgba32 color) => batch.QueueQuad(
+            Rgba32 color)
+        {
+            EnsureCapacity(additionalTriangleVertices: 4, additionalLineVertices: 0);
+            batch.QueueQuad(
                 ToEngine(point1),
                 ToEngine(point2),
                 ToEngine(point3),
                 ToEngine(point4),
                 0f,
                 ToEngineColor(color));
+        }
 
         public void QueueLine(
             MapSurfacePrimitiveKind kind,
             NVector2 start,
             NVector2 end,
-            Rgba32 color) => batch.QueueLine(
+            Rgba32 color)
+        {
+            EnsureCapacity(additionalTriangleVertices: 0, additionalLineVertices: 2);
+            batch.QueueLine(
                 ToEngine(start),
                 ToEngine(end),
                 0f,
                 ToEngineColor(color));
+        }
 
         public void QueueTriangle(
             MapSurfacePrimitiveKind kind,
-            MapPlayerPrimitive primitive) => batch.QueueTriangle(
+            MapPlayerPrimitive primitive)
+        {
+            EnsureCapacity(additionalTriangleVertices: 3, additionalLineVertices: 0);
+            batch.QueueTriangle(
                 ToEngine(primitive.Tip),
                 ToEngine(primitive.Left),
                 ToEngine(primitive.Right),
                 0f,
                 ToEngineColor(primitive.Color));
+        }
 
-        public void QueueRectangle(MapFramePrimitive primitive) => batch.QueueRectangle(
-            ToEngine(primitive.Minimum),
-            ToEngine(primitive.Maximum),
-            0f,
-            ToEngineColor(primitive.Color));
+        public void QueueRectangle(MapFramePrimitive primitive)
+        {
+            EnsureCapacity(additionalTriangleVertices: 0, additionalLineVertices: 4);
+            batch.QueueRectangle(
+                ToEngine(primitive.Minimum),
+                ToEngine(primitive.Maximum),
+                0f,
+                ToEngineColor(primitive.Color));
+        }
+
+        public void Complete()
+        {
+            if (_completed)
+            {
+                return;
+            }
+
+            TransformPendingVertices();
+            _completed = true;
+        }
+
+        private void EnsureCapacity(int additionalTriangleVertices, int additionalLineVertices)
+        {
+            if (_completed)
+            {
+                throw new InvalidOperationException("The map primitive queue has already completed.");
+            }
+
+            if (!MapSurfaceBatchGuard.RequiresFlush(
+                    batch.TriangleVertices.Count,
+                    additionalTriangleVertices,
+                    batch.LineVertices.Count,
+                    additionalLineVertices))
+            {
+                return;
+            }
+
+            // FlatBatch2D casts vertex indices to ushort. Flush the current
+            // shared batch before an index can wrap and corrupt earlier quads.
+            TransformPendingVertices();
+            batch.Flush(PrimitivesRenderer2D.ViewportMatrix(), clearAfterFlush: true);
+            _triangleStart = 0;
+            _lineStart = 0;
+        }
+
+        private void TransformPendingVertices()
+        {
+            batch.TransformTriangles(transform, _triangleStart);
+            batch.TransformLines(transform, _lineStart);
+            _triangleStart = batch.TriangleVertices.Count;
+            _lineStart = batch.LineVertices.Count;
+        }
     }
 
     private void QueueSurveyCrosshair(NVector2 center)

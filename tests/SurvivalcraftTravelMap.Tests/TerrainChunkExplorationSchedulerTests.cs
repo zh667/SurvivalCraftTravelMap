@@ -44,6 +44,27 @@ public sealed class TerrainChunkExplorationSchedulerTests
         Assert.Equal(first.CenterChunk, scheduler.GetPendingAttempts(1)[0]);
     }
 
+    [Fact]
+    public void Loaded_chunk_observation_uses_the_supplied_nearest_first_order()
+    {
+        var scheduler = new TerrainChunkExplorationScheduler();
+        var center = new TerrainChunkCoordinate(4, -2);
+        var loaded = new[]
+        {
+            center,
+            new TerrainChunkCoordinate(3, -2),
+            new TerrainChunkCoordinate(5, -2),
+            new TerrainChunkCoordinate(4, -3),
+        };
+
+        Assert.True(scheduler.ObserveChunks(center, loaded));
+        Assert.Equal(loaded, scheduler.GetPendingAttempts(loaded.Length));
+
+        scheduler.MarkCompleted(center);
+        Assert.False(scheduler.ObserveChunks(center, loaded));
+        Assert.DoesNotContain(center, scheduler.GetPendingAttempts(loaded.Length));
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]

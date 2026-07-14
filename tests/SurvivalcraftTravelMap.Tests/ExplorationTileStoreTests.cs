@@ -146,9 +146,11 @@ public sealed class ExplorationTileStoreTests : IDisposable
     {
         var store = new ExplorationTileStore(_directory, capacity: 2);
         var tile = store.GetOrLoad(-7, 11);
+        var versionBeforeMutation = store.GetTileMutationVersion(-7, 11);
         tile.SetPixel(5, 6, new Rgba32(10, 20, 30, 255));
         store.MarkDirty(tile);
 
+        Assert.True(store.GetTileMutationVersion(-7, 11) > versionBeforeMutation);
         await store.FlushAsync(TestContext.Current.CancellationToken);
 
         var path = Path.Combine(_directory, "-7_11.sctm");

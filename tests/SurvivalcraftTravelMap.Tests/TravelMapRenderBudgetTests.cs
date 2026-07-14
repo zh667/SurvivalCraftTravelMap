@@ -292,6 +292,57 @@ public sealed class TravelMapRenderBudgetTests
     }
 
     [Fact]
+    public void Alternating_minimap_view_does_not_restart_large_map_lod_progress()
+    {
+        const int tileCount = TileStoreMapPixelSource.MaximumLodTileMaterializationsPerFrame + 1;
+        var provider = new RegionAwareKnownTileProvider(
+            CreateFullyExploredTile(new Rgba32(20, 40, 60, 255)),
+            tileCount);
+        var source = new TileStoreMapPixelSource(provider);
+        var largeTransform = new MapTransform(
+            new Vector2(((tileCount * MapTile.Size) - 1) / 2f, (MapTile.Size - 1) / 2f),
+            1f,
+            new Vector2((tileCount * MapTile.Size) - 1, MapTile.Size - 1));
+        var miniTransform = new MapTransform(
+            new Vector2((MapTile.Size - 1) / 2f),
+            1f,
+            new Vector2(MapTile.Size - 1));
+
+        TravelMapRenderModel.RenderTerrain(source, largeTransform, 1f, new CountingRenderSink());
+        TravelMapRenderModel.RenderTerrain(source, miniTransform, 1f, new CountingRenderSink());
+        var completed = new CapturingRenderSink();
+        TravelMapRenderModel.RenderTerrain(source, largeTransform, 1f, completed);
+
+        Assert.Equal(
+            tileCount,
+            completed.Terrain
+                .Select(cell => TileCoordinate.FromWorld(cell.WorldX, cell.WorldZ).TileX)
+                .Distinct()
+                .Count());
+    }
+
+    [Fact]
+    public void Mutating_one_tile_rebuilds_only_that_tiles_lod_entry()
+    {
+        var provider = new PerTileVersionProvider(
+            new Rgba32(20, 40, 60, 255),
+            new Rgba32(80, 100, 120, 255));
+        var source = new TileStoreMapPixelSource(provider);
+        var transform = new MapTransform(
+            new Vector2(MapTile.Size - 0.5f, (MapTile.Size - 1) / 2f),
+            1f,
+            new Vector2((MapTile.Size * 2) - 1, MapTile.Size - 1));
+
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, new CountingRenderSink());
+        Assert.Equal(2, provider.GetOrLoadCalls);
+
+        provider.Mutate(0, new Rgba32(140, 150, 160, 255));
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, new CountingRenderSink());
+
+        Assert.Equal(3, provider.GetOrLoadCalls);
+    }
+
+    [Fact]
     public void Catalog_larger_than_the_one_command_per_tile_limit_terminates_without_materialization()
     {
         const int tileCount = TravelMapRenderModel.MaximumTerrainSamplesPerFrame + 1;
@@ -1163,5 +1214,74 @@ internal sealed class KnownTileProvider(MapTile tile, int tileCount) : IMapTileP
                 .Select(tileX => new MapTileCoordinate(tileX, 0))
                 .ToArray(),
             IsTruncated: tileCount > maximumCount);
+    }
+}
+
+internal sealed class RegionAwareKnownTileProvider(MapTile tile, int tileCount) : IMapTileProvider
+{
+    public MapTile GetOrLoad(int tileX, int tileZ) => tile;
+
+    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region) =>
+        Enumerable.Range(0, tileCount)
+            .Where(tileX => region.Contains(tileX, 0))
+            .Select(tileX => new MapTileCoordinate(tileX, 0))
+            .ToArray();
+
+    public MapTileCatalog GetKnownTileCatalog(MapTileRegion region, int maximumCount)
+    {
+        var tiles = GetKnownTiles(region);
+        return new MapTileCatalog(
+            tiles.Take(maximumCount).ToArray(),
+            IsTruncated: tiles.Count > maximumCount);
+    }
+}
+
+internal sealed class PerTileVersionProvider : IMapTileProvider
+{
+    private readonly MapTile[] _tiles;
+    private readonly long[] _versions = new long[2];
+
+    public PerTileVersionProvider(Rgba32 first, Rgba32 second)
+    {
+        _tiles = [CreateTile(0, first), CreateTile(1, second)];
+    }
+
+    public int GetOrLoadCalls { get; private set; }
+
+    public MapTile GetOrLoad(int tileX, int tileZ)
+    {
+        GetOrLoadCalls++;
+        return _tiles[tileX];
+    }
+
+    public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region) =>
+        Enumerable.Range(0, _tiles.Length)
+            .Where(tileX => region.Contains(tileX, 0))
+            .Select(tileX => new MapTileCoordinate(tileX, 0))
+            .ToArray();
+
+    public long GetTileMutationVersion(int tileX, int tileZ) => _versions[tileX];
+
+    public void Mutate(int tileX, Rgba32 color)
+    {
+        _tiles[tileX].SetRegion(
+            0,
+            0,
+            MapTile.Size,
+            MapTile.Size,
+            Enumerable.Repeat(color, MapTile.Size * MapTile.Size).ToArray());
+        _versions[tileX]++;
+    }
+
+    private static MapTile CreateTile(int tileX, Rgba32 color)
+    {
+        var tile = new MapTile(tileX, 0);
+        tile.SetRegion(
+            0,
+            0,
+            MapTile.Size,
+            MapTile.Size,
+            Enumerable.Repeat(color, MapTile.Size * MapTile.Size).ToArray());
+        return tile;
     }
 }

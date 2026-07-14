@@ -10,6 +10,65 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class MiniMapTextRendererTests
 {
     [Fact]
+    public void Flat_batch_guard_flushes_before_ushort_triangle_indices_wrap()
+    {
+        Assert.False(MapSurfaceBatchGuard.RequiresFlush(
+            triangleVertexCount: MapSurfaceBatchGuard.MaximumAddressableVertices - 4,
+            additionalTriangleVertices: 4,
+            lineVertexCount: 0,
+            additionalLineVertices: 0));
+        Assert.True(MapSurfaceBatchGuard.RequiresFlush(
+            triangleVertexCount: MapSurfaceBatchGuard.MaximumAddressableVertices - 3,
+            additionalTriangleVertices: 4,
+            lineVertexCount: 0,
+            additionalLineVertices: 0));
+    }
+
+    [Fact]
+    public void Flat_batch_guard_applies_the_same_ushort_limit_to_map_lines()
+    {
+        Assert.False(MapSurfaceBatchGuard.RequiresFlush(
+            triangleVertexCount: 0,
+            additionalTriangleVertices: 0,
+            lineVertexCount: MapSurfaceBatchGuard.MaximumAddressableVertices - 4,
+            additionalLineVertices: 4));
+        Assert.True(MapSurfaceBatchGuard.RequiresFlush(
+            triangleVertexCount: 0,
+            additionalTriangleVertices: 0,
+            lineVertexCount: MapSurfaceBatchGuard.MaximumAddressableVertices - 3,
+            additionalLineVertices: 4));
+    }
+
+    [Fact]
+    public void Full_render_budget_is_partitioned_into_safe_ushort_vertex_windows()
+    {
+        var triangleVertices = 240;
+        var flushes = 0;
+        for (var primitive = 0;
+             primitive < TravelMapRenderModel.MaximumTerrainSamplesPerFrame;
+             primitive++)
+        {
+            if (MapSurfaceBatchGuard.RequiresFlush(
+                    triangleVertices,
+                    additionalTriangleVertices: 4,
+                    lineVertexCount: 0,
+                    additionalLineVertices: 0))
+            {
+                triangleVertices = 0;
+                flushes++;
+            }
+
+            triangleVertices += 4;
+            Assert.InRange(
+                triangleVertices,
+                0,
+                MapSurfaceBatchGuard.MaximumAddressableVertices);
+        }
+
+        Assert.True(flushes > 1);
+    }
+
+    [Fact]
     public void Actual_waypoint_and_coordinate_queue_paths_pass_readable_scale()
     {
         var queue = new RecordingMapFontQueue();

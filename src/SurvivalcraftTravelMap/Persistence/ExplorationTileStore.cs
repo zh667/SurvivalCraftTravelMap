@@ -10,6 +10,7 @@ public sealed class ExplorationTileStore
     private readonly Dictionary<TileKey, CacheEntry> _cache = [];
     private readonly LinkedList<TileKey> _lru = [];
     private readonly HashSet<TileKey> _knownTiles = [];
+    private readonly Dictionary<TileKey, long> _tileMutationVersions = [];
     private readonly Func<string, MapTile, CancellationToken, Task> _writeTile;
     private long _tileMaterializations;
     private long _fileProbeCount;
@@ -90,6 +91,14 @@ public sealed class ExplorationTileStore
             {
                 return _mutationVersion;
             }
+        }
+    }
+
+    internal long GetTileMutationVersion(int tileX, int tileZ)
+    {
+        lock (_sync)
+        {
+            return _tileMutationVersions.GetValueOrDefault(new TileKey(tileX, tileZ));
         }
     }
 
@@ -277,6 +286,8 @@ public sealed class ExplorationTileStore
 
             SetDirty(entry);
             _knownTiles.Add(key);
+            _mutationVersion++;
+            _tileMutationVersions[key] = _mutationVersion;
         }
     }
 
@@ -395,6 +406,7 @@ public sealed class ExplorationTileStore
             SetDirty(entry);
             _knownTiles.Add(key);
             _mutationVersion++;
+            _tileMutationVersions[key] = _mutationVersion;
             entry.PinCount--;
             TrimCleanEntries();
         }

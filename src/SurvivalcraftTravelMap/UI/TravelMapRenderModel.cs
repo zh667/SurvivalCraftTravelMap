@@ -133,6 +133,8 @@ internal interface IMapTileProvider
     }
 
     long MutationVersion => 0;
+
+    long GetTileMutationVersion(int tileX, int tileZ) => MutationVersion;
 }
 
 public interface IExploredMapTileIndexSource : IExploredMapPixelSource
@@ -174,8 +176,8 @@ public sealed class TileStoreMapPixelSource :
     private readonly Dictionary<(int X, int Z), SnapshotCacheEntry> _snapshotCache = [];
     private readonly LinkedList<(int X, int Z)> _snapshotLru = [];
     private readonly Dictionary<LodCacheKey, LodCacheEntry> _lodCache = [];
+    private readonly LinkedList<LodCacheKey> _lodLru = [];
     private int _cachedLodSampleCount;
-    private long _lodMutationVersion;
 
     public TileStoreMapPixelSource(ExplorationTileStore store, int snapshotCapacity = 128)
         : this(new StoreTileProvider(store), snapshotCapacity)
@@ -236,19 +238,6 @@ public sealed class TileStoreMapPixelSource :
             throw new ArgumentOutOfRangeException(nameof(plans));
         }
 
-        lock (_sync)
-        {
-            RefreshLodGeneration();
-            var activeKeys = plans
-                .Select(plan => LodCacheKey.From(plan, stride))
-                .ToHashSet();
-            foreach (var stale in _lodCache.Keys.Where(key => !activeKeys.Contains(key)).ToArray())
-            {
-                _cachedLodSampleCount -= _lodCache[stale].SampleCount;
-                _lodCache.Remove(stale);
-            }
-        }
-
         return new LodReadSession(this, plans, stride, maximumNewTiles);
     }
 
@@ -259,11 +248,17 @@ public sealed class TileStoreMapPixelSource :
     {
         lock (_sync)
         {
-            RefreshLodGeneration();
             var key = LodCacheKey.From(plan, stride);
+            var mutationVersion = _provider.GetTileMutationVersion(plan.Tile.X, plan.Tile.Z);
             if (_lodCache.TryGetValue(key, out var cached))
             {
-                return cached;
+                if (cached.MutationVersion == mutationVersion)
+                {
+                    TouchLod(cached);
+                    return cached;
+                }
+
+                RemoveLod(key, cached);
             }
 
             if (remainingNewTiles == 0)
@@ -272,7 +267,7 @@ public sealed class TileStoreMapPixelSource :
             }
 
             remainingNewTiles--;
-            var generation = _provider.MutationVersion;
+            var generation = mutationVersion;
             var snapshot = GetSnapshot(plan.Tile.X, plan.Tile.Z);
             var columns = checked(((plan.EndX - plan.StartX) / stride) + 1);
             var rows = checked(((plan.EndZ - plan.StartZ) / stride) + 1);
@@ -298,37 +293,37 @@ public sealed class TileStoreMapPixelSource :
                 }
             }
 
-            if (_provider.MutationVersion != generation)
+            if (_provider.GetTileMutationVersion(plan.Tile.X, plan.Tile.Z) != generation)
             {
-                RefreshLodGeneration();
                 return null;
             }
 
-            var created = new LodCacheEntry(plan, stride, columns, cells);
-            if (_cachedLodSampleCount
-                > TravelMapRenderModel.MaximumTerrainSamplesPerFrame - created.SampleCount)
+            while (_lodLru.Last is { } last
+                   && _cachedLodSampleCount
+                   > TravelMapRenderModel.MaximumTerrainSamplesPerFrame - cells.Length)
             {
-                _lodCache.Clear();
-                _cachedLodSampleCount = 0;
+                RemoveLod(last.Value, _lodCache[last.Value]);
             }
 
+            var node = _lodLru.AddFirst(key);
+            var created = new LodCacheEntry(plan, stride, columns, cells, generation, node);
             _lodCache.Add(key, created);
             _cachedLodSampleCount += created.SampleCount;
             return created;
         }
     }
 
-    private void RefreshLodGeneration()
+    private void TouchLod(LodCacheEntry entry)
     {
-        var generation = _provider.MutationVersion;
-        if (_lodMutationVersion == generation)
-        {
-            return;
-        }
+        _lodLru.Remove(entry.Node);
+        _lodLru.AddFirst(entry.Node);
+    }
 
-        _lodCache.Clear();
-        _cachedLodSampleCount = 0;
-        _lodMutationVersion = generation;
+    private void RemoveLod(LodCacheKey key, LodCacheEntry entry)
+    {
+        _lodCache.Remove(key);
+        _lodLru.Remove(entry.Node);
+        _cachedLodSampleCount -= entry.SampleCount;
     }
 
     private MapTileSnapshot GetSnapshot(int tileX, int tileZ)
@@ -524,6 +519,9 @@ public sealed class TileStoreMapPixelSource :
             Store.GetKnownTileCatalog(region, maximumCount);
 
         public long MutationVersion => Store.MutationVersion;
+
+        public long GetTileMutationVersion(int tileX, int tileZ) =>
+            Store.GetTileMutationVersion(tileX, tileZ);
     }
 
     private readonly record struct LodCacheKey(
@@ -551,9 +549,15 @@ public sealed class TileStoreMapPixelSource :
         MapTileSamplePlan plan,
         int stride,
         int columns,
-        LodCell[] cells)
+        LodCell[] cells,
+        long mutationVersion,
+        LinkedListNode<LodCacheKey> node)
     {
         public int SampleCount => cells.Length;
+
+        public long MutationVersion { get; } = mutationVersion;
+
+        public LinkedListNode<LodCacheKey> Node { get; } = node;
 
         public bool TryGet(
             int worldX,
@@ -666,12 +670,8 @@ public static class TravelMapRenderModel
         var endXGroup = FloorDivide(visibleEndX, stride);
         var startZGroup = FloorDivide(visibleStartZ, stride);
         var endZGroup = FloorDivide(visibleEndZ, stride);
-        var columns = endXGroup - startXGroup + 1;
-        var rows = endZGroup - startZGroup + 1;
-        var totalSamples = checked(columns * rows);
         var queries = 0;
         var primitives = 0;
-        long processed = 0;
         using var session = source.BeginReadSession();
         for (var zGroup = startZGroup; zGroup <= endZGroup; zGroup++)
         {
@@ -687,7 +687,6 @@ public static class TravelMapRenderModel
                 var clippedEndX = Math.Min(groupStartX + stride - 1L, visibleEndX);
                 var x = checked((int)clippedStartX);
                 var aggregateWidth = checked((int)(clippedEndX - clippedStartX + 1L));
-                processed++;
                 queries++;
                 var renderWidth = 1;
                 var renderHeight = 1;
@@ -716,19 +715,6 @@ public static class TravelMapRenderModel
                     Vector2.Max(screenMinimum, screenMaximum),
                     TintTerrain(color, tint)));
                 primitives++;
-                if (stride == 1)
-                {
-                    EmitBoundaryEdges(
-                        session,
-                        sink,
-                        x,
-                        z,
-                        screenMinimum,
-                        screenMaximum,
-                        totalSamples - processed,
-                        ref queries,
-                        ref primitives);
-                }
             }
         }
 
@@ -783,57 +769,6 @@ public static class TravelMapRenderModel
         (byte)Math.Clamp((int)MathF.Round(color.G * brightness), 0, byte.MaxValue),
         (byte)Math.Clamp((int)MathF.Round(color.B * brightness), 0, byte.MaxValue),
         color.A);
-
-    private static void EmitBoundaryEdges(
-        IExploredMapReadSession source,
-        ITravelMapRenderSink sink,
-        int x,
-        int z,
-        Vector2 screenMinimum,
-        Vector2 screenMaximum,
-        long remainingTerrainSamples,
-        ref int queries,
-        ref int primitives)
-    {
-        var minimum = Vector2.Min(screenMinimum, screenMaximum);
-        var maximum = Vector2.Max(screenMinimum, screenMaximum);
-        TryEmitBoundary(source, sink, x, z, x, z > int.MinValue ? z - 1 : z, minimum, new Vector2(maximum.X, minimum.Y), remainingTerrainSamples, ref queries, ref primitives);
-        TryEmitBoundary(source, sink, x, z, x < int.MaxValue ? x + 1 : x, z, new Vector2(maximum.X, minimum.Y), maximum, remainingTerrainSamples, ref queries, ref primitives);
-        TryEmitBoundary(source, sink, x, z, x, z < int.MaxValue ? z + 1 : z, new Vector2(minimum.X, maximum.Y), maximum, remainingTerrainSamples, ref queries, ref primitives);
-        TryEmitBoundary(source, sink, x, z, x > int.MinValue ? x - 1 : x, z, minimum, new Vector2(minimum.X, maximum.Y), remainingTerrainSamples, ref queries, ref primitives);
-    }
-
-    private static void TryEmitBoundary(
-        IExploredMapReadSession source,
-        ITravelMapRenderSink sink,
-        int x,
-        int z,
-        int neighborX,
-        int neighborZ,
-        Vector2 start,
-        Vector2 end,
-        long remainingTerrainSamples,
-        ref int queries,
-        ref int primitives)
-    {
-        if (neighborX == x && neighborZ == z)
-        {
-            return;
-        }
-
-        if ((long)queries + remainingTerrainSamples >= MaximumTerrainSamplesPerFrame)
-        {
-            return;
-        }
-
-        queries++;
-        if (!source.TryGetExploredPixel(neighborX, neighborZ, out _)
-            && (long)primitives + remainingTerrainSamples < MaximumTerrainSamplesPerFrame)
-        {
-            sink.ExplorationBoundary(new MapBoundaryEdge(start, end, TravelMapPalette.SurveyCyan));
-            primitives++;
-        }
-    }
 
     private static int CalculateAlignedStride(
         long minimumX,
@@ -902,8 +837,6 @@ public static class TravelMapRenderModel
                 maximumZ))
             .Where(range => range.SampleCount > 0)
             .ToArray();
-        var totalSamples = sampleRanges.Sum(range => range.SampleCount);
-        var processed = 0L;
         var queries = 0;
         var primitives = 0;
         using var session = source is IExploredMapLodSource lodSource
@@ -920,7 +853,6 @@ public static class TravelMapRenderModel
                 for (long worldX = range.StartX; worldX <= range.EndX; worldX += pixelStride)
                 {
                     var x = (int)worldX;
-                    processed++;
                     queries++;
                     var aggregateWidth = Math.Min(pixelStride, range.EndX - x + 1);
                     var aggregateHeight = Math.Min(pixelStride, range.EndZ - z + 1);
@@ -951,19 +883,6 @@ public static class TravelMapRenderModel
                         Vector2.Max(screenMinimum, screenMaximum),
                         TintTerrain(color, tint)));
                     primitives++;
-                    if (pixelStride == 1)
-                    {
-                        EmitBoundaryEdgesWithinTile(
-                            session,
-                            sink,
-                            x,
-                            z,
-                            screenMinimum,
-                            screenMaximum,
-                            totalSamples - processed,
-                            ref queries,
-                            ref primitives);
-                    }
                 }
             }
         }
@@ -982,41 +901,6 @@ public static class TravelMapRenderModel
     {
         var samplesPerAxis = ((MapTile.Size - 1) / stride) + 1;
         return (long)samplesPerAxis * samplesPerAxis;
-    }
-
-    private static void EmitBoundaryEdgesWithinTile(
-        IExploredMapReadSession source,
-        ITravelMapRenderSink sink,
-        int x,
-        int z,
-        Vector2 screenMinimum,
-        Vector2 screenMaximum,
-        long remainingTerrainSamples,
-        ref int queries,
-        ref int primitives)
-    {
-        var coordinate = TileCoordinate.FromWorld(x, z);
-        var minimum = Vector2.Min(screenMinimum, screenMaximum);
-        var maximum = Vector2.Max(screenMinimum, screenMaximum);
-        if (coordinate.LocalZ > 0)
-        {
-            TryEmitBoundary(source, sink, x, z, x, z - 1, minimum, new Vector2(maximum.X, minimum.Y), remainingTerrainSamples, ref queries, ref primitives);
-        }
-
-        if (coordinate.LocalX < MapTile.Size - 1)
-        {
-            TryEmitBoundary(source, sink, x, z, x + 1, z, new Vector2(maximum.X, minimum.Y), maximum, remainingTerrainSamples, ref queries, ref primitives);
-        }
-
-        if (coordinate.LocalZ < MapTile.Size - 1)
-        {
-            TryEmitBoundary(source, sink, x, z, x, z + 1, new Vector2(minimum.X, maximum.Y), maximum, remainingTerrainSamples, ref queries, ref primitives);
-        }
-
-        if (coordinate.LocalX > 0)
-        {
-            TryEmitBoundary(source, sink, x, z, x - 1, z, minimum, new Vector2(minimum.X, maximum.Y), remainingTerrainSamples, ref queries, ref primitives);
-        }
     }
 
     private static MapTileSamplePlan CreateSampleRange(

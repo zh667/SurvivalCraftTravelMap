@@ -914,7 +914,7 @@ public sealed class TravelMapRenderModelTests
     }
 
     [Fact]
-    public void Isolated_explored_pixel_emits_four_survey_boundary_edges()
+    public void Explored_pixels_do_not_emit_cyan_boundary_artifacts()
     {
         var source = new RecordingPixelSource((x, z) =>
             x == 0 && z == 0 ? new Rgba32(100, 80, 60, 255) : null);
@@ -926,8 +926,7 @@ public sealed class TravelMapRenderModelTests
             brightness: 1f,
             sink);
 
-        Assert.Equal(4, sink.Boundaries.Count);
-        Assert.All(sink.Boundaries, boundary => Assert.Equal(TravelMapPalette.SurveyCyan, boundary.Color));
+        Assert.Empty(sink.Boundaries);
     }
 
     [Fact]

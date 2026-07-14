@@ -84,8 +84,8 @@ public static class TravelMapRuntimePolicy
 
 public sealed class TravelMapComponent : Component, IUpdateable
 {
-    private const int MaximumChunkAttemptsPerFrame = 4;
-    private const int MaximumCoverageChecksPerFrame = 4;
+    private const int MaximumChunkAttemptsPerFrame = 16;
+    private const int MaximumCoverageChecksPerFrame = 16;
     private static int s_nextUpdateLocationId = -1_000_000;
     private static readonly CoordinateTeleportFutureSchemaWarningGate ServerSettingsWarningGate = new();
     private static readonly TravelMapSettingsFutureSchemaWarningGate SettingsWarningGate = new();
@@ -119,7 +119,6 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private BitmapButtonWidget? _teleportPanelButton;
     private Texture2D? _teleportButtonTexture;
     private Texture2D? _teleportButtonPressedTexture;
-    private MinimapExplorationFootprintIdentity? _explorationFootprintIdentity;
     private float _flushElapsed;
     private bool _explorationPressureWarningShown;
     private bool _isActive;
@@ -861,23 +860,25 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void UpdateExploration()
     {
-        if (_explorationRecorder is null || _explorationCoverageProbe is null || _settings is null)
+        if (_explorationRecorder is null || _explorationCoverageProbe is null)
         {
             return;
         }
 
         var position = Player.ComponentBody.Position;
-        var footprintIdentity = MinimapExplorationFootprintIdentity.Create(
-            position.X,
-            position.Z,
-            _settings.MiniMapSize,
-            _settings.MiniMapBlocksPerPixel);
-        if (_explorationFootprintIdentity != footprintIdentity)
-        {
-            _explorationFootprintIdentity = footprintIdentity;
-            var footprint = MinimapExplorationFootprint.Create(footprintIdentity);
-            _explorationScheduler.ObserveFootprint(footprint);
-        }
+        var center = TerrainChunkCoordinate.FromWorld(
+            checked((int)MathF.Floor(position.X)),
+            checked((int)MathF.Floor(position.Z)));
+        var loadedChunks = Terrain.Terrain.AllocatedChunks
+            .Where(chunk => chunk is not null
+                && SurvivalcraftTerrainMapSource.IsSurfaceReadable(chunk.State))
+            .Select(chunk => new TerrainChunkCoordinate(chunk.Coords.X, chunk.Coords.Y))
+            .Distinct()
+            .OrderBy(chunk => DistanceSquared(chunk, center))
+            .ThenBy(chunk => chunk.X)
+            .ThenBy(chunk => chunk.Z)
+            .ToArray();
+        _explorationScheduler.ObserveChunks(center, loadedChunks);
 
         _explorationScheduler.ReconcileCoverage(
             _explorationCoverageProbe.IsFullyExplored,
@@ -908,6 +909,15 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     exception);
             }
         }
+    }
+
+    private static long DistanceSquared(
+        TerrainChunkCoordinate left,
+        TerrainChunkCoordinate right)
+    {
+        var dx = (long)left.X - right.X;
+        var dz = (long)left.Z - right.Z;
+        return dx * dx + dz * dz;
     }
 
     private static void LogExplorationFailure(string message)
@@ -1216,7 +1226,6 @@ public sealed class TravelMapComponent : Component, IUpdateable
     {
         _isActive = false;
         _explorationScheduler.Clear();
-        _explorationFootprintIdentity = null;
         _explorationFailureReporter.Clear();
         RunCleanupStep(() => _lifetimeCancellation.Cancel());
         RunCleanupStep(() =>

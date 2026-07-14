@@ -51,8 +51,15 @@ public sealed class TerrainMapSampler
 
         if (!_blockPixels.TryGetValue(content, out var pixel))
         {
-            throw new InvalidDataException(
-                $"Terrain content {content} has no block pixel color entry in the supported range 0..256.");
+            if (content < 0)
+            {
+                throw new InvalidDataException($"Terrain content {content} is invalid.");
+            }
+
+            // Network/modded builds can register block IDs above the vanilla palette.
+            // A missing optional palette entry must not make the whole 16x16 terrain
+            // chunk disappear, so give every future positive ID a stable opaque color.
+            return CreateGeneratedColor(content);
         }
 
         if (!pixel.NeedChangeWithEnvironment)
@@ -127,6 +134,57 @@ public sealed class TerrainMapSampler
         (byte)(left.G * right.G / 255),
         (byte)(left.B * right.B / 255),
         (byte)(left.A * right.A / 255));
+
+    private static Rgba32 CreateGeneratedColor(int content)
+    {
+        var hue = (content * 47L) % 360L;
+        var saturation = 0.24 + (((content * 13L) % 5L) * 0.035);
+        var value = 0.44 + (((content * 7L) % 6L) * 0.035);
+        var chroma = value * saturation;
+        var sector = hue / 60.0;
+        var x = chroma * (1.0 - Math.Abs((sector % 2.0) - 1.0));
+        var red = 0.0;
+        var green = 0.0;
+        var blue = 0.0;
+
+        if (sector < 1.0)
+        {
+            red = chroma;
+            green = x;
+        }
+        else if (sector < 2.0)
+        {
+            red = x;
+            green = chroma;
+        }
+        else if (sector < 3.0)
+        {
+            green = chroma;
+            blue = x;
+        }
+        else if (sector < 4.0)
+        {
+            green = x;
+            blue = chroma;
+        }
+        else if (sector < 5.0)
+        {
+            red = x;
+            blue = chroma;
+        }
+        else
+        {
+            red = chroma;
+            blue = x;
+        }
+
+        var match = value - chroma;
+        return new Rgba32(
+            (byte)Math.Round((red + match) * byte.MaxValue),
+            (byte)Math.Round((green + match) * byte.MaxValue),
+            (byte)Math.Round((blue + match) * byte.MaxValue),
+            byte.MaxValue);
+    }
 
     private static class EnvironmentPalettes
     {
