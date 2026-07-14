@@ -14,7 +14,7 @@ public sealed class TravelMapSettingsTests
         Assert.True(settings.ShowCoordinates);
         Assert.True(settings.UseDayNightTint);
         Assert.True(settings.AcceptTeleportInvitations);
-        Assert.Equal(192, settings.MiniMapSize);
+        Assert.Equal(160, settings.MiniMapSize);
         Assert.Equal(1.0f, settings.MiniMapBlocksPerPixel);
         Assert.Equal(2.0f, settings.LargeMapBlocksPerPixel);
         Assert.Equal("M", settings.LargeMapHotkey);

@@ -476,8 +476,9 @@ public sealed class TravelMapSettingsStoreTests
         Assert.EndsWith("settings.json", store.SettingsPath, StringComparison.Ordinal);
         Assert.Equal(TravelMapSettingsLoadOutcome.Created, result.Outcome);
         Assert.False(result.IsReadOnly);
-        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(160, result.Settings.MiniMapSize);
         Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
 
     [Theory]
@@ -532,6 +533,27 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Theory]
+    [InlineData(160)]
+    [InlineData(192)]
+    [InlineData(256)]
+    [InlineData(320)]
+    [InlineData(384)]
+    public async Task Current_schema_preserves_every_explicit_supported_size(int size)
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            $"{{\"schemaVersion\":2,\"MiniMapSize\":{size}}}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.Equal(size, result.Settings.MiniMapSize);
+    }
+
+    [Theory]
     [InlineData(1, TravelMapSettingsLoadOutcome.MigratedPreviousSchema)]
     [InlineData(2, TravelMapSettingsLoadOutcome.Loaded)]
     public async Task Explicit_schemas_use_the_document_default_when_minimap_size_is_missing(
@@ -552,9 +574,9 @@ public sealed class TravelMapSettingsStoreTests
 
         Assert.Equal(expectedOutcome, result.Outcome);
         Assert.False(result.IsReadOnly);
-        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(160, result.Settings.MiniMapSize);
         Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
-        Assert.Equal(192, document.RootElement.GetProperty("MiniMapSize").GetInt32());
+        Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("futureHint").GetProperty("x").GetInt32());
     }
 
@@ -604,7 +626,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(TravelMapSettingsLoadOutcome.UnsupportedFutureSchemaReadOnly, result.Outcome);
         Assert.True(result.IsReadOnly);
         Assert.True(store.IsReadOnly);
-        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(160, result.Settings.MiniMapSize);
         Assert.Equal(
             original,
             await File.ReadAllBytesAsync(store.SettingsPath, TestContext.Current.CancellationToken));
@@ -632,7 +654,7 @@ public sealed class TravelMapSettingsStoreTests
 
         Assert.Equal(TravelMapSettingsLoadOutcome.CorruptIsolated, result.Outcome);
         Assert.False(result.IsReadOnly);
-        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(160, result.Settings.MiniMapSize);
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
         Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
     }
@@ -647,7 +669,7 @@ public sealed class TravelMapSettingsStoreTests
         await File.WriteAllTextAsync(store.SettingsPath, future, TestContext.Current.CancellationToken);
 
         var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(160, result.Settings.MiniMapSize);
         result.Settings.MiniMapSize = 384;
         await store.SaveAsync(result.Settings, TestContext.Current.CancellationToken);
 
@@ -774,7 +796,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.False(settings.IsMiniMapVisible);
         Assert.False(settings.AcceptTeleportInvitations);
         Assert.True(settings.ShowCoordinates);
-        Assert.Equal(192, settings.MiniMapSize);
+        Assert.Equal(160, settings.MiniMapSize);
         Assert.True(File.Exists(legacyPath));
         Assert.True(File.Exists(store.SettingsPath));
     }
@@ -833,7 +855,7 @@ public sealed class TravelMapSettingsStoreTests
             TestContext.Current.CancellationToken));
 
         Assert.Equal(TravelMapSettingsLoadOutcome.CorruptIsolated, result.Outcome);
-        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(160, result.Settings.MiniMapSize);
         Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
         Assert.True(File.Exists(store.SettingsPath));

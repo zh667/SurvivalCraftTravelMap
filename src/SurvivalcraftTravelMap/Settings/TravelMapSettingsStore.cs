@@ -510,7 +510,7 @@ public sealed class TravelMapSettingsStore
 
         public bool AcceptTeleportInvitations { get; set; } = true;
 
-        public int MiniMapSize { get; set; } = 192;
+        public int MiniMapSize { get; set; } = 160;
 
         public float MiniMapBlocksPerPixel { get; set; } = 1f;
 
