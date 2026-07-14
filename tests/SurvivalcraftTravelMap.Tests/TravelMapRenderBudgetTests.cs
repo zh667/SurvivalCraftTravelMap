@@ -226,6 +226,109 @@ public sealed class TravelMapRenderBudgetTests
         }
     }
 
+    [Fact]
+    public void Generic_stride_two_covers_every_cell_in_an_unaligned_visible_range()
+    {
+        var source = new AggregateBudgetPixelSource(new Rgba32(20, 40, 60, 255));
+        var sink = new RowCapturingRenderSink(rowZ: 0);
+        var transform = new MapTransform(
+            new Vector2(1f, 1f),
+            1f,
+            new Vector2(1024f, 513f));
+
+        var statistics = TravelMapRenderModel.RenderTerrain(source, transform, 1f, sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        Assert.NotEmpty(sink.Terrain);
+        Assert.Equal(-511, sink.Terrain[0].WorldX);
+        Assert.Equal(
+            transform.WorldToScreen(new Vector2(-511f, 0f)).X,
+            sink.Terrain[0].ScreenMinimum.X);
+        Assert.Equal(
+            transform.WorldToScreen(new Vector2(514f, 0f)).X,
+            sink.Terrain[^1].ScreenMaximum.X);
+        Assert.Equal(1f, sink.Terrain[0].ScreenMaximum.X - sink.Terrain[0].ScreenMinimum.X);
+        Assert.Equal(2f, sink.Terrain[^1].ScreenMaximum.X - sink.Terrain[^1].ScreenMinimum.X);
+        for (var index = 1; index < sink.Terrain.Count; index++)
+        {
+            Assert.Equal(sink.Terrain[index - 1].ScreenMaximum.X, sink.Terrain[index].ScreenMinimum.X);
+        }
+    }
+
+    [Fact]
+    public void Generic_partial_aggregates_ignore_unknown_cells_outside_the_visible_range()
+    {
+        var source = new AggregateBudgetPixelSource(
+            new Rgba32(20, 40, 60, 255),
+            (x, z) => x is >= -511 and <= 512 && z is >= -255 and <= 256);
+        var sink = new RowCapturingRenderSink(rowZ: -255);
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(new Vector2(0.5f), 1f, new Vector2(1023f, 511f)),
+            1f,
+            sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        var first = Assert.Single(sink.Terrain, cell => cell.WorldX == -511);
+        var last = Assert.Single(sink.Terrain, cell => cell.WorldX == 512);
+        Assert.Equal(1f, first.ScreenMaximum.X - first.ScreenMinimum.X);
+        Assert.Equal(1f, last.ScreenMaximum.X - last.ScreenMinimum.X);
+        Assert.All(source.AggregateQueries, query =>
+        {
+            Assert.True(query.WorldX >= -511, $"Query began outside the viewport at {query.WorldX}.");
+            Assert.True(
+                (long)query.WorldX + query.Width - 1 <= 512,
+                $"Query ended outside the viewport at {(long)query.WorldX + query.Width - 1}.");
+            Assert.True(query.WorldZ >= -255, $"Query began outside the viewport at Z={query.WorldZ}.");
+            Assert.True(
+                (long)query.WorldZ + query.Height - 1 <= 256,
+                $"Query ended outside the viewport at Z={(long)query.WorldZ + query.Height - 1}.");
+        });
+    }
+
+    [Theory]
+    [InlineData(-511, 512)]
+    [InlineData(512, -511)]
+    public void Generic_partial_aggregate_does_not_expand_an_unknown_visible_edge_cell(
+        int unknownX,
+        int otherEdgeX)
+    {
+        var source = new AggregateBudgetPixelSource(
+            new Rgba32(20, 40, 60, 255),
+            (x, _) => x != unknownX);
+        var sink = new RowCapturingRenderSink(rowZ: 0);
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(new Vector2(0.5f, 0f), 1f, new Vector2(1023f, 513f)),
+            1f,
+            sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        Assert.DoesNotContain(sink.Terrain, cell => cell.WorldX == unknownX);
+        Assert.Contains(sink.Terrain, cell => cell.WorldX == otherEdgeX);
+    }
+
+    [Fact]
+    public void Generic_stride_two_without_aggregate_capability_samples_the_clipped_visible_edge()
+    {
+        var source = new BudgetPixelSource(explored: false) { ExploredCoordinate = (-511, 0) };
+        var sink = new RowCapturingRenderSink(rowZ: 0);
+
+        var statistics = TravelMapRenderModel.RenderTerrain(
+            source,
+            new MapTransform(new Vector2(1f, 0f), 1f, new Vector2(1024f, 513f)),
+            1f,
+            sink);
+
+        Assert.Equal(2, statistics.WorldStride);
+        var cell = Assert.Single(sink.Terrain);
+        Assert.Equal((-511, 0), (cell.WorldX, cell.WorldZ));
+        Assert.Equal(1f, cell.ScreenMaximum.X - cell.ScreenMinimum.X);
+        Assert.Equal(1f, cell.ScreenMaximum.Y - cell.ScreenMinimum.Y);
+    }
+
     private static MapTile CreateFullyExploredTile(Rgba32 color)
     {
         var tile = new MapTile(0, 0);
@@ -567,21 +670,31 @@ internal sealed class RowCapturingRenderSink(int rowZ) : CountingRenderSink
     }
 }
 
-internal sealed class AggregateBudgetPixelSource(Rgba32 aggregateColor) : IExploredMapPixelSource
+internal readonly record struct AggregateQuery(int WorldX, int WorldZ, int Width, int Height);
+
+internal sealed class AggregateBudgetPixelSource(
+    Rgba32 aggregateColor,
+    Func<int, int, bool>? explored = null) : IExploredMapPixelSource
 {
     public int PixelQueries { get; private set; }
 
-    public IExploredMapReadSession BeginReadSession() => new Session(this, aggregateColor);
+    public List<AggregateQuery> AggregateQueries { get; } = [];
 
-    private sealed class Session(AggregateBudgetPixelSource owner, Rgba32 aggregateColor) :
+    public IExploredMapReadSession BeginReadSession() => new Session(this, aggregateColor, explored);
+
+    private sealed class Session(
+        AggregateBudgetPixelSource owner,
+        Rgba32 aggregateColor,
+        Func<int, int, bool>? explored) :
         IExploredMapReadSession,
         IExploredMapAggregateReadSession
     {
         public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
         {
             owner.PixelQueries++;
-            color = aggregateColor;
-            return true;
+            var found = explored?.Invoke(worldX, worldZ) ?? true;
+            color = found ? aggregateColor : default;
+            return found;
         }
 
         public bool TryGetExploredRegion(
@@ -591,6 +704,21 @@ internal sealed class AggregateBudgetPixelSource(Rgba32 aggregateColor) : IExplo
             int height,
             out Rgba32 color)
         {
+            owner.AggregateQueries.Add(new AggregateQuery(worldX, worldZ, width, height));
+            for (var localZ = 0; localZ < height; localZ++)
+            {
+                var z = checked(worldZ + localZ);
+                for (var localX = 0; localX < width; localX++)
+                {
+                    var x = checked(worldX + localX);
+                    if (explored?.Invoke(x, z) is false)
+                    {
+                        color = default;
+                        return false;
+                    }
+                }
+            }
+
             color = aggregateColor;
             return true;
         }

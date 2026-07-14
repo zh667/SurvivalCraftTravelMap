@@ -364,33 +364,47 @@ public static class TravelMapRenderModel
                 maximumZ);
         }
 
-        var stride = CalculateAlignedStride(minimumX, maximumX, minimumZ, maximumZ);
-        var startX = (long)Math.Ceiling(minimumX / stride);
-        var endX = (long)Math.Floor(maximumX / stride);
-        var startZ = (long)Math.Ceiling(minimumZ / stride);
-        var endZ = (long)Math.Floor(maximumZ / stride);
-        if (startX > endX || startZ > endZ)
+        var visibleStartX = (long)Math.Ceiling(minimumX);
+        var visibleEndX = (long)Math.Floor(maximumX);
+        var visibleStartZ = (long)Math.Ceiling(minimumZ);
+        var visibleEndZ = (long)Math.Floor(maximumZ);
+        if (visibleStartX > visibleEndX || visibleStartZ > visibleEndZ)
         {
             return default;
         }
 
-        var columns = endX - startX + 1;
-        var rows = endZ - startZ + 1;
-        var totalSamples = columns * rows;
+        var stride = CalculateAlignedStride(
+            visibleStartX,
+            visibleEndX,
+            visibleStartZ,
+            visibleEndZ);
+        var startXGroup = FloorDivide(visibleStartX, stride);
+        var endXGroup = FloorDivide(visibleEndX, stride);
+        var startZGroup = FloorDivide(visibleStartZ, stride);
+        var endZGroup = FloorDivide(visibleEndZ, stride);
+        var columns = endXGroup - startXGroup + 1;
+        var rows = endZGroup - startZGroup + 1;
+        var totalSamples = checked(columns * rows);
         var queries = 0;
         var primitives = 0;
         long processed = 0;
         using var session = source.BeginReadSession();
-        for (var zIndex = startZ; zIndex <= endZ; zIndex++)
+        for (var zGroup = startZGroup; zGroup <= endZGroup; zGroup++)
         {
-            var z = checked((int)(zIndex * stride));
-            for (var xIndex = startX; xIndex <= endX; xIndex++)
+            var groupStartZ = checked(zGroup * stride);
+            var clippedStartZ = Math.Max(groupStartZ, visibleStartZ);
+            var clippedEndZ = Math.Min(groupStartZ + stride - 1L, visibleEndZ);
+            var z = checked((int)clippedStartZ);
+            var aggregateHeight = checked((int)(clippedEndZ - clippedStartZ + 1L));
+            for (var xGroup = startXGroup; xGroup <= endXGroup; xGroup++)
             {
-                var x = checked((int)(xIndex * stride));
+                var groupStartX = checked(xGroup * stride);
+                var clippedStartX = Math.Max(groupStartX, visibleStartX);
+                var clippedEndX = Math.Min(groupStartX + stride - 1L, visibleEndX);
+                var x = checked((int)clippedStartX);
+                var aggregateWidth = checked((int)(clippedEndX - clippedStartX + 1L));
                 processed++;
                 queries++;
-                var aggregateWidth = Math.Min(stride, checked((int)((endX * stride) - x + 1)));
-                var aggregateHeight = Math.Min(stride, checked((int)((endZ * stride) - z + 1)));
                 var renderWidth = 1;
                 var renderHeight = 1;
                 var found = stride > 1
@@ -409,8 +423,8 @@ public static class TravelMapRenderModel
 
                 var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
                 var screenMaximum = transform.WorldToScreen(new Vector2(
-                    (long)x + renderWidth > int.MaxValue ? int.MaxValue : x + renderWidth,
-                    (long)z + renderHeight > int.MaxValue ? int.MaxValue : z + renderHeight));
+                    (float)((double)x + renderWidth),
+                    (float)((double)z + renderHeight)));
                 sink.TerrainCell(new MapTerrainCell(
                     x,
                     z,
@@ -538,23 +552,29 @@ public static class TravelMapRenderModel
     }
 
     private static int CalculateAlignedStride(
-        double minimumX,
-        double maximumX,
-        double minimumZ,
-        double maximumZ)
+        long minimumX,
+        long maximumX,
+        long minimumZ,
+        long maximumZ)
     {
         var stride = 1;
         while (true)
         {
-            var columns = Math.Floor(maximumX / stride) - Math.Ceiling(minimumX / stride) + 1d;
-            var rows = Math.Floor(maximumZ / stride) - Math.Ceiling(minimumZ / stride) + 1d;
-            if (columns <= 0d || rows <= 0d || columns * rows <= MaximumTerrainSamplesPerFrame)
+            var columns = FloorDivide(maximumX, stride) - FloorDivide(minimumX, stride) + 1L;
+            var rows = FloorDivide(maximumZ, stride) - FloorDivide(minimumZ, stride) + 1L;
+            if (columns <= MaximumTerrainSamplesPerFrame / rows)
             {
                 return stride;
             }
 
             stride = checked(stride * 2);
         }
+    }
+
+    private static long FloorDivide(long value, int divisor)
+    {
+        var quotient = value / divisor;
+        return value < 0 && value % divisor != 0 ? quotient - 1 : quotient;
     }
 
     private static MapRenderStatistics RenderKnownTiles(
