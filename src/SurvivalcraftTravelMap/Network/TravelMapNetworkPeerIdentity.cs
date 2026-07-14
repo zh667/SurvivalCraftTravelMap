@@ -140,6 +140,8 @@ internal sealed class TravelMapBoundPeer
 
 internal static class CoordinateTeleportBoundOperation
 {
+    private static readonly TimeSpan BindingValidationInterval = TimeSpan.FromMilliseconds(10);
+
     internal static async Task<CoordinateTeleportMessage> ExecuteAsync(
         TravelMapBoundPeer binding,
         CoordinateTeleportServerSession session,
@@ -156,18 +158,62 @@ internal static class CoordinateTeleportBoundOperation
                 CoordinateTeleportResultCode.Rejected);
         }
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            binding.OperationToken);
-        var response = await session.HandleAsync(
-            binding.Identity,
-            message,
-            linked.Token).ConfigureAwait(false);
-        return binding.IsCurrent
-            ? response
-            : CoordinateTeleportMessage.Result(
-                message.RequestId,
-                CoordinateTeleportResultCode.Disconnected);
+        using var bindingInvalidated = new CancellationTokenSource();
+        using var stopMonitoring = new CancellationTokenSource();
+        var monitorTask = MonitorBindingAsync(
+            binding,
+            bindingInvalidated,
+            stopMonitoring.Token);
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                binding.OperationToken,
+                bindingInvalidated.Token);
+            var response = await session.HandleAsync(
+                binding.Identity,
+                message,
+                linked.Token).ConfigureAwait(false);
+            return bindingInvalidated.IsCancellationRequested || !binding.IsCurrent
+                ? CoordinateTeleportMessage.Result(
+                    message.RequestId,
+                    CoordinateTeleportResultCode.Disconnected)
+                : response;
+        }
+        finally
+        {
+            stopMonitoring.Cancel();
+            await monitorTask.ConfigureAwait(false);
+        }
+    }
+
+    private static async Task MonitorBindingAsync(
+        TravelMapBoundPeer binding,
+        CancellationTokenSource bindingInvalidated,
+        CancellationToken stopMonitoring)
+    {
+        try
+        {
+            while (binding.IsCurrent)
+            {
+                await Task.Delay(BindingValidationInterval, stopMonitoring).ConfigureAwait(false);
+            }
+
+            if (!stopMonitoring.IsCancellationRequested)
+            {
+                try
+                {
+                    bindingInvalidated.Cancel();
+                }
+                catch (AggregateException)
+                {
+                    // Cancellation callback failures cannot revive a stale network identity.
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stopMonitoring.IsCancellationRequested)
+        {
+        }
     }
 }
 
