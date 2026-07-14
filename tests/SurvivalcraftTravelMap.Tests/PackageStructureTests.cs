@@ -1405,6 +1405,45 @@ public sealed class PackageVerifierBehaviorTests
         Assert.Contains(expectedMessage, result.AllOutput, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("PACKAGE_OK", result.StandardOutput, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Verifier_rejects_an_allowlisted_entry_over_the_uncompressed_size_limit()
+    {
+        const int maximumEntryBytes = 8 * 1024 * 1024;
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        PackageFixtures.ReplaceEntry(
+            package,
+            "Assets/BlockPixelColor.json",
+            new byte[maximumEntryBytes + 1]);
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, package);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("uncompressed size limit", result.AllOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("PACKAGE_OK", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verifier_rejects_allowlisted_entries_over_the_aggregate_uncompressed_size_limit()
+    {
+        const int entryBytes = 6 * 1024 * 1024;
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        var compressiblePayload = new byte[entryBytes];
+        PackageFixtures.ReplaceEntry(package, "SurvivalcraftTravelMap.dll", compressiblePayload);
+        PackageFixtures.ReplaceEntry(package, "modinfo.json", compressiblePayload);
+        PackageFixtures.ReplaceEntry(package, "mod.netxdb", compressiblePayload);
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, package);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(
+            "aggregate uncompressed size limit",
+            result.AllOutput,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("PACKAGE_OK", result.StandardOutput, StringComparison.Ordinal);
+    }
 }
 
 public sealed class DeterministicBuildBehaviorTests

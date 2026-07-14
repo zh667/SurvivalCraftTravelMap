@@ -8,6 +8,8 @@ public sealed class TrackedUiActionRunner : IDisposable
     private TaskCompletionSource _idle = CompletedSource();
     private int _active;
     private bool _disposed;
+    private bool _cancellationCompleted;
+    private bool _lifetimeDisposed;
 
     public TrackedUiActionRunner(Action<Exception> reportFailure)
     {
@@ -54,8 +56,24 @@ public sealed class TrackedUiActionRunner : IDisposable
             _disposed = true;
         }
 
-        _lifetime.Cancel();
-        _lifetime.Dispose();
+        var disposeLifetime = false;
+        try
+        {
+            _lifetime.Cancel();
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                _cancellationCompleted = true;
+                disposeLifetime = TakeLifetimeDisposalLocked();
+            }
+
+            if (disposeLifetime)
+            {
+                _lifetime.Dispose();
+            }
+        }
     }
 
     private async Task RunObservedAsync(
@@ -75,12 +93,30 @@ public sealed class TrackedUiActionRunner : IDisposable
         }
         finally
         {
+            var disposeLifetime = false;
             lock (_sync)
             {
                 _active = 0;
                 idle.TrySetResult();
+                disposeLifetime = TakeLifetimeDisposalLocked();
+            }
+
+            if (disposeLifetime)
+            {
+                _lifetime.Dispose();
             }
         }
+    }
+
+    private bool TakeLifetimeDisposalLocked()
+    {
+        if (!_disposed || !_cancellationCompleted || _active != 0 || _lifetimeDisposed)
+        {
+            return false;
+        }
+
+        _lifetimeDisposed = true;
+        return true;
     }
 
     private static TaskCompletionSource CompletedSource()

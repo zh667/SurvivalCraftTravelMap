@@ -90,16 +90,14 @@ public sealed class TerrainChunkExplorationSchedulerTests
                 new TerrainChunkCoordinate(2, 0),
             ],
             firstFrame);
-        Assert.Equal(new TerrainChunkCoordinate(5, 0), secondFrame[0]);
         Assert.Equal(
             [
-                new TerrainChunkCoordinate(0, 0),
+                new TerrainChunkCoordinate(5, 0),
                 new TerrainChunkCoordinate(1, 0),
-                new TerrainChunkCoordinate(2, 0),
-                new TerrainChunkCoordinate(3, 0),
+                new TerrainChunkCoordinate(0, 0),
                 new TerrainChunkCoordinate(4, 0),
             ],
-            firstFrame.Skip(1).Concat(secondFrame.Skip(1)).Distinct().OrderBy(chunk => chunk.X));
+            secondFrame);
         Assert.Equal(6, scheduler.PendingCount);
     }
 

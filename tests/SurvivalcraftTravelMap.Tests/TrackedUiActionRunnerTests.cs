@@ -51,4 +51,31 @@ public sealed class TrackedUiActionRunnerTests
 
         Assert.False(runner.TryRun(_ => Task.CompletedTask));
     }
+
+    [Fact]
+    public async Task Dispose_keeps_the_canceled_token_usable_until_the_active_action_finishes()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inspectCanceledToken = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var reported = new List<Exception>();
+        var runner = new TrackedUiActionRunner(reported.Add);
+        Assert.True(runner.TryRun(async cancellationToken =>
+        {
+            started.SetResult();
+            await inspectCanceledToken.Task;
+
+            Assert.True(cancellationToken.IsCancellationRequested);
+            Assert.True(cancellationToken.WaitHandle.WaitOne(0));
+            using var registration = cancellationToken.Register(() => { });
+        }));
+        await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        runner.Dispose();
+        inspectCanceledToken.SetResult();
+        await runner.WhenIdleAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty(reported);
+        Assert.False(runner.TryRun(_ => Task.CompletedTask));
+    }
 }

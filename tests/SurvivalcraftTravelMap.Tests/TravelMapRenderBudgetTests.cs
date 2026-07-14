@@ -476,6 +476,7 @@ public sealed class MapTileSnapshotTests
 
             while (!writerFinished.IsSet && checkedSnapshotCount < maximumSnapshotAttempts)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var captured = tile.CreateVersionedSnapshot();
                 CheckSnapshot(captured);
                 checkedSnapshotCount++;
@@ -513,6 +514,7 @@ public sealed class MapTileSnapshotTests
             {
                 for (var i = 0; i < writeCount; i++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     tile.SetRegion(originX, originZ, width, height, regions[i & 1]);
                     if (i == 0
                         && !firstIntermediateSnapshotObserved.Wait(
@@ -532,23 +534,42 @@ public sealed class MapTileSnapshotTests
             }
         }, cancellationToken);
 
-        if (!participantsReady.Wait(coordinationTimeout, cancellationToken))
+        try
+        {
+            if (!participantsReady.Wait(coordinationTimeout, cancellationToken))
+            {
+                throw new TimeoutException("Reader and writer did not both reach the coordinated start barrier.");
+            }
+
+            releaseTogether.Set();
+            await Task.WhenAll(reader, writer).WaitAsync(
+                coordinationTimeout,
+                TestContext.Current.CancellationToken);
+            Assert.Empty(failures);
+            Assert.True(checkedSnapshotCount > 0, "Reader did not inspect any snapshot after writer start.");
+            Assert.True(
+                intermediateSnapshotCount > 0,
+                "Reader did not inspect a snapshot with an intermediate version while the writer was active.");
+            Assert.Equal(finalVersion, tile.Version);
+        }
+        finally
         {
             timeoutCancellation.Cancel();
             releaseTogether.Set();
-            throw new TimeoutException("Reader and writer did not both reach the coordinated start barrier.");
+            readerEnteredLoop.Set();
+            writerStarted.Set();
+            writerFinished.Set();
+            firstIntermediateSnapshotObserved.Set();
+            try
+            {
+                await Task.WhenAll(reader, writer);
+            }
+            catch
+            {
+                _ = reader.Exception;
+                _ = writer.Exception;
+            }
         }
-
-        releaseTogether.Set();
-        await Task.WhenAll(reader, writer).WaitAsync(
-            coordinationTimeout,
-            TestContext.Current.CancellationToken);
-        Assert.Empty(failures);
-        Assert.True(checkedSnapshotCount > 0, "Reader did not inspect any snapshot after writer start.");
-        Assert.True(
-            intermediateSnapshotCount > 0,
-            "Reader did not inspect a snapshot with an intermediate version while the writer was active.");
-        Assert.Equal(finalVersion, tile.Version);
 
         void CheckSnapshot(VersionedMapTileSnapshot captured)
         {

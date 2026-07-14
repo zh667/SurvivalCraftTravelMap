@@ -32,6 +32,10 @@ $gameDlls = @(
 )
 $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $entryBytes = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
+$maximumEntryBytes = 8L * 1024L * 1024L
+$maximumAggregateBytes = 16L * 1024L * 1024L
+$declaredAggregateBytes = 0L
+$copiedAggregateBytes = 0L
 
 $packageStream = [IO.File]::OpenRead($resolvedPackage)
 $archive = $null
@@ -66,10 +70,32 @@ try {
             throw "Package entry '$entryName' is outside the package allowlist."
         }
 
+        $entryLength = [long]$entry.Length
+        if ($entryLength -gt $maximumEntryBytes) {
+            throw "Package entry '$entryName' exceeds the uncompressed size limit."
+        }
+        if ($declaredAggregateBytes -gt ($maximumAggregateBytes - $entryLength)) {
+            throw "Package exceeds the aggregate uncompressed size limit."
+        }
+        $declaredAggregateBytes += $entryLength
+
         $entryStream = $entry.Open()
         $memory = [IO.MemoryStream]::new()
         try {
-            $entryStream.CopyTo($memory)
+            $buffer = [byte[]]::new(81920)
+            $entryCopiedBytes = 0L
+            while (($read = $entryStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                if ($entryCopiedBytes -gt ($maximumEntryBytes - $read)) {
+                    throw "Package entry '$entryName' exceeds the uncompressed size limit while reading."
+                }
+                if ($copiedAggregateBytes -gt ($maximumAggregateBytes - $read)) {
+                    throw "Package exceeds the aggregate uncompressed size limit while reading."
+                }
+
+                $memory.Write($buffer, 0, $read)
+                $entryCopiedBytes += $read
+                $copiedAggregateBytes += $read
+            }
             $bytes = $memory.ToArray()
         }
         finally {
