@@ -8,6 +8,8 @@ using System.Xml.Linq;
 using Game.NetWork;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Network;
+using SurvivalcraftTravelMap.Settings;
+using SurvivalcraftTravelMap.UI;
 using Xunit;
 
 namespace SurvivalcraftTravelMap.Tests;
@@ -288,20 +290,157 @@ public sealed class PackageStructureTests
     public void Hud_overlays_are_positioned_in_gui_logical_coordinates()
     {
         var component = File.ReadAllText(TestPaths.Component);
-        var miniMapStart = component.IndexOf("private void UpdateMiniMapPosition()", StringComparison.Ordinal);
-        var miniMapEnd = component.IndexOf("private void InitializeInvitationUi()", miniMapStart, StringComparison.Ordinal);
-        var invitationStart = component.IndexOf("private void PositionInvitationButton()", StringComparison.Ordinal);
-        var invitationEnd = component.IndexOf("private ", invitationStart + 8, StringComparison.Ordinal);
+        var positioning = ExtractBraceBlock(component, "private void UpdateHudPositions()");
 
-        Assert.True(miniMapStart >= 0 && miniMapEnd > miniMapStart);
-        Assert.True(invitationStart >= 0 && invitationEnd > invitationStart);
-        var miniMapPositioning = component[miniMapStart..miniMapEnd];
-        var invitationPositioning = component[invitationStart..invitationEnd];
+        AssertCodeContains(positioning, "var guiSize = Player.GuiWidget.ActualSize;");
+        AssertCodeContains(
+            positioning,
+            "var positions = TravelMapOverlayLayout.PlaceHud(new Vector2(guiSize.X, guiSize.Y), _settings.MiniMapSize);");
+        Assert.Equal(1, CountOccurrences(positioning, "TravelMapOverlayLayout.PlaceHud("));
+        AssertCodeContains(positioning, "positions.MiniMap");
+        AssertCodeContains(positioning, "positions.TeleportButton");
+        AssertCodeDoesNotContain(positioning, "ActiveCamera.ViewportSize");
+        AssertCodeDoesNotContain(component, "TravelMapOverlayLayout.PlaceTopRight(");
+    }
 
-        Assert.Contains("Player.GuiWidget.ActualSize", miniMapPositioning, StringComparison.Ordinal);
-        Assert.Contains("Player.GuiWidget.ActualSize", invitationPositioning, StringComparison.Ordinal);
-        Assert.DoesNotContain("ActiveCamera.ViewportSize", miniMapPositioning, StringComparison.Ordinal);
-        Assert.DoesNotContain("ActiveCamera.ViewportSize", invitationPositioning, StringComparison.Ordinal);
+    [Fact]
+    public void Component_evaluates_and_applies_real_hud_signals_before_clicks_and_early_returns()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var update = ExtractBraceBlock(component, "public void Update(float dt)");
+        var signals = ExtractBraceBlock(component, "private TravelMapHudSignals GetHudSignals()");
+        var apply = ExtractBraceBlock(component, "private void ApplyHudState(TravelMapHudState state)");
+
+        AssertCodeContains(update, "var hudState = TravelMapHudPolicy.Evaluate(GetHudSignals());");
+        AssertCodeContains(update, "ApplyHudState(hudState);");
+        AssertCodeContains(update, "UpdateInvitationUi(hudState);");
+        Assert.True(IndexOfCode(update, "TravelMapHudPolicy.Evaluate(GetHudSignals())")
+            < IndexOfCode(update, "ApplyHudState(hudState)"));
+        Assert.True(IndexOfCode(update, "ApplyHudState(hudState)")
+            < IndexOfCode(update, "UpdateInvitationUi(hudState)"));
+        Assert.True(IndexOfCode(update, "ApplyHudState(hudState)")
+            < IndexOfCode(update, "if (_miniMap is null || _settings is null)"));
+        Assert.True(IndexOfCode(update, "HandleLargeMapHotkey()")
+            < IndexOfCode(update, "if (_miniMap is null || _settings is null)"));
+
+        AssertCodeContains(
+            signals,
+            "var isLargeMapOpen = _largeMapDialog is not null && DialogsManager.Dialogs.Contains(_largeMapDialog);");
+        AssertCodeContains(
+            signals,
+            "var hasModalSurface = Gui?.ModalPanelWidget is not null || DialogsManager.Dialogs.Any(dialog => !ReferenceEquals(dialog, _largeMapDialog));");
+        AssertCodeContains(signals, "HasModalSurface: hasModalSurface");
+        AssertCodeContains(signals, "IsLargeMapOpen: isLargeMapOpen");
+        AssertCodeContains(signals, "HasOtherPlayers: CountOtherPlayers() > 0");
+        AssertCodeContains(
+            signals,
+            "InvitationFeatureAvailable: TravelMapRuntimePolicy.CreatesInvitationUi(RuntimeContext)");
+        AssertCodeContains(signals, "HasTextEntryFocus: !GetMapInputFocus().AllowsMapHotkey");
+
+        AssertCodeContains(apply, "_miniMap.IsVisible = state.ShowMiniMap;");
+        AssertCodeContains(apply, "_miniMap.IsEnabled = state.AllowMiniMapInput;");
+        AssertCodeContains(apply, "_teleportPanelButton.IsVisible = state.ShowTeleportButton;");
+        AssertCodeContains(
+            apply,
+            "_teleportPanelButton.IsEnabled = state.ShowTeleportButton && state.AllowMiniMapInput;");
+        AssertCodeDoesNotContain(apply, "_settings.");
+    }
+
+    [Fact]
+    public void Component_wires_clickable_minimap_and_contextual_bitmap_invitation_icon()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var miniMap = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "MiniMapRenderer.cs"));
+        var attach = ExtractBraceBlock(component, "private void AttachUiWidgets(UiInitializationState state)");
+        var invitation = ExtractBraceBlock(component, "private void InitializeInvitationUi()");
+        var updateInvitation = ExtractBraceBlock(
+            component,
+            "private void UpdateInvitationUi(TravelMapHudState hudState)");
+        var openLargeMap = ExtractBraceBlock(component, "private void OpenLargeMap()");
+        var cleanup = ExtractBraceBlock(component, "private void CleanupUi()");
+        var measure = ExtractBraceBlock(miniMap, "public override void MeasureOverride(Engine.Vector2 parentAvailableSize)", startOccurrence: 2);
+
+        AssertCodeContains(component, "private BitmapButtonWidget? _teleportPanelButton;");
+        AssertCodeContains(component, "private Texture2D? _teleportButtonTexture;");
+        AssertCodeContains(component, "private Texture2D? _teleportButtonPressedTexture;");
+        AssertCodeContains(attach, "OpenLargeMap");
+        AssertCodeContains(invitation, "new BitmapButtonWidget");
+        AssertCodeContains(invitation, "Size = new Engine.Vector2(48f, 46f)");
+        AssertCodeContains(invitation, "NormalSubtexture = new Subtexture(_teleportButtonTexture");
+        AssertCodeContains(invitation, "ClickedSubtexture = new Subtexture(_teleportButtonPressedTexture");
+        Assert.Contains("TeleportButton.png", invitation, StringComparison.Ordinal);
+        Assert.Contains("TeleportButton_Pressed.png", invitation, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text = \"玩家传送\"", component, StringComparison.Ordinal);
+        AssertCodeDoesNotContain(component, "BevelledButtonWidget");
+        AssertCodeDoesNotContain(measure, "IsVisible");
+
+        AssertCodeContains(updateInvitation, "if (!hudState.ShowTeleportButton");
+        AssertCodeContains(updateInvitation, "|| !_teleportPanelButton.IsEnabled");
+        AssertCodeContains(updateInvitation, "|| !GetMapInputFocus().AllowsMapHotkey");
+        AssertCodeContains(openLargeMap, "if (_largeMapDialog is null || !GetMapInputFocus().AllowsMapHotkey)");
+        AssertCodeContains(openLargeMap, "_largeMapDialog.ResetToPlayer();");
+        AssertCodeContains(openLargeMap, "DialogsManager.ShowDialog(Player.GuiWidget, _largeMapDialog);");
+        AssertCodeContains(openLargeMap, "ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));");
+        Assert.Equal(1, CountOccurrences(component, "_largeMapDialog.ResetToPlayer()"));
+
+        AssertCodeContains(cleanup, "teleportPanelButton.Dispose");
+        AssertCodeContains(cleanup, "teleportButtonTexture.Dispose");
+        AssertCodeContains(cleanup, "teleportButtonPressedTexture.Dispose");
+    }
+
+    [Theory]
+    [InlineData("inventory")]
+    [InlineData("character")]
+    [InlineData("crafting")]
+    [InlineData("sleep")]
+    [InlineData("generic dialog")]
+    public void Modal_surface_hides_then_restores_hud_without_changing_settings(string surface)
+    {
+        _ = surface;
+        var settings = CreateNonDefaultHudSettings();
+        var sameSettings = settings;
+        var before = JsonSerializer.SerializeToUtf8Bytes(settings);
+        var signals = VisibleHudSignals(settings) with { HasModalSurface = true };
+
+        Assert.Equal(new TravelMapHudState(false, false, false), TravelMapHudPolicy.Evaluate(signals));
+        Assert.Equal(
+            new TravelMapHudState(true, true, true),
+            TravelMapHudPolicy.Evaluate(signals with { HasModalSurface = false }));
+        Assert.Same(sameSettings, settings);
+        Assert.Equal(before, JsonSerializer.SerializeToUtf8Bytes(settings));
+    }
+
+    [Fact]
+    public void Large_map_hides_then_restores_hud_without_changing_settings()
+    {
+        var settings = CreateNonDefaultHudSettings();
+        var sameSettings = settings;
+        var before = JsonSerializer.SerializeToUtf8Bytes(settings);
+        var signals = VisibleHudSignals(settings) with { IsLargeMapOpen = true };
+
+        Assert.Equal(new TravelMapHudState(false, false, false), TravelMapHudPolicy.Evaluate(signals));
+        Assert.Equal(
+            new TravelMapHudState(true, true, true),
+            TravelMapHudPolicy.Evaluate(signals with { IsLargeMapOpen = false }));
+        Assert.Same(sameSettings, settings);
+        Assert.Equal(before, JsonSerializer.SerializeToUtf8Bytes(settings));
+    }
+
+    [Fact]
+    public void Constructed_but_not_shown_large_map_does_not_hide_hud()
+    {
+        var settings = CreateNonDefaultHudSettings();
+        var state = TravelMapHudPolicy.Evaluate(VisibleHudSignals(settings) with
+        {
+            IsLargeMapOpen = false,
+        });
+
+        Assert.Equal(new TravelMapHudState(true, true, true), state);
     }
 
     [Fact]
@@ -386,11 +525,47 @@ public sealed class PackageStructureTests
                 || string.Equals(value, "B13D2D65-46A7-D038-8111-DE8FCBA58FBC", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string ExtractBraceBlock(string source, string anchor)
+    private static TravelMapSettings CreateNonDefaultHudSettings() => new()
+    {
+        IsMiniMapVisible = true,
+        ShowCoordinates = false,
+        UseDayNightTint = false,
+        AcceptTeleportInvitations = false,
+        MiniMapSize = 320,
+        MiniMapBlocksPerPixel = 3.5f,
+        LargeMapBlocksPerPixel = 7f,
+        LargeMapHotkey = "K",
+        NightMinimumBrightness = 0.75f,
+    };
+
+    private static TravelMapHudSignals VisibleHudSignals(TravelMapSettings settings) => new(
+        HasUi: true,
+        IsMainPlayer: true,
+        IsRuntimeActive: true,
+        MiniMapSettingEnabled: settings.IsMiniMapVisible,
+        HasModalSurface: false,
+        IsLargeMapOpen: false,
+        HasOtherPlayers: true,
+        InvitationFeatureAvailable: true,
+        HasTextEntryFocus: false);
+
+    private static string ExtractBraceBlock(string source, string anchor, int startOccurrence = 1)
     {
         var tokens = TokenizeCSharp(source);
         var anchorTokens = TokenizeCSharp(anchor);
-        var anchorIndex = FindTokenSequence(tokens, anchorTokens);
+        var anchorIndex = -1;
+        var searchStart = 0;
+        for (var occurrence = 0; occurrence < startOccurrence; occurrence++)
+        {
+            anchorIndex = FindTokenSequence(tokens, anchorTokens, searchStart);
+            if (anchorIndex < 0)
+            {
+                break;
+            }
+
+            searchStart = anchorIndex + anchorTokens.Count;
+        }
+
         Assert.True(anchorIndex >= 0, $"Could not find code anchor '{anchor}'.");
         var openingBraceIndex = anchorIndex + anchorTokens.Count;
         while (openingBraceIndex < tokens.Count && tokens[openingBraceIndex].Text != "{")
@@ -1070,8 +1245,44 @@ public sealed class PackageStructureTests
             Assert.True(bytes.Length >= 24, $"{name} is truncated.");
             Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, bytes[..8]);
             Assert.Equal("IHDR", Encoding.ASCII.GetString(bytes, 12, 4));
-            Assert.True(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(16, 4)) > 0);
-            Assert.True(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(20, 4)) > 0);
+            Assert.Equal(
+                64u,
+                System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(16, 4)));
+            Assert.Equal(
+                64u,
+                System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(20, 4)));
+        }
+
+        Assert.NotEqual(
+            SHA256.HashData(File.ReadAllBytes(Path.Combine(assets, "TeleportButton.png"))),
+            SHA256.HashData(File.ReadAllBytes(Path.Combine(assets, "TeleportButton_Pressed.png"))));
+    }
+
+    [Fact]
+    public void Asset_generator_reproduces_every_checked_in_png_and_uses_the_compact_transfer_glyph()
+    {
+        var assets = Path.Combine(TestPaths.RepositoryRoot, "src", "SurvivalcraftTravelMap", "Assets");
+        var generator = Path.Combine(TestPaths.RepositoryRoot, "tools", "Generate-Assets.ps1");
+        var generatorSource = File.ReadAllText(generator);
+        using var temporaryDirectory = new TemporaryDirectory();
+
+        var result = PowerShellRunner.Run(generator, "-OutputDirectory", temporaryDirectory.Path);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("Draw-TeleportArrow", generatorSource, StringComparison.Ordinal);
+        Assert.Contains("Draw-TeleportButton", generatorSource, StringComparison.Ordinal);
+        Assert.Contains("Draw-TeleportPerson", generatorSource, StringComparison.Ordinal);
+        foreach (var name in new[]
+                 {
+                     "Point.png",
+                     "TeleportButton.png",
+                     "TeleportButton_Pressed.png",
+                     "TeleportTo.png",
+                 })
+        {
+            Assert.Equal(
+                File.ReadAllBytes(Path.Combine(assets, name)),
+                File.ReadAllBytes(Path.Combine(temporaryDirectory.Path, name)));
         }
     }
 }

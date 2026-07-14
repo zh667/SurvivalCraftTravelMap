@@ -51,37 +51,115 @@ New-TravelMapIcon -Name "Point.png" -Draw {
     }
 }
 
-function Draw-TeleportArrow {
-    param($Graphics, [Drawing.Color]$Background, [Drawing.Color]$Foreground)
-    $backgroundBrush = [Drawing.SolidBrush]::new($Background)
-    $foregroundBrush = [Drawing.SolidBrush]::new($Foreground)
-    $border = [Drawing.Pen]::new($moss, 3)
+function New-RoundedRectanglePath {
+    param(
+        [float]$X,
+        [float]$Y,
+        [float]$Width,
+        [float]$Height,
+        [float]$Radius
+    )
+
+    $path = [Drawing.Drawing2D.GraphicsPath]::new()
+    $diameter = $Radius * 2
+    $path.AddArc($X, $Y, $diameter, $diameter, 180, 90)
+    $path.AddArc($X + $Width - $diameter, $Y, $diameter, $diameter, 270, 90)
+    $path.AddArc($X + $Width - $diameter, $Y + $Height - $diameter, $diameter, $diameter, 0, 90)
+    $path.AddArc($X, $Y + $Height - $diameter, $diameter, $diameter, 90, 90)
+    $path.CloseFigure()
+    return $path
+}
+
+function Draw-TeleportPerson {
+    param(
+        [Drawing.Graphics]$Graphics,
+        [float]$X,
+        [float]$Y,
+        [Drawing.Color]$Color
+    )
+
+    $brush = [Drawing.SolidBrush]::new($Color)
+    $body = New-RoundedRectanglePath -X $X -Y ($Y + 10) -Width 13 -Height 15 -Radius 4
     try {
-        $Graphics.FillRectangle($backgroundBrush, 4, 4, 56, 56)
-        $Graphics.DrawRectangle($border, 5, 5, 53, 53)
-        $points = [Drawing.Point[]]@(
-            [Drawing.Point]::new(14, 27),
-            [Drawing.Point]::new(38, 27),
-            [Drawing.Point]::new(38, 17),
-            [Drawing.Point]::new(53, 32),
-            [Drawing.Point]::new(38, 47),
-            [Drawing.Point]::new(38, 37),
-            [Drawing.Point]::new(14, 37))
-        $Graphics.FillPolygon($foregroundBrush, $points)
+        $Graphics.FillEllipse($brush, $X + 3, $Y, 7, 7)
+        $Graphics.FillPath($brush, $body)
     }
     finally {
-        $backgroundBrush.Dispose(); $foregroundBrush.Dispose(); $border.Dispose()
+        $body.Dispose()
+        $brush.Dispose()
+    }
+}
+
+function Draw-TeleportButton {
+    param(
+        [Drawing.Graphics]$Graphics,
+        [switch]$Pressed
+    )
+
+    $stoneLight = if ($Pressed) {
+        [Drawing.Color]::FromArgb(255, 137, 133, 124)
+    } else {
+        [Drawing.Color]::FromArgb(255, 190, 184, 171)
+    }
+    $stoneMid = [Drawing.Color]::FromArgb(255, 155, 150, 139)
+    $stoneShadow = [Drawing.Color]::FromArgb(255, 82, 79, 74)
+    $panel = if ($Pressed) {
+        [Drawing.Color]::FromArgb(255, 42, 44, 41)
+    } else {
+        [Drawing.Color]::FromArgb(255, 50, 52, 48)
+    }
+    $personColor = if ($Pressed) {
+        [Drawing.Color]::FromArgb(255, 184, 181, 170)
+    } else {
+        [Drawing.Color]::FromArgb(255, 224, 220, 208)
+    }
+    $accentColor = if ($Pressed) {
+        [Drawing.Color]::FromArgb(255, 86, 102, 56)
+    } else {
+        [Drawing.Color]::FromArgb(255, 116, 133, 70)
+    }
+    $offset = if ($Pressed) { 1 } else { 0 }
+
+    $outer = New-RoundedRectanglePath -X 2 -Y 2 -Width 60 -Height 60 -Radius 8
+    $bevel = New-RoundedRectanglePath -X 4 -Y 4 -Width 56 -Height 56 -Radius 7
+    $center = New-RoundedRectanglePath -X 8 -Y 8 -Width 48 -Height 48 -Radius 5
+    $outerBrush = [Drawing.SolidBrush]::new($stoneShadow)
+    $bevelBrush = [Drawing.SolidBrush]::new($stoneMid)
+    $centerBrush = [Drawing.SolidBrush]::new($panel)
+    $highlight = [Drawing.Pen]::new($stoneLight, 2)
+    $transfer = [Drawing.Pen]::new($accentColor, 2)
+    $transfer.StartCap = [Drawing.Drawing2D.LineCap]::Round
+    $transfer.EndCap = [Drawing.Drawing2D.LineCap]::Triangle
+    try {
+        $Graphics.FillPath($outerBrush, $outer)
+        $Graphics.FillPath($bevelBrush, $bevel)
+        $Graphics.FillPath($centerBrush, $center)
+        if ($Pressed) {
+            $Graphics.DrawLine($highlight, 10, 54, 53, 54)
+        } else {
+            $Graphics.DrawLine($highlight, 10, 9, 53, 9)
+        }
+
+        Draw-TeleportPerson -Graphics $Graphics -X (14 + $offset) -Y (19 + $offset) -Color $personColor
+        Draw-TeleportPerson -Graphics $Graphics -X (37 + $offset) -Y (19 + $offset) -Color $personColor
+        $Graphics.DrawLine($transfer, 27 + $offset, 28 + $offset, 37 + $offset, 28 + $offset)
+        $Graphics.DrawLine($transfer, 37 + $offset, 38 + $offset, 27 + $offset, 38 + $offset)
+    }
+    finally {
+        $outer.Dispose(); $bevel.Dispose(); $center.Dispose()
+        $outerBrush.Dispose(); $bevelBrush.Dispose(); $centerBrush.Dispose()
+        $highlight.Dispose(); $transfer.Dispose()
     }
 }
 
 New-TravelMapIcon -Name "TeleportButton.png" -Draw {
     param($graphics)
-    Draw-TeleportArrow -Graphics $graphics -Background $basalt -Foreground $cyan
+    Draw-TeleportButton -Graphics $graphics
 }
 
 New-TravelMapIcon -Name "TeleportButton_Pressed.png" -Draw {
     param($graphics)
-    Draw-TeleportArrow -Graphics $graphics -Background $moss -Foreground $snow
+    Draw-TeleportButton -Graphics $graphics -Pressed
 }
 
 New-TravelMapIcon -Name "TeleportTo.png" -Draw {

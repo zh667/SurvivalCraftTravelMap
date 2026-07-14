@@ -1,4 +1,5 @@
 using System.Numerics;
+using Engine.Graphics;
 using Game;
 using Game.NetWork;
 using Game.NetWork.Packages;
@@ -113,7 +114,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private CoordinateTeleportServerOptions _coordinateServerOptions = new();
     private TrackedUiActionRunner? _networkActions;
     private TeleportPanelWidget? _teleportPanel;
-    private BevelledButtonWidget? _teleportPanelButton;
+    private BitmapButtonWidget? _teleportPanelButton;
+    private Texture2D? _teleportButtonTexture;
+    private Texture2D? _teleportButtonPressedTexture;
     private float _flushElapsed;
     private bool _explorationPressureWarningShown;
     private bool _isActive;
@@ -191,17 +194,18 @@ public sealed class TravelMapComponent : Component, IUpdateable
             TravelMapNetworkRuntime.UpdateLegacyServer(projectNet, CommonLib.Net);
         }
 
-        UpdateInvitationUi();
+        var hudState = TravelMapHudPolicy.Evaluate(GetHudSignals());
+        ApplyHudState(hudState);
+        UpdateHudPositions();
+        UpdateInvitationUi(hudState);
         UpdateExploration();
+        HandleLargeMapHotkey();
         if (_miniMap is null || _settings is null)
         {
             return;
         }
 
-        _miniMap.IsVisible = _settings.IsMiniMapVisible;
-        UpdateMiniMapPosition();
         UpdateFlush(dt);
-        HandleLargeMapHotkey();
     }
 
     public async Task<TeleportResult> TeleportToSurfaceAsync(
@@ -645,9 +649,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
             () => _waypoints,
             GetTerrainBrightness,
             IsMapInputBlocked,
+            OpenLargeMap,
             ShowMessage);
         Player.GuiWidget.Children.Add(_miniMap);
-        UpdateMiniMapPosition();
+        UpdateHudPositions();
 
         _largeMapDialog = new TravelMapDialog(
             state.PixelSource,
@@ -690,26 +695,37 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
     }
 
-    private void UpdateMiniMapPosition()
+    private void UpdateHudPositions()
     {
-        if (_miniMap is null || _settings is null)
+        if (_settings is null)
         {
             return;
         }
 
         var guiSize = Player.GuiWidget.ActualSize;
-        var position = TravelMapOverlayLayout.PlaceTopRight(
+        var positions = TravelMapOverlayLayout.PlaceHud(
             new Vector2(guiSize.X, guiSize.Y),
-            new Vector2(_settings.MiniMapSize),
-            rightMargin: 100f,
-            topMargin: 32f);
+            _settings.MiniMapSize);
+        if (_miniMap is not null)
+        {
+            SetHudWidgetPosition(_miniMap, positions.MiniMap);
+        }
+
+        if (_teleportPanelButton is not null)
+        {
+            SetHudWidgetPosition(_teleportPanelButton, positions.TeleportButton);
+        }
+    }
+
+    private void SetHudWidgetPosition(Widget widget, Vector2 position)
+    {
         if (Player.GuiWidget is CanvasWidget canvas)
         {
-            canvas.SetWidgetPosition(_miniMap, new Engine.Vector2(position.X, position.Y));
+            canvas.SetWidgetPosition(widget, new Engine.Vector2(position.X, position.Y));
         }
         else
         {
-            _miniMap.LayoutTransform = Engine.Matrix.CreateTranslation(position.X, position.Y, 0f);
+            widget.LayoutTransform = Engine.Matrix.CreateTranslation(position.X, position.Y, 0f);
         }
     }
 
@@ -717,29 +733,50 @@ public sealed class TravelMapComponent : Component, IUpdateable
     {
         _teleportPanel = new TeleportPanelWidget(GetLegacyTeleportPlayers, targetId =>
             QueueLegacyPackage(LegacyGpsMessage.Teleport(targetId.ToString())));
-        _teleportPanelButton = new BevelledButtonWidget
+        if (!ModsManager.GetModEntity("SurvivalcraftTravelMap", out var modEntity))
         {
-            Text = "玩家传送",
-            Size = new Engine.Vector2(112f, 40f),
-            Font = ContentManager.Get<Engine.Media.BitmapFont>("Fonts/Pericles"),
-            FontScale = 0.8f,
-            Color = new Engine.Color(0xE8, 0xEC, 0xE7),
-            CenterColor = new Engine.Color(0x1B, 0x26, 0x28),
-            BevelColor = new Engine.Color(0x6F, 0x8A, 0x3B),
-            BevelSize = 1f,
+            throw new InvalidOperationException("Travel map assets are unavailable.");
+        }
+
+        modEntity.GetAssetsFile("TeleportButton.png", stream =>
+            _teleportButtonTexture = Texture2D.Load(stream));
+        modEntity.GetAssetsFile("TeleportButton_Pressed.png", stream =>
+            _teleportButtonPressedTexture = Texture2D.Load(stream));
+        if (_teleportButtonTexture is null || _teleportButtonPressedTexture is null)
+        {
+            throw new InvalidDataException("Travel map invitation button textures could not be loaded.");
+        }
+
+        _teleportPanelButton = new BitmapButtonWidget
+        {
+            Size = new Engine.Vector2(48f, 46f),
+            NormalSubtexture = new Subtexture(
+                _teleportButtonTexture,
+                Engine.Vector2.Zero,
+                Engine.Vector2.One),
+            ClickedSubtexture = new Subtexture(
+                _teleportButtonPressedTexture,
+                Engine.Vector2.Zero,
+                Engine.Vector2.One),
         };
         Player.GuiWidget.Children.Add(_teleportPanelButton);
-        PositionInvitationButton();
+        UpdateHudPositions();
     }
 
-    private void UpdateInvitationUi()
+    private void UpdateInvitationUi(TravelMapHudState hudState)
     {
         if (_teleportPanelButton is null || _teleportPanel is null)
         {
             return;
         }
 
-        PositionInvitationButton();
+        if (!hudState.ShowTeleportButton
+            || !_teleportPanelButton.IsEnabled
+            || !GetMapInputFocus().AllowsMapHotkey)
+        {
+            return;
+        }
+
         if (_teleportPanelButton.IsClicked && !DialogsManager.Dialogs.Contains(_teleportPanel))
         {
             _teleportPanel.Refresh();
@@ -747,33 +784,43 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
     }
 
-    private void PositionInvitationButton()
+    private TravelMapHudSignals GetHudSignals()
     {
-        if (_teleportPanelButton is null)
+        var isLargeMapOpen = _largeMapDialog is not null
+            && DialogsManager.Dialogs.Contains(_largeMapDialog);
+        var hasModalSurface = Gui?.ModalPanelWidget is not null
+            || DialogsManager.Dialogs.Any(dialog => !ReferenceEquals(dialog, _largeMapDialog));
+        return new TravelMapHudSignals(
+            HasUi: RuntimeContext.HasUi,
+            IsMainPlayer: RuntimeContext.IsMainPlayer,
+            IsRuntimeActive: _isActive,
+            MiniMapSettingEnabled: _settings?.IsMiniMapVisible == true,
+            HasModalSurface: hasModalSurface,
+            IsLargeMapOpen: isLargeMapOpen,
+            HasOtherPlayers: CountOtherPlayers() > 0,
+            InvitationFeatureAvailable: TravelMapRuntimePolicy.CreatesInvitationUi(RuntimeContext),
+            HasTextEntryFocus: !GetMapInputFocus().AllowsMapHotkey);
+    }
+
+    private void ApplyHudState(TravelMapHudState state)
+    {
+        if (_miniMap is not null)
         {
-            return;
+            _miniMap.IsVisible = state.ShowMiniMap;
+            _miniMap.IsEnabled = state.AllowMiniMapInput;
         }
 
-        var guiSize = Player.GuiWidget.ActualSize;
-        var position = TravelMapOverlayLayout.PlaceTopRight(
-            new Vector2(guiSize.X, guiSize.Y),
-            new Vector2(112f, 40f),
-            rightMargin: 100f,
-            topMargin: 4f);
-        if (Player.GuiWidget is CanvasWidget canvas)
+        if (_teleportPanelButton is not null)
         {
-            canvas.SetWidgetPosition(
-                _teleportPanelButton,
-                new Engine.Vector2(position.X, position.Y));
-        }
-        else
-        {
-            _teleportPanelButton.LayoutTransform = Engine.Matrix.CreateTranslation(
-                position.X,
-                position.Y,
-                0f);
+            _teleportPanelButton.IsVisible = state.ShowTeleportButton;
+            _teleportPanelButton.IsEnabled = state.ShowTeleportButton && state.AllowMiniMapInput;
         }
     }
+
+    private int CountOtherPlayers() => Project
+        .FindSubsystem<SubsystemPlayers>(true)
+        .ComponentPlayers
+        .Count(player => player.PlayerGuid != Player.PlayerGuid);
 
     private IReadOnlyList<LegacyTeleportPlayer> GetLegacyTeleportPlayers()
     {
@@ -877,15 +924,26 @@ public sealed class TravelMapComponent : Component, IUpdateable
             focus);
         if (command.Kind == TravelMapUiCommandKind.OpenLargeMap)
         {
-            _largeMapDialog.ResetToPlayer();
-            DialogsManager.ShowDialog(Player.GuiWidget, _largeMapDialog);
-            input.Clear();
+            OpenLargeMap();
         }
         else if (command.Kind == TravelMapUiCommandKind.CloseLargeMap)
         {
             DialogsManager.HideDialog(_largeMapDialog);
             input.Clear();
         }
+    }
+
+    private void OpenLargeMap()
+    {
+        if (_largeMapDialog is null || !GetMapInputFocus().AllowsMapHotkey)
+        {
+            return;
+        }
+
+        _largeMapDialog.ResetToPlayer();
+        DialogsManager.ShowDialog(Player.GuiWidget, _largeMapDialog);
+        ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));
+        Player.GameWidget.Input.Clear();
     }
 
     private TravelMapFocusState GetMapInputFocus(bool ignoreLargeMapDialog = false)
@@ -1202,6 +1260,20 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _teleportPanelButton = null;
             RunCleanupStep(() => teleportPanelButton.ParentWidget?.Children.Remove(teleportPanelButton));
             RunCleanupStep(teleportPanelButton.Dispose);
+        }
+
+        if (_teleportButtonTexture is not null)
+        {
+            var teleportButtonTexture = _teleportButtonTexture;
+            _teleportButtonTexture = null;
+            RunCleanupStep(teleportButtonTexture.Dispose);
+        }
+
+        if (_teleportButtonPressedTexture is not null)
+        {
+            var teleportButtonPressedTexture = _teleportButtonPressedTexture;
+            _teleportButtonPressedTexture = null;
+            RunCleanupStep(teleportButtonPressedTexture.Dispose);
         }
 
         if (_tileStore is not null)
