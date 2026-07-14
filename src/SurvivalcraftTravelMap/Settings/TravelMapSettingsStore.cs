@@ -17,6 +17,7 @@ public enum TravelMapSettingsLoadOutcome
     Loaded,
     Created,
     MigratedUnversioned,
+    MigratedPreviousSchema,
     MigratedPreviousPath,
     CorruptIsolated,
     UnsupportedFutureSchemaReadOnly,
@@ -44,6 +45,7 @@ public sealed class TravelMapSettingsFutureSchemaWarningGate
 
 public sealed class TravelMapSettingsStore
 {
+    private const int CurrentSchemaVersion = 2;
     private const string SettingsFileName = "settings.json";
     private const string PreviousSettingsFileName = "travel-map-settings.json";
     private const string LegacyFileName = "GPSSetting.xml";
@@ -164,9 +166,10 @@ public sealed class TravelMapSettingsStore
             }
 
             var hasSchema = parsed.RootElement.TryGetProperty("schemaVersion", out var schemaElement);
+            var schema = SchemaKind.Invalid;
             if (hasSchema)
             {
-                var schema = ClassifySchema(schemaElement);
+                schema = ClassifySchema(schemaElement);
                 if (schema == SchemaKind.Future)
                 {
                     IsReadOnly = true;
@@ -176,7 +179,7 @@ public sealed class TravelMapSettingsStore
                         IsReadOnly: true);
                 }
 
-                if (schema != SchemaKind.Current)
+                if (schema == SchemaKind.Invalid)
                 {
                     throw new InvalidDataException("The settings schema version is invalid.");
                 }
@@ -185,6 +188,11 @@ public sealed class TravelMapSettingsStore
             var document = JsonSerializer.Deserialize<SettingsDocument>(json, SerializerOptions)
                 ?? throw new InvalidDataException("The settings document is empty.");
             var settings = document.ToSettings();
+            if (schema == SchemaKind.Previous && settings.MiniMapSize == 384)
+            {
+                settings.MiniMapSize = 192;
+            }
+
             settings.Normalize();
             _extensionData = document.ExtensionData?
                 .Where(pair => !string.Equals(pair.Key, "schemaVersion", StringComparison.Ordinal))
@@ -192,9 +200,12 @@ public sealed class TravelMapSettingsStore
             await SaveCoreAsync(settings, cancellationToken).ConfigureAwait(false);
             return new TravelMapSettingsLoadResult(
                 settings,
-                hasSchema
-                    ? TravelMapSettingsLoadOutcome.Loaded
-                    : TravelMapSettingsLoadOutcome.MigratedUnversioned,
+                schema switch
+                {
+                    SchemaKind.Previous => TravelMapSettingsLoadOutcome.MigratedPreviousSchema,
+                    SchemaKind.Current => TravelMapSettingsLoadOutcome.Loaded,
+                    _ => TravelMapSettingsLoadOutcome.MigratedUnversioned,
+                },
                 IsReadOnly: false);
         }
         catch (Exception exception) when (exception is JsonException or InvalidDataException)
@@ -221,17 +232,18 @@ public sealed class TravelMapSettingsStore
         {
             return value switch
             {
-                1 => SchemaKind.Current,
-                > 1 => SchemaKind.Future,
+                1 => SchemaKind.Previous,
+                CurrentSchemaVersion => SchemaKind.Current,
+                > CurrentSchemaVersion => SchemaKind.Future,
                 _ => SchemaKind.Invalid,
             };
         }
 
         var raw = element.GetRawText();
         if ((BigInteger.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer)
-                && integer > BigInteger.One)
+                && integer > CurrentSchemaVersion)
             || (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
-                && number > 1d))
+                && number > CurrentSchemaVersion))
         {
             return SchemaKind.Future;
         }
@@ -353,6 +365,7 @@ public sealed class TravelMapSettingsStore
     private enum SchemaKind
     {
         Invalid,
+        Previous,
         Current,
         Future,
     }
@@ -360,7 +373,7 @@ public sealed class TravelMapSettingsStore
     private sealed class SettingsDocument
     {
         [JsonPropertyName("schemaVersion")]
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
         public bool IsMiniMapVisible { get; set; } = true;
 
@@ -370,7 +383,7 @@ public sealed class TravelMapSettingsStore
 
         public bool AcceptTeleportInvitations { get; set; } = true;
 
-        public int MiniMapSize { get; set; } = 256;
+        public int MiniMapSize { get; set; } = 192;
 
         public float MiniMapBlocksPerPixel { get; set; } = 1f;
 
@@ -400,7 +413,7 @@ public sealed class TravelMapSettingsStore
             TravelMapSettings settings,
             Dictionary<string, JsonElement>? extensionData) => new()
         {
-            SchemaVersion = 1,
+            SchemaVersion = CurrentSchemaVersion,
             IsMiniMapVisible = settings.IsMiniMapVisible,
             ShowCoordinates = settings.ShowCoordinates,
             UseDayNightTint = settings.UseDayNightTint,

@@ -277,7 +277,7 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Fact]
-    public async Task Canonical_settings_path_uses_schema_one_envelope()
+    public async Task Missing_settings_create_schema_two_defaults()
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -290,7 +290,59 @@ public sealed class TravelMapSettingsStoreTests
         Assert.EndsWith("settings.json", store.SettingsPath, StringComparison.Ordinal);
         Assert.Equal(TravelMapSettingsLoadOutcome.Created, result.Outcome);
         Assert.False(result.IsReadOnly);
-        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+    }
+
+    [Theory]
+    [InlineData(160, 160)]
+    [InlineData(192, 192)]
+    [InlineData(256, 256)]
+    [InlineData(320, 320)]
+    [InlineData(384, 192)]
+    public async Task Schema_one_values_are_migrated_once_and_saved_as_schema_two(
+        int persistedSize,
+        int expectedSize)
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            $"{{\"schemaVersion\":1,\"MiniMapSize\":{persistedSize}}}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
+        Assert.False(result.IsReadOnly);
+        Assert.Equal(expectedSize, result.Settings.MiniMapSize);
+        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(expectedSize, document.RootElement.GetProperty("MiniMapSize").GetInt32());
+    }
+
+    [Fact]
+    public async Task Schema_two_size_384_is_loaded_without_migration()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":2,\"MiniMapSize\":384}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.False(result.IsReadOnly);
+        Assert.Equal(384, result.Settings.MiniMapSize);
+        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(384, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
 
     [Fact]
@@ -299,10 +351,11 @@ public sealed class TravelMapSettingsStoreTests
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
         Directory.CreateDirectory(directory.Path);
-        const string future = "{\"schemaVersion\":999999999999999999999999999999,\"future\":null}";
+        const string future = "{\r\n  \"schemaVersion\": 3,\r\n  \"future\": null\r\n}";
         await File.WriteAllTextAsync(store.SettingsPath, future, TestContext.Current.CancellationToken);
 
         var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(192, result.Settings.MiniMapSize);
         result.Settings.MiniMapSize = 384;
         await store.SaveAsync(result.Settings, TestContext.Current.CancellationToken);
 
@@ -330,6 +383,10 @@ public sealed class TravelMapSettingsStoreTests
         Assert.False(result.Settings.ShowCoordinates);
         Assert.True(File.Exists(previous));
         Assert.True(File.Exists(store.SettingsPath));
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -351,7 +408,7 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Fact]
-    public async Task Current_schema_preserves_unknown_fields_when_normalizing()
+    public async Task Previous_schema_preserves_unknown_fields_when_migrating()
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -365,8 +422,9 @@ public sealed class TravelMapSettingsStoreTests
             store.SettingsPath,
             TestContext.Current.CancellationToken));
 
-        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
         Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("futureHint").GetProperty("x").GetInt32());
     }
 
@@ -424,7 +482,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.False(settings.IsMiniMapVisible);
         Assert.False(settings.AcceptTeleportInvitations);
         Assert.True(settings.ShowCoordinates);
-        Assert.Equal(256, settings.MiniMapSize);
+        Assert.Equal(192, settings.MiniMapSize);
         Assert.True(File.Exists(legacyPath));
         Assert.True(File.Exists(store.SettingsPath));
     }
@@ -455,16 +513,18 @@ public sealed class TravelMapSettingsStoreTests
         Directory.CreateDirectory(directory.Path);
         await File.WriteAllTextAsync(
             store.SettingsPath,
-            "{\"MiniMapSize\":203,\"MiniMapBlocksPerPixel\":99,\"LargeMapBlocksPerPixel\":0.01}",
+            "{\"MiniMapSize\":384,\"MiniMapBlocksPerPixel\":99,\"LargeMapBlocksPerPixel\":0.01}",
             TestContext.Current.CancellationToken);
 
-        var settings = await store.LoadAsync(TestContext.Current.CancellationToken);
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
         var persisted = JsonDocument.Parse(await File.ReadAllTextAsync(store.SettingsPath, TestContext.Current.CancellationToken));
 
-        Assert.Equal(192, settings.MiniMapSize);
-        Assert.Equal(8f, settings.MiniMapBlocksPerPixel);
-        Assert.Equal(0.25f, settings.LargeMapBlocksPerPixel);
-        Assert.Equal(192, persisted.RootElement.GetProperty("MiniMapSize").GetInt32());
+        Assert.Equal(TravelMapSettingsLoadOutcome.MigratedUnversioned, result.Outcome);
+        Assert.Equal(384, result.Settings.MiniMapSize);
+        Assert.Equal(8f, result.Settings.MiniMapBlocksPerPixel);
+        Assert.Equal(0.25f, result.Settings.LargeMapBlocksPerPixel);
+        Assert.Equal(384, persisted.RootElement.GetProperty("MiniMapSize").GetInt32());
+        Assert.Equal(2, persisted.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -475,9 +535,14 @@ public sealed class TravelMapSettingsStoreTests
         Directory.CreateDirectory(directory.Path);
         await File.WriteAllTextAsync(store.SettingsPath, "{not json", TestContext.Current.CancellationToken);
 
-        var settings = await store.LoadAsync(TestContext.Current.CancellationToken);
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
 
-        Assert.Equal(256, settings.MiniMapSize);
+        Assert.Equal(TravelMapSettingsLoadOutcome.CorruptIsolated, result.Outcome);
+        Assert.Equal(192, result.Settings.MiniMapSize);
+        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
         Assert.True(File.Exists(store.SettingsPath));
     }
