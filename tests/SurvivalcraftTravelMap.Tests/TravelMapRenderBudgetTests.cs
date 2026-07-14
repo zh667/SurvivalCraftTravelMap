@@ -10,6 +10,24 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapRenderBudgetTests
 {
+    private static MapTile CreateQuarterExploredTile(Rgba32 color)
+    {
+        var tile = new MapTile(0, 0);
+        for (var z = 0; z < MapTile.Size; z += 2)
+        {
+            for (var x = 0; x < MapTile.Size; x += 2)
+            {
+                tile.SetPixel(x, z, color);
+            }
+        }
+
+        return tile;
+    }
+
+    private static (int X, int Z, Vector2 Minimum, Vector2 Maximum, Rgba32 Color) CellIdentity(
+        MapTerrainCell cell) =>
+        (cell.WorldX, cell.WorldZ, cell.ScreenMinimum, cell.ScreenMaximum, cell.Color);
+
     [Theory]
     [InlineData(32f)]
     [InlineData(2f)]
@@ -189,6 +207,37 @@ public sealed class TravelMapRenderBudgetTests
         {
             Assert.Equal(sink.Terrain[index - 1].ScreenMaximum.X, sink.Terrain[index].ScreenMinimum.X);
         }
+    }
+
+    [Fact]
+    public void Fixed_scale_pan_round_trip_retains_partially_explored_lod_cells()
+    {
+        const int tileCount = 129;
+        var color = new Rgba32(70, 80, 90, 255);
+        var source = new TileStoreMapPixelSource(
+            new KnownTileProvider(CreateQuarterExploredTile(color), tileCount));
+        var viewport = new Vector2((tileCount * MapTile.Size) - 2, MapTile.Size - 2);
+        var original = new MapTransform(
+            new Vector2(((tileCount * MapTile.Size) - 1) / 2f, (MapTile.Size - 1) / 2f),
+            1f,
+            viewport);
+        var shifted = original with { Center = original.Center + new Vector2(1f, 1f) };
+
+        var first = new CapturingRenderSink();
+        var middle = new CapturingRenderSink();
+        var returned = new CapturingRenderSink();
+        var firstStats = TravelMapRenderModel.RenderTerrain(source, original, 1f, first);
+        TravelMapRenderModel.RenderTerrain(source, shifted, 1f, middle);
+        var returnedStats = TravelMapRenderModel.RenderTerrain(source, original, 1f, returned);
+
+        Assert.True(firstStats.WorldStride > 1);
+        Assert.NotEmpty(first.Terrain);
+        Assert.NotEmpty(middle.Terrain);
+        Assert.Equal(firstStats.WorldStride, returnedStats.WorldStride);
+        Assert.Equal(
+            first.Terrain.Select(CellIdentity).ToArray(),
+            returned.Terrain.Select(CellIdentity).ToArray());
+        Assert.All(returned.Terrain, cell => Assert.Equal(color, cell.Color));
     }
 
     [Fact]
@@ -378,9 +427,10 @@ public sealed class TravelMapRenderBudgetTests
     }
 
     [Fact]
-    public void Indexed_aggregate_does_not_expand_when_any_cell_in_the_region_is_unknown()
+    public void Indexed_aggregate_retains_known_color_when_some_cells_in_the_region_are_unknown()
     {
-        var tile = CreateFullyExploredTile(new Rgba32(20, 40, 60, 255));
+        var color = new Rgba32(20, 40, 60, 255);
+        var tile = CreateFullyExploredTile(color);
         tile.SetPixel(1, 0, default);
         var source = new TileStoreMapPixelSource(new KnownTileProvider(tile, tileCount: 65));
         var sink = new CapturingRenderSink();
@@ -392,11 +442,23 @@ public sealed class TravelMapRenderBudgetTests
             sink);
 
         Assert.Equal(2, statistics.WorldStride);
-        Assert.DoesNotContain(sink.Terrain, cell => cell.WorldX == 0 && cell.WorldZ == 0);
+        var partiallyExploredCell = Assert.Single(
+            sink.Terrain,
+            cell => cell.WorldX == 0 && cell.WorldZ == 0);
+        Assert.Equal(color, partiallyExploredCell.Color);
+        Assert.Equal(2f, partiallyExploredCell.ScreenMaximum.X - partiallyExploredCell.ScreenMinimum.X);
         var neighboringCell = Assert.Single(
             sink.Terrain,
             cell => cell.WorldX == 2 && cell.WorldZ == 0);
         Assert.Equal(2f, neighboringCell.ScreenMaximum.X - neighboringCell.ScreenMinimum.X);
+        Assert.InRange(
+            statistics.PixelQueries,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            source.CachedLodSampleCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
     }
 
     [Fact]
@@ -685,13 +747,29 @@ public sealed class MapTileSnapshotTests
     }
 
     [Fact]
-    public void Explored_region_is_unknown_when_even_a_non_origin_cell_is_unknown()
+    public void Partially_explored_region_averages_only_known_rgba_values()
     {
         var tile = new MapTile(0, 0);
-        tile.SetPixel(0, 0, new Rgba32(20, 40, 60, 255));
+        tile.SetPixel(0, 0, new Rgba32(10, 20, 30, 40));
+        tile.SetPixel(1, 1, new Rgba32(30, 40, 50, 80));
 
-        Assert.False(
-            tile.CreateVersionedSnapshot().Snapshot.TryGetExploredRegion(0, 0, 2, 1, out _));
+        var found = tile.CreateVersionedSnapshot().Snapshot.TryGetExploredRegion(
+            0,
+            0,
+            2,
+            2,
+            out var average);
+
+        Assert.True(found);
+        Assert.Equal(new Rgba32(20, 30, 40, 60), average);
+    }
+
+    [Fact]
+    public void Completely_unknown_region_remains_absent()
+    {
+        var snapshot = new MapTile(0, 0).CreateVersionedSnapshot().Snapshot;
+
+        Assert.False(snapshot.TryGetExploredRegion(0, 0, 2, 2, out _));
     }
 
     [Theory]

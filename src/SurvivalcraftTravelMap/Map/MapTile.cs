@@ -346,18 +346,18 @@ public sealed class MapTileSnapshot
         }
 
         var sums = _regionSums.Value;
-        var pixelCount = checked(width * height);
-        if (RegionSum(sums.Explored, x, z, endX, endZ) != pixelCount)
+        var exploredCount = RegionSum(sums.Explored, x, z, endX, endZ);
+        if (exploredCount == 0)
         {
             color = default;
             return false;
         }
 
         color = new Rgba32(
-            Average(RegionSum(sums.Red, x, z, endX, endZ), pixelCount),
-            Average(RegionSum(sums.Green, x, z, endX, endZ), pixelCount),
-            Average(RegionSum(sums.Blue, x, z, endX, endZ), pixelCount),
-            Average(RegionSum(sums.Alpha, x, z, endX, endZ), pixelCount));
+            Average(RegionSum(sums.Red, x, z, endX, endZ), exploredCount),
+            Average(RegionSum(sums.Green, x, z, endX, endZ), exploredCount),
+            Average(RegionSum(sums.Blue, x, z, endX, endZ), exploredCount),
+            Average(RegionSum(sums.Alpha, x, z, endX, endZ), exploredCount));
         return true;
     }
 
