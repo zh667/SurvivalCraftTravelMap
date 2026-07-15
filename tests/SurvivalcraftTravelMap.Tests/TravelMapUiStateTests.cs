@@ -77,7 +77,7 @@ public sealed class TravelMapUiStateTests
             miniMapSize: 192f);
 
         Assert.Equal(new Vector2(794.5f, 24f), positions.MiniMap);
-        Assert.Equal(new Vector2(938.5f, 220f), positions.TeleportButton);
+        Assert.Equal(new Vector2(938.5f, 262f), positions.TeleportButton);
     }
 
     [Fact]
@@ -87,8 +87,58 @@ public sealed class TravelMapUiStateTests
             new Vector2(220f, 210f),
             miniMapSize: 192f);
 
-        Assert.Equal(new Vector2(0f, 18f), positions.MiniMap);
+        Assert.Equal(Vector2.Zero, positions.MiniMap);
         Assert.Equal(new Vector2(144f, 164f), positions.TeleportButton);
+    }
+
+    [Fact]
+    public void Custom_anchor_round_trips_across_gui_sizes_and_keeps_invitation_attached()
+    {
+        var first = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1000f, 600f),
+            miniMapSize: 200f,
+            anchorX: 0.25f,
+            anchorY: 0.75f);
+        var anchor = TravelMapOverlayLayout.NormalizeCustomPosition(
+            first.MiniMap,
+            new Vector2(1000f, 600f),
+            TravelMapOverlayLayout.MiniMapFootprint(200f));
+        var resized = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1400f, 900f),
+            miniMapSize: 200f,
+            anchor.X,
+            anchor.Y);
+
+        Assert.Equal(new Vector2(200f, 268.5f), first.MiniMap);
+        Assert.Equal(new Vector2(352f, 514.5f), first.TeleportButton);
+        Assert.Equal(new Vector2(0.25f, 0.75f), anchor);
+        Assert.Equal(new Vector2(300f, 493.5f), resized.MiniMap);
+        Assert.Equal(new Vector2(452f, 739.5f), resized.TeleportButton);
+    }
+
+    [Fact]
+    public void Placement_session_clamps_drag_and_cancel_restores_the_original_position()
+    {
+        var session = new MiniMapPlacementSession(new Vector2(700f, 24f));
+
+        Assert.True(session.TryBeginDrag(new Vector2(710f, 34f), 192f));
+        session.DragTo(new Vector2(-100f, 900f), new Vector2(900f, 600f), 192f);
+        Assert.Equal(new Vector2(0f, 366f), session.PreviewPosition);
+
+        session.Cancel();
+
+        Assert.Equal(new Vector2(700f, 24f), session.PreviewPosition);
+    }
+
+    [Fact]
+    public void Placement_session_ignores_drag_starts_outside_the_minimap()
+    {
+        var session = new MiniMapPlacementSession(new Vector2(700f, 24f));
+
+        Assert.False(session.TryBeginDrag(new Vector2(699f, 24f), 192f));
+        session.DragTo(new Vector2(10f), new Vector2(900f, 600f), 192f);
+
+        Assert.Equal(new Vector2(700f, 24f), session.PreviewPosition);
     }
 
     [Theory]
@@ -394,6 +444,28 @@ public sealed class TravelMapUiStateTests
     }
 
     [Fact]
+    public void Right_click_prefers_the_last_death_marker_and_only_offers_return_or_cancel()
+    {
+        var waypoint = new Waypoint(
+            Guid.NewGuid(),
+            "Camp",
+            new Vector3(10f, 70f, 20f),
+            DateTimeOffset.UtcNow);
+
+        var command = _controller.HandleRightClick(
+            new Vector2(10f, 20f),
+            isExplored: false,
+            waypointHit: waypoint,
+            deathMarkerHit: true);
+
+        Assert.Equal(TravelMapUiCommandKind.ShowDeathMarkerMenu, command.Kind);
+        Assert.Null(command.ContextMenu!.WaypointId);
+        Assert.Equal(
+            [TravelMapContextAction.TeleportToLastDeath, TravelMapContextAction.Cancel],
+            command.ContextMenu.Actions);
+    }
+
+    [Fact]
     public void Right_click_explored_ground_returns_ground_actions()
     {
         var command = _controller.HandleRightClick(new Vector2(10f, 20f), isExplored: true, waypointHit: null);
@@ -463,7 +535,7 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Fact]
-    public async Task Missing_settings_create_schema_two_defaults()
+    public async Task Missing_settings_create_schema_three_defaults()
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -477,8 +549,166 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(TravelMapSettingsLoadOutcome.Created, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(160, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.True(document.RootElement.GetProperty("ShowCreatureMarkers").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("ShowLastDeathMarker").GetBoolean());
+        Assert.Equal(5f, document.RootElement.GetProperty("CreatureMarkerSize").GetSingle());
+        Assert.Equal(
+            "NorthUp",
+            document.RootElement.GetProperty("MiniMapOrientation").GetString());
+        Assert.True(document.RootElement.GetProperty("ShowCompassNorth").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("ShowCompassOtherDirections").GetBoolean());
+        Assert.Equal(1f, document.RootElement.GetProperty("CompassFontScale").GetSingle());
+        Assert.Equal("RoundedSquare", document.RootElement.GetProperty("MiniMapShape").GetString());
+        Assert.True(document.RootElement.GetProperty("ShowGameTime").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("UseHeightShading").GetBoolean());
         Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_independent_compass_presentation_settings()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"ShowCompassNorth\":false,"
+            + "\"ShowCompassOtherDirections\":true,\"CompassFontScale\":1.5}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(result.Settings.ShowCompassNorth);
+        Assert.True(result.Settings.ShowCompassOtherDirections);
+        Assert.Equal(1.5f, result.Settings.CompassFontScale);
+    }
+
+    [Fact]
+    public async Task Conflicting_legacy_compass_flags_preserve_the_users_north_only_intent()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"ShowCompassDirections\":false,"
+            + "\"CompassNorthOnly\":true}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
+
+        Assert.True(result.Settings.ShowCompassNorth);
+        Assert.False(result.Settings.ShowCompassOtherDirections);
+        Assert.True(document.RootElement.GetProperty("ShowCompassNorth").GetBoolean());
+        Assert.False(document.RootElement.GetProperty("ShowCompassOtherDirections").GetBoolean());
+        Assert.False(document.RootElement.TryGetProperty("ShowCompassDirections", out _));
+        Assert.False(document.RootElement.TryGetProperty("CompassNorthOnly", out _));
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_normalized_minimap_anchor()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"MiniMapAnchorX\":0.2,\"MiniMapAnchorY\":0.8}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(0.2f, result.Settings.MiniMapAnchorX);
+        Assert.Equal(0.8f, result.Settings.MiniMapAnchorY);
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_hidden_game_time_setting()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"ShowGameTime\":false}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(result.Settings.ShowGameTime);
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_disabled_height_shading_setting()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"UseHeightShading\":false}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(result.Settings.UseHeightShading);
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_hidden_last_death_marker_setting()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"ShowLastDeathMarker\":false}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(result.Settings.ShowLastDeathMarker);
+    }
+
+    [Theory]
+    [InlineData("Circle", MapShape.Circle)]
+    [InlineData("Square", MapShape.Square)]
+    [InlineData("Hexagon", MapShape.RoundedSquare)]
+    [InlineData("RoundedSquare", MapShape.RoundedSquare)]
+    [InlineData("Unknown", MapShape.RoundedSquare)]
+    public async Task Current_schema_loads_known_map_shape_and_normalizes_unknown_values(
+        string persisted,
+        MapShape expected)
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            $"{{\"schemaVersion\":3,\"MiniMapShape\":\"{persisted}\"}}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(expected, result.Settings.MiniMapShape);
+    }
+
+    [Theory]
+    [InlineData("NorthUp", MiniMapOrientation.NorthUp)]
+    [InlineData("HeadingUp", MiniMapOrientation.HeadingUp)]
+    [InlineData("Unknown", MiniMapOrientation.NorthUp)]
+    public async Task Current_schema_loads_known_orientation_and_normalizes_unknown_values(
+        string persisted,
+        MiniMapOrientation expected)
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            $"{{\"schemaVersion\":3,\"MiniMapOrientation\":\"{persisted}\"}}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.Equal(expected, result.Settings.MiniMapOrientation);
     }
 
     [Theory]
@@ -487,7 +717,7 @@ public sealed class TravelMapSettingsStoreTests
     [InlineData(256, 256)]
     [InlineData(320, 320)]
     [InlineData(384, 192)]
-    public async Task Schema_one_values_are_migrated_once_and_saved_as_schema_two(
+    public async Task Schema_one_values_are_migrated_once_and_saved_as_schema_three(
         int persistedSize,
         int expectedSize)
     {
@@ -506,12 +736,12 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(expectedSize, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(expectedSize, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
 
     [Fact]
-    public async Task Schema_two_size_384_is_loaded_without_migration()
+    public async Task Schema_two_size_384_is_migrated_without_the_schema_one_size_rewrite()
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -525,10 +755,10 @@ public sealed class TravelMapSettingsStoreTests
             store.SettingsPath,
             TestContext.Current.CancellationToken));
 
-        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(384, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(384, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
 
@@ -544,7 +774,7 @@ public sealed class TravelMapSettingsStoreTests
         var store = new TravelMapSettingsStore(directory.Path);
         await File.WriteAllTextAsync(
             store.SettingsPath,
-            $"{{\"schemaVersion\":2,\"MiniMapSize\":{size}}}",
+            $"{{\"schemaVersion\":3,\"MiniMapSize\":{size}}}",
             TestContext.Current.CancellationToken);
 
         var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
@@ -555,7 +785,8 @@ public sealed class TravelMapSettingsStoreTests
 
     [Theory]
     [InlineData(1, TravelMapSettingsLoadOutcome.MigratedPreviousSchema)]
-    [InlineData(2, TravelMapSettingsLoadOutcome.Loaded)]
+    [InlineData(2, TravelMapSettingsLoadOutcome.MigratedPreviousSchema)]
+    [InlineData(3, TravelMapSettingsLoadOutcome.Loaded)]
     public async Task Explicit_schemas_use_the_document_default_when_minimap_size_is_missing(
         int schemaVersion,
         TravelMapSettingsLoadOutcome expectedOutcome)
@@ -575,15 +806,15 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(expectedOutcome, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(160, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("futureHint").GetProperty("x").GetInt32());
     }
 
     [Theory]
-    [InlineData("2.000e0")]
-    [InlineData("2000e-3")]
-    public async Task Mathematically_exact_schema_two_numbers_are_current(string schemaNumber)
+    [InlineData("3.000e0")]
+    [InlineData("3000e-3")]
+    public async Task Mathematically_exact_schema_three_numbers_are_current(string schemaNumber)
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -600,15 +831,15 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(384, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.True(document.RootElement.GetProperty("futureHint").GetBoolean());
     }
 
     [Theory]
-    [InlineData("2.0000000000000000000000000000000000000001")]
-    [InlineData("2e1")]
+    [InlineData("3.0000000000000000000000000000000000000001")]
+    [InlineData("3e1")]
     [InlineData("1e1000000000")]
-    public async Task Any_schema_number_greater_than_two_is_future_and_preserved_byte_for_byte(
+    public async Task Any_schema_number_greater_than_three_is_future_and_preserved_byte_for_byte(
         string schemaNumber)
     {
         using var directory = new UiTemporaryDirectory();
@@ -633,11 +864,11 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Theory]
-    [InlineData("1.9999999999999999999999999999999999999999")]
+    [InlineData("2.9999999999999999999999999999999999999999")]
     [InlineData("1e-1000000000")]
     [InlineData("-3")]
     [InlineData("0")]
-    public async Task Numeric_schema_values_other_than_exact_one_two_or_greater_than_two_are_invalid(
+    public async Task Numeric_schema_values_other_than_exact_one_two_three_or_greater_than_three_are_invalid(
         string schemaNumber)
     {
         using var directory = new UiTemporaryDirectory();
@@ -656,7 +887,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.False(result.IsReadOnly);
         Assert.Equal(160, result.Settings.MiniMapSize);
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -665,7 +896,7 @@ public sealed class TravelMapSettingsStoreTests
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
         Directory.CreateDirectory(directory.Path);
-        const string future = "{\r\n  \"schemaVersion\": 3,\r\n  \"future\": null\r\n}";
+        const string future = "{\r\n  \"schemaVersion\": 4,\r\n  \"future\": null\r\n}";
         await File.WriteAllTextAsync(store.SettingsPath, future, TestContext.Current.CancellationToken);
 
         var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
@@ -700,7 +931,7 @@ public sealed class TravelMapSettingsStoreTests
         using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
             store.SettingsPath,
             TestContext.Current.CancellationToken));
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -738,7 +969,7 @@ public sealed class TravelMapSettingsStoreTests
 
         Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
         Assert.Equal(192, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("futureHint").GetProperty("x").GetInt32());
     }
 
@@ -838,7 +1069,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(8f, result.Settings.MiniMapBlocksPerPixel);
         Assert.Equal(0.25f, result.Settings.LargeMapBlocksPerPixel);
         Assert.Equal(384, persisted.RootElement.GetProperty("MiniMapSize").GetInt32());
-        Assert.Equal(2, persisted.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, persisted.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -856,7 +1087,7 @@ public sealed class TravelMapSettingsStoreTests
 
         Assert.Equal(TravelMapSettingsLoadOutcome.CorruptIsolated, result.Outcome);
         Assert.Equal(160, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
         Assert.True(File.Exists(store.SettingsPath));
     }
@@ -979,6 +1210,31 @@ public sealed class TravelMapRenderModelTests
         Assert.Equal(TravelMapPalette.SurveyCyan, largeMapSink.PlayerColor);
         Assert.Equal(18f, miniMapSink.PlayerSize);
         Assert.Equal(TravelMapPalette.MiniMapPlayer, miniMapSink.PlayerColor);
+    }
+
+    [Fact]
+    public void Overlay_emits_only_the_single_last_death_marker_supplied_by_the_player_record_provider()
+    {
+        var sink = new RecordingRenderSink();
+        var latest = new DeathMapMarker(
+            new Vector3(48f, 17f, -96f),
+            Day: 12.5,
+            Cause: "fall");
+
+        TravelMapRenderModel.RenderOverlays(
+            new MapOverlayState(
+                Vector3.Zero,
+                0f,
+                32f,
+                [],
+                ShowCoordinates: false)
+            {
+                LastDeath = latest,
+            },
+            sink);
+
+        Assert.Same(latest, sink.LastDeathMarker);
+        Assert.Equal(TravelMapPalette.DeathMarkerBone, sink.LastDeathColor);
     }
 
     [Theory]
@@ -1123,6 +1379,10 @@ internal sealed class RecordingRenderSink : ITravelMapRenderSink
 
     public Rgba32 WaypointColor { get; private set; }
 
+    public DeathMapMarker? LastDeathMarker { get; private set; }
+
+    public Rgba32 LastDeathColor { get; private set; }
+
     public Rgba32 LabelColor { get; private set; }
 
     public void TerrainCell(MapTerrainCell cell) => Terrain.Add(cell);
@@ -1136,6 +1396,12 @@ internal sealed class RecordingRenderSink : ITravelMapRenderSink
     }
 
     public void Waypoint(Waypoint waypoint, Rgba32 color) => WaypointColor = color;
+
+    public void LastDeath(DeathMapMarker marker, Rgba32 color)
+    {
+        LastDeathMarker = marker;
+        LastDeathColor = color;
+    }
 
     public void Label(string text, Vector3 worldPosition, Rgba32 color) => LabelColor = color;
 }

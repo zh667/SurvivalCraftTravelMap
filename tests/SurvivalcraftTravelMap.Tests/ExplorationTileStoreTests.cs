@@ -103,7 +103,7 @@ public sealed class ExplorationTileStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Recorded_chunk_persists_all_256_cells_with_codec_version_one()
+    public async Task Recorded_chunk_persists_all_256_cells_with_current_codec_version()
     {
         var expected = new Rgba32(10, 20, 30, 255);
         var store = new ExplorationTileStore(_directory);
@@ -127,7 +127,7 @@ public sealed class ExplorationTileStoreTests : IDisposable
             Span<byte> header = stackalloc byte[5];
             deflate.ReadExactly(header);
             Assert.Equal("SCTM"u8.ToArray(), header[..4].ToArray());
-            Assert.Equal(1, header[4]);
+            Assert.Equal(3, header[4]);
         }
 
         var reloaded = new ExplorationTileStore(_directory).GetOrLoad(-1, 1);

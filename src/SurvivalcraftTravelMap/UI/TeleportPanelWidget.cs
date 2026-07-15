@@ -61,7 +61,7 @@ public sealed class TeleportPanelWidget : Dialog
         });
         var title = new LabelWidget
         {
-            Text = "玩家邀请传送",
+            Text = TravelMapText.Get("invitePanelTitle", "玩家邀请传送"),
             Size = new Vector2(360f, 48f),
             FontScale = 0.95f,
             Color = new Color(0xE8, 0xEC, 0xE7),
@@ -77,9 +77,9 @@ public sealed class TeleportPanelWidget : Dialog
             SetWidgetPosition(button, new Vector2(24f, 70f + (index * 62f)));
         }
 
-        _previous = CreateButton("上一页", 120f);
-        _next = CreateButton("下一页", 120f);
-        _close = CreateButton("关闭", 100f);
+        _previous = CreateButton(TravelMapText.Get("previousPage", "上一页"), 120f);
+        _next = CreateButton(TravelMapText.Get("nextPage", "下一页"), 120f);
+        _close = CreateButton(TravelMapText.Get("close", "关闭"), 100f);
         _pageLabel = new LabelWidget
         {
             Size = new Vector2(130f, 42f),
@@ -141,7 +141,12 @@ public sealed class TeleportPanelWidget : Dialog
         {
             var visible = index < _visiblePlayers.Count;
             _playerButtons[index].IsVisible = visible;
-            _playerButtons[index].Text = visible ? $"邀请传送到  {_visiblePlayers[index].Name}" : string.Empty;
+            _playerButtons[index].Text = visible
+                ? TravelMapText.Format(
+                    "invitePlayerFormat",
+                    "邀请传送到  {0}",
+                    _visiblePlayers[index].Name)
+                : string.Empty;
         }
 
         _pageLabel.Text = $"{_pageIndex + 1} / {pageCount}";

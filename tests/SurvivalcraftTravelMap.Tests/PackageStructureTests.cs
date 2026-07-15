@@ -215,6 +215,22 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
+    public void Production_component_snapshots_live_non_dead_creatures_for_both_map_surfaces()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var snapshot = ExtractBraceBlock(
+            component,
+            "private IReadOnlyList<CreatureMapMarker> GetCreatureMarkers()");
+        var attach = ExtractBraceBlock(component, "private void AttachUiWidgets(UiInitializationState state)");
+
+        AssertCodeContains(component, "Project.FindSubsystem<SubsystemCreatureSpawn>(false)");
+        AssertCodeContains(snapshot, "ReferenceEquals(creature, Player)");
+        AssertCodeContains(snapshot, "creature.ComponentHealth is { Health: <= 0f }");
+        AssertCodeContains(snapshot, "ToCreatureMarkerKind(creature.Category)");
+        Assert.Equal(2, attach.Split("GetCreatureMarkers", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public void Component_records_all_loaded_surface_readable_chunks_after_terrain_views_every_update()
     {
         var source = File.ReadAllText(TestPaths.Component);
@@ -311,12 +327,36 @@ public sealed class PackageStructureTests
         AssertCodeContains(positioning, "var guiSize = Player.GuiWidget.ActualSize;");
         AssertCodeContains(
             positioning,
-            "var positions = TravelMapOverlayLayout.PlaceHud(new Vector2(guiSize.X, guiSize.Y), _settings.MiniMapSize);");
+            "var positions = TravelMapOverlayLayout.PlaceHud(new Vector2(guiSize.X, guiSize.Y), _settings.MiniMapSize, _settings.MiniMapAnchorX, _settings.MiniMapAnchorY);");
         Assert.Equal(1, CountOccurrences(positioning, "TravelMapOverlayLayout.PlaceHud("));
         AssertCodeContains(positioning, "positions.MiniMap");
         AssertCodeContains(positioning, "positions.TeleportButton");
         AssertCodeDoesNotContain(positioning, "ActiveCamera.ViewportSize");
         AssertCodeDoesNotContain(component, "TravelMapOverlayLayout.PlaceTopRight(");
+    }
+
+    [Fact]
+    public void Minimap_placement_uses_a_modal_cursor_surface_with_non_overlapping_controls()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var widget = File.ReadAllText(Path.Combine(
+            TestPaths.RepositoryRoot,
+            "src",
+            "SurvivalcraftTravelMap",
+            "UI",
+            "MiniMapPlacementWidget.cs"));
+        var begin = ExtractBraceBlock(component, "private void BeginMiniMapPlacement()");
+        var confirm = ExtractBraceBlock(component, "private void ConfirmMiniMapPlacement()");
+        var cancel = ExtractBraceBlock(component, "private void CancelMiniMapPlacement()");
+
+        AssertCodeContains(widget, "MiniMapPlacementWidget : Dialog");
+        AssertCodeContains(widget, "Size = new Vector2(320f, 72f)");
+        AssertCodeContains(widget, "TravelMapText.Get(\"miniMapPlacementHint\", \"拖动小地图\")");
+        AssertCodeContains(widget, "SetWidgetPosition(_confirmButton, new Vector2(148f, 14f));");
+        AssertCodeContains(widget, "SetWidgetPosition(_cancelButton, new Vector2(232f, 14f));");
+        AssertCodeContains(begin, "DialogsManager.ShowDialog(Player.GuiWidget, _miniMapPlacementWidget);");
+        AssertCodeContains(confirm, "DialogsManager.HideDialog(_miniMapPlacementWidget);");
+        AssertCodeContains(cancel, "DialogsManager.HideDialog(_miniMapPlacementWidget);");
     }
 
     [Fact]
@@ -353,12 +393,12 @@ public sealed class PackageStructureTests
             "InvitationFeatureAvailable: TravelMapRuntimePolicy.CreatesInvitationUi(RuntimeContext)");
         AssertCodeContains(signals, "HasTextEntryFocus: !GetMapInputFocus().AllowsMapHotkey");
 
-        AssertCodeContains(apply, "_miniMap.IsVisible = state.ShowMiniMap;");
-        AssertCodeContains(apply, "_miniMap.IsEnabled = state.AllowMiniMapInput;");
-        AssertCodeContains(apply, "_teleportPanelButton.IsVisible = state.ShowTeleportButton;");
+        AssertCodeContains(apply, "_miniMap.IsVisible = isPlacingMiniMap || state.ShowMiniMap;");
+        AssertCodeContains(apply, "_miniMap.IsEnabled = !isPlacingMiniMap && state.AllowMiniMapInput;");
+        AssertCodeContains(apply, "_teleportPanelButton.IsVisible = !isPlacingMiniMap && state.ShowTeleportButton;");
         AssertCodeContains(
             apply,
-            "_teleportPanelButton.IsEnabled = state.ShowTeleportButton && state.AllowMiniMapInput;");
+            "_teleportPanelButton.IsEnabled = !isPlacingMiniMap && state.ShowTeleportButton && state.AllowMiniMapInput;");
         AssertCodeDoesNotContain(apply, "_settings.");
     }
 
@@ -484,10 +524,20 @@ public sealed class PackageStructureTests
         var closeSettings = ExtractBraceBlock(dialog, "private void CloseSettings()");
 
         AssertCodeContains(settings, "private readonly Action _requestClose;");
-        AssertCodeContains(settingsConstructor, "Size = new Vector2(420f, 470f);");
-        AssertCodeContains(settingsConstructor, "Text = \"完成\"");
+        AssertCodeContains(settingsConstructor, "Size = new Vector2(420f, 550f);");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"showCreatureMarkers\"");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"creatureMarkerSize\"");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"showCompassNorth\"");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"showCompassOtherDirections\"");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"compassFontScale\"");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"adjustMiniMapPosition\"");
+        AssertCodeContains(settingsConstructor, "new ScrollPanelWidget");
+        AssertCodeContains(settingsConstructor, "ScrollSpeed = 0f");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"done\"");
         AssertCodeContains(settingsConstructor, "Size = new Vector2(120f, 40f)");
-        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(150f, 418f));");
+        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(280f, 501f));");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"resetSettings\"");
+        AssertCodeContains(settingsUpdate, "RequestResetConfirmation();");
         AssertCodeContains(settings, "public void RequestPersist() => _saveQueue.RequestSave();");
         AssertCodeContains(settingsUpdate, "RequestPersist();");
         AssertCodeContains(settingsUpdate, "_requestClose();");
@@ -1675,6 +1725,29 @@ internal static class PackageFixtures
         AddEntry(archive, new PackageEntry("Assets/TeleportButton.png", MinimalPng.Bytes));
         AddEntry(archive, new PackageEntry("Assets/TeleportButton_Pressed.png", MinimalPng.Bytes));
         AddEntry(archive, new PackageEntry("Assets/TeleportTo.png", MinimalPng.Bytes));
+        foreach (var language in new[]
+                 {
+                     "zh-CN",
+                     "en-US",
+                     "es-419",
+                     "pt-BR",
+                     "ro-RO",
+                     "ru-RU",
+                     "vi-VN",
+                 })
+        {
+            AddEntry(
+                archive,
+                new PackageEntry(
+                    $"Assets/Lang/{language}.json",
+                    File.ReadAllBytes(Path.Combine(
+                        TestPaths.RepositoryRoot,
+                        "src",
+                        "SurvivalcraftTravelMap",
+                        "Assets",
+                        "Lang",
+                        $"{language}.json"))));
+        }
 
         foreach (var entry in additionalEntries)
         {

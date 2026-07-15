@@ -11,9 +11,33 @@ public interface ITerrainMapSource
 
     int GetContent(int x, int y, int z);
 
+    bool IsPassableCell(int x, int y, int z) => GetContent(x, y, z) == 0;
+
+    bool IsCollidableCell(int x, int y, int z) => !IsPassableCell(x, y, z);
+
+    bool IsFluidCell(int x, int y, int z) => false;
+
     int GetSeasonalTemperature(int x, int z);
 
     int GetSeasonalHumidity(int x, int z);
+
+    bool IsCrossPlant(int content) => false;
+
+    bool TryGetSolidHeight(int x, int z, out int height)
+    {
+        height = 0;
+        return false;
+    }
+
+    bool TryGetEnvironmentColor(
+        int content,
+        int temperature,
+        int humidity,
+        out Rgba32 color)
+    {
+        color = default;
+        return false;
+    }
 }
 
 public sealed class TerrainMapSampler
@@ -37,9 +61,55 @@ public sealed class TerrainMapSampler
 
     public Rgba32 Sample(int x, int z)
     {
+        return SampleCore(x, z).Color;
+    }
+
+    public Rgba32 SampleContent(int content, int x, int y, int z)
+    {
+        if (content is 28 or 99 or 174 or 25)
+        {
+            content = y > 0 ? _terrain.GetContent(x, y - 1, z) : content;
+        }
+
+        if (content is 226 or 229 or 232 or 233)
+        {
+            content = 18;
+        }
+
+        if (!_blockPixels.TryGetValue(content, out var pixel))
+        {
+            if (content < 0)
+            {
+                throw new InvalidDataException($"Terrain content {content} is invalid.");
+            }
+
+            return CreateGeneratedColor(content);
+        }
+
+        if (!pixel.NeedChangeWithEnvironment)
+        {
+            return pixel.Color;
+        }
+
+        var temperature = _terrain.GetSeasonalTemperature(x, z)
+            + GetTemperatureAdjustmentAtHeight(y);
+        var humidity = _terrain.GetSeasonalHumidity(x, z);
+        var environmentColor = _terrain.TryGetEnvironmentColor(
+            content,
+            temperature,
+            humidity,
+            out var gameColor)
+            ? gameColor
+            : EnvironmentPalettes.Lookup(content, temperature, humidity);
+        return Multiply(environmentColor, pixel.Color);
+    }
+
+    private TerrainSample SampleCore(int x, int z)
+    {
         var topHeight = _terrain.GetTopHeight(x, z);
         var content = _terrain.GetContent(x, topHeight, z);
-        if (content is 28 or 99 or 19 or 174 or 25)
+        var isCrossPlant = _terrain.IsCrossPlant(content);
+        if (content is 28 or 99 or 174 or 25)
         {
             content = _terrain.GetContent(x, topHeight - 1, z);
         }
@@ -59,19 +129,34 @@ public sealed class TerrainMapSampler
             // Network/modded builds can register block IDs above the vanilla palette.
             // A missing optional palette entry must not make the whole 16x16 terrain
             // chunk disappear, so give every future positive ID a stable opaque color.
-            return CreateGeneratedColor(content);
+            return new TerrainSample(
+                CreateGeneratedColor(content),
+                isCrossPlant ? Math.Max(0, topHeight - 1) : topHeight,
+                isCrossPlant);
         }
 
         if (!pixel.NeedChangeWithEnvironment)
         {
-            return pixel.Color;
+            return new TerrainSample(
+                pixel.Color,
+                isCrossPlant ? Math.Max(0, topHeight - 1) : topHeight,
+                isCrossPlant);
         }
 
         var temperature = _terrain.GetSeasonalTemperature(x, z)
             + GetTemperatureAdjustmentAtHeight(topHeight);
         var humidity = _terrain.GetSeasonalHumidity(x, z);
-        var environmentColor = EnvironmentPalettes.Lookup(content, temperature, humidity);
-        return Multiply(environmentColor, pixel.Color);
+        var environmentColor = _terrain.TryGetEnvironmentColor(
+            content,
+            temperature,
+            humidity,
+            out var gameColor)
+            ? gameColor
+            : EnvironmentPalettes.Lookup(content, temperature, humidity);
+        return new TerrainSample(
+            Multiply(environmentColor, pixel.Color),
+            isCrossPlant ? Math.Max(0, topHeight - 1) : topHeight,
+            isCrossPlant);
     }
 
     public bool TrySample(int x, int z, out Rgba32 color)
@@ -96,6 +181,15 @@ public sealed class TerrainMapSampler
         TerrainChunkCoordinate chunk,
         Span<Rgba32> destination)
     {
+        Span<byte> heightShades = stackalloc byte[TerrainChunkCoordinate.PixelCount];
+        return TrySampleChunk(chunk, destination, heightShades);
+    }
+
+    public bool TrySampleChunk(
+        TerrainChunkCoordinate chunk,
+        Span<Rgba32> destination,
+        Span<byte> heightShades)
+    {
         if (destination.Length != TerrainChunkCoordinate.PixelCount)
         {
             throw new ArgumentException(
@@ -103,26 +197,81 @@ public sealed class TerrainMapSampler
                 nameof(destination));
         }
 
+        if (heightShades.Length != TerrainChunkCoordinate.PixelCount)
+        {
+            throw new ArgumentException(
+                $"Height-shade destination must be exactly {TerrainChunkCoordinate.PixelCount} values.",
+                nameof(heightShades));
+        }
+
         if (!_terrain.IsChunkSurfaceReady(chunk))
         {
             return false;
         }
 
+        const int heightGridSize = TerrainChunkCoordinate.Size + 2;
+        Span<int> heights = stackalloc int[heightGridSize * heightGridSize];
+        Span<byte> crossPlants = stackalloc byte[TerrainChunkCoordinate.PixelCount];
         for (var localZ = 0; localZ < TerrainChunkCoordinate.Size; localZ++)
         {
             for (var localX = 0; localX < TerrainChunkCoordinate.Size; localX++)
             {
-                var color = Sample(chunk.OriginX + localX, chunk.OriginZ + localZ);
-                destination[(localZ * TerrainChunkCoordinate.Size) + localX] = color;
-                if (color.A == 0)
+                var sample = SampleCore(chunk.OriginX + localX, chunk.OriginZ + localZ);
+                var index = (localZ * TerrainChunkCoordinate.Size) + localX;
+                destination[index] = sample.Color;
+                heights[((localZ + 1) * heightGridSize) + localX + 1] = sample.SolidHeight;
+                crossPlants[index] = sample.IsCrossPlant ? (byte)1 : (byte)0;
+                if (sample.Color.A == 0)
                 {
                     return false;
                 }
             }
         }
 
+        for (var localZ = 0; localZ < TerrainChunkCoordinate.Size; localZ++)
+        {
+            var row = (localZ + 1) * heightGridSize;
+            heights[row] = TryGetSolidHeight(chunk.OriginX - 1, chunk.OriginZ + localZ)
+                ?? heights[row + 1];
+            heights[row + heightGridSize - 1] = TryGetSolidHeight(
+                chunk.OriginX + TerrainChunkCoordinate.Size,
+                chunk.OriginZ + localZ)
+                ?? heights[row + heightGridSize - 2];
+        }
+
+        for (var localX = 0; localX < TerrainChunkCoordinate.Size; localX++)
+        {
+            heights[localX + 1] = TryGetSolidHeight(chunk.OriginX + localX, chunk.OriginZ - 1)
+                ?? heights[heightGridSize + localX + 1];
+            var bottom = (heightGridSize - 1) * heightGridSize;
+            heights[bottom + localX + 1] = TryGetSolidHeight(
+                chunk.OriginX + localX,
+                chunk.OriginZ + TerrainChunkCoordinate.Size)
+                ?? heights[bottom - heightGridSize + localX + 1];
+        }
+
+        for (var localZ = 0; localZ < TerrainChunkCoordinate.Size; localZ++)
+        {
+            for (var localX = 0; localX < TerrainChunkCoordinate.Size; localX++)
+            {
+                var pixelIndex = (localZ * TerrainChunkCoordinate.Size) + localX;
+                var centerIndex = ((localZ + 1) * heightGridSize) + localX + 1;
+                heightShades[pixelIndex] = crossPlants[pixelIndex] != 0
+                    ? TerrainHeightShading.Neutral
+                    : TerrainHeightShading.Calculate(
+                        heights[centerIndex - 1],
+                        heights[centerIndex - heightGridSize],
+                        heights[centerIndex + 1],
+                        heights[centerIndex + heightGridSize],
+                        heights[centerIndex]);
+            }
+        }
+
         return true;
     }
+
+    private int? TryGetSolidHeight(int x, int z) =>
+        _terrain.TryGetSolidHeight(x, z, out var height) ? height : null;
 
     private static int GetTemperatureAdjustmentAtHeight(int y) =>
         (int)Math.Round(y > 64
@@ -186,6 +335,11 @@ public sealed class TerrainMapSampler
             byte.MaxValue);
     }
 
+    private readonly record struct TerrainSample(
+        Rgba32 Color,
+        int SolidHeight,
+        bool IsCrossPlant);
+
     private static class EnvironmentPalettes
     {
         private static readonly IReadOnlyDictionary<int, Palette> ByContent = new Dictionary<int, Palette>
@@ -195,6 +349,7 @@ public sealed class TerrainMapSampler
             [13] = new((76, 181, 96), (174, 109, 42), (66, 215, 116), (77, 235, 96)),
             [14] = new((96, 161, 155), (129, 174, 42), (96, 161, 155), (1, 191, 53)),
             [18] = new((0, 0, 120), (0, 80, 100), (0, 40, 85), (0, 113, 97)),
+            [19] = new((151, 184, 195), (210, 201, 93), (151, 184, 195), (79, 225, 56)),
             [225] = new((90, 141, 165), (119, 152, 51), (86, 141, 165), (1, 158, 65)),
             [256] = new((146, 191, 176), (160, 191, 176), (146, 191, 166), (150, 201, 141)),
         };

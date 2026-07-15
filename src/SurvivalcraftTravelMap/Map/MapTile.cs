@@ -2,27 +2,42 @@ namespace SurvivalcraftTravelMap.Map;
 
 public readonly record struct Rgba32(byte R, byte G, byte B, byte A);
 
+public readonly record struct MapTerrainPixel(Rgba32 Color, byte HeightShade);
+
 public sealed class MapTile
 {
     public const int Size = 64;
     internal const int PixelCount = Size * Size;
     internal const int ExploredByteCount = PixelCount / 8;
     internal const int ColorByteCount = PixelCount * 4;
+    internal const int HeightShadeByteCount = PixelCount;
 
     private readonly byte[] _explored;
     private readonly byte[] _colors;
+    private readonly byte[] _heightShades;
     private readonly object _sync = new();
     private long _version;
 
     public MapTile(int tileX, int tileZ)
-        : this(tileX, tileZ, new byte[ExploredByteCount], new byte[ColorByteCount])
+        : this(
+            tileX,
+            tileZ,
+            new byte[ExploredByteCount],
+            new byte[ColorByteCount],
+            new byte[HeightShadeByteCount])
     {
     }
 
     internal MapTile(int tileX, int tileZ, byte[] explored, byte[] colors)
+        : this(tileX, tileZ, explored, colors, new byte[HeightShadeByteCount])
+    {
+    }
+
+    internal MapTile(int tileX, int tileZ, byte[] explored, byte[] colors, byte[] heightShades)
     {
         ArgumentNullException.ThrowIfNull(explored);
         ArgumentNullException.ThrowIfNull(colors);
+        ArgumentNullException.ThrowIfNull(heightShades);
         if (explored.Length != ExploredByteCount)
         {
             throw new ArgumentException($"Exploration data must be exactly {ExploredByteCount} bytes.", nameof(explored));
@@ -33,10 +48,18 @@ public sealed class MapTile
             throw new ArgumentException($"Color data must be exactly {ColorByteCount} bytes.", nameof(colors));
         }
 
+        if (heightShades.Length != HeightShadeByteCount)
+        {
+            throw new ArgumentException(
+                $"Height-shade data must be exactly {HeightShadeByteCount} bytes.",
+                nameof(heightShades));
+        }
+
         TileX = tileX;
         TileZ = tileZ;
         _explored = explored;
         _colors = colors;
+        _heightShades = heightShades;
     }
 
     public int TileX { get; }
@@ -47,10 +70,16 @@ public sealed class MapTile
 
     public void SetPixel(int x, int z, Rgba32 color)
     {
+        SetPixel(x, z, color, heightShade: 0);
+    }
+
+    public void SetPixel(int x, int z, Rgba32 color, byte heightShade)
+    {
         var pixelIndex = GetPixelIndex(x, z);
         lock (_sync)
         {
             SetPixelCore(pixelIndex, color);
+            _heightShades[pixelIndex] = color.A == 0 ? (byte)0 : heightShade;
             _version++;
         }
     }
@@ -61,6 +90,17 @@ public sealed class MapTile
         int width,
         int height,
         ReadOnlySpan<Rgba32> colors)
+    {
+        SetRegion(x, z, width, height, colors, ReadOnlySpan<byte>.Empty);
+    }
+
+    public void SetRegion(
+        int x,
+        int z,
+        int width,
+        int height,
+        ReadOnlySpan<Rgba32> colors,
+        ReadOnlySpan<byte> heightShades)
     {
         if ((uint)x >= Size)
         {
@@ -102,6 +142,13 @@ public sealed class MapTile
                 nameof(colors));
         }
 
+        if (!heightShades.IsEmpty && heightShades.Length != pixelCount)
+        {
+            throw new ArgumentException(
+                $"Region height shades must contain exactly {pixelCount} values.",
+                nameof(heightShades));
+        }
+
         lock (_sync)
         {
             for (var localZ = 0; localZ < height; localZ++)
@@ -113,6 +160,9 @@ public sealed class MapTile
                     var pixelIndex = tileRowStart + localX;
                     var color = colors[sourceRowStart + localX];
                     SetPixelCore(pixelIndex, color);
+                    _heightShades[pixelIndex] = color.A == 0 || heightShades.IsEmpty
+                        ? (byte)0
+                        : heightShades[sourceRowStart + localX];
                 }
             }
 
@@ -129,6 +179,20 @@ public sealed class MapTile
         }
     }
 
+    public bool TryGetTerrainPixel(int x, int z, out MapTerrainPixel pixel)
+    {
+        var pixelIndex = GetPixelIndex(x, z);
+        lock (_sync)
+        {
+            return TryGetTerrainPixelCore(
+                _explored,
+                _colors,
+                _heightShades,
+                pixelIndex,
+                out pixel);
+        }
+    }
+
     public bool IsRegionFullyExplored(int x, int z, int width, int height)
     {
         ValidateRegion(x, z, width, height);
@@ -142,6 +206,30 @@ public sealed class MapTile
                 {
                     if (!TryGetPixelCore(_explored, _colors, rowStart + localX, out _))
                         return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    public bool IsRegionFullyHeightShaded(int x, int z, int width, int height)
+    {
+        ValidateRegion(x, z, width, height);
+
+        lock (_sync)
+        {
+            for (var localZ = 0; localZ < height; localZ++)
+            {
+                var rowStart = ((z + localZ) * Size) + x;
+                for (var localX = 0; localX < width; localX++)
+                {
+                    var pixelIndex = rowStart + localX;
+                    if (!TryGetPixelCore(_explored, _colors, pixelIndex, out _)
+                        || _heightShades[pixelIndex] == TerrainHeightShading.Unknown)
+                    {
+                        return false;
+                    }
                 }
             }
 
@@ -182,7 +270,8 @@ public sealed class MapTile
                     TileX,
                     TileZ,
                     (byte[])_explored.Clone(),
-                    (byte[])_colors.Clone()));
+                    (byte[])_colors.Clone(),
+                    (byte[])_heightShades.Clone()));
         }
     }
 
@@ -202,11 +291,24 @@ public sealed class MapTile
         }
     }
 
+    internal void CopyHeightShadesTo(Span<byte> destination)
+    {
+        lock (_sync)
+        {
+            _heightShades.CopyTo(destination);
+        }
+    }
+
     internal MapTile CreateSnapshot()
     {
         lock (_sync)
         {
-            return new MapTile(TileX, TileZ, (byte[])_explored.Clone(), (byte[])_colors.Clone());
+            return new MapTile(
+                TileX,
+                TileZ,
+                (byte[])_explored.Clone(),
+                (byte[])_colors.Clone(),
+                (byte[])_heightShades.Clone());
         }
     }
 
@@ -234,6 +336,23 @@ public sealed class MapTile
             colors[colorIndex + 1],
             colors[colorIndex + 2],
             colors[colorIndex + 3]);
+        return true;
+    }
+
+    internal static bool TryGetTerrainPixelCore(
+        byte[] explored,
+        byte[] colors,
+        byte[] heightShades,
+        int pixelIndex,
+        out MapTerrainPixel pixel)
+    {
+        if (!TryGetPixelCore(explored, colors, pixelIndex, out var color))
+        {
+            pixel = default;
+            return false;
+        }
+
+        pixel = new MapTerrainPixel(color, heightShades[pixelIndex]);
         return true;
     }
 
@@ -276,14 +395,21 @@ public sealed class MapTileSnapshot
 {
     private readonly byte[] _explored;
     private readonly byte[] _colors;
+    private readonly byte[] _heightShades;
     private readonly Lazy<RegionSums> _regionSums;
 
-    internal MapTileSnapshot(int tileX, int tileZ, byte[] explored, byte[] colors)
+    internal MapTileSnapshot(
+        int tileX,
+        int tileZ,
+        byte[] explored,
+        byte[] colors,
+        byte[] heightShades)
     {
         TileX = tileX;
         TileZ = tileZ;
         _explored = explored;
         _colors = colors;
+        _heightShades = heightShades;
         _regionSums = new Lazy<RegionSums>(CreateRegionSums, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
@@ -306,7 +432,39 @@ public sealed class MapTileSnapshot
         return MapTile.TryGetPixelCore(_explored, _colors, (z * MapTile.Size) + x, out color);
     }
 
+    public bool TryGetTerrainPixel(int x, int z, out MapTerrainPixel pixel)
+    {
+        if ((uint)x >= MapTile.Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x));
+        }
+
+        if ((uint)z >= MapTile.Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(z));
+        }
+
+        return MapTile.TryGetTerrainPixelCore(
+            _explored,
+            _colors,
+            _heightShades,
+            (z * MapTile.Size) + x,
+            out pixel);
+    }
+
     public bool TryGetExploredRegion(int x, int z, int width, int height, out Rgba32 color)
+    {
+        var found = TryGetExploredTerrainRegion(x, z, width, height, out var pixel);
+        color = pixel.Color;
+        return found;
+    }
+
+    public bool TryGetExploredTerrainRegion(
+        int x,
+        int z,
+        int width,
+        int height,
+        out MapTerrainPixel pixel)
     {
         if ((uint)x >= MapTile.Size)
         {
@@ -342,22 +500,27 @@ public sealed class MapTileSnapshot
 
         if (width == 1 && height == 1)
         {
-            return TryGetPixel(x, z, out color);
+            return TryGetTerrainPixel(x, z, out pixel);
         }
 
         var sums = _regionSums.Value;
         var exploredCount = RegionSum(sums.Explored, x, z, endX, endZ);
         if (exploredCount == 0)
         {
-            color = default;
+            pixel = default;
             return false;
         }
 
-        color = new Rgba32(
-            Average(RegionSum(sums.Red, x, z, endX, endZ), exploredCount),
-            Average(RegionSum(sums.Green, x, z, endX, endZ), exploredCount),
-            Average(RegionSum(sums.Blue, x, z, endX, endZ), exploredCount),
-            Average(RegionSum(sums.Alpha, x, z, endX, endZ), exploredCount));
+        var shadeCount = RegionSum(sums.HeightShadeCount, x, z, endX, endZ);
+        pixel = new MapTerrainPixel(
+            new Rgba32(
+                Average(RegionSum(sums.Red, x, z, endX, endZ), exploredCount),
+                Average(RegionSum(sums.Green, x, z, endX, endZ), exploredCount),
+                Average(RegionSum(sums.Blue, x, z, endX, endZ), exploredCount),
+                Average(RegionSum(sums.Alpha, x, z, endX, endZ), exploredCount)),
+            shadeCount == 0
+                ? (byte)0
+                : Average(RegionSum(sums.HeightShade, x, z, endX, endZ), shadeCount));
         return true;
     }
 
@@ -378,6 +541,9 @@ public sealed class MapTileSnapshot
                 SetIntegralValue(sums.Green, x, z, explored ? color.G : 0);
                 SetIntegralValue(sums.Blue, x, z, explored ? color.B : 0);
                 SetIntegralValue(sums.Alpha, x, z, explored ? color.A : 0);
+                var heightShade = explored ? _heightShades[(z * MapTile.Size) + x] : (byte)0;
+                SetIntegralValue(sums.HeightShade, x, z, heightShade);
+                SetIntegralValue(sums.HeightShadeCount, x, z, heightShade == 0 ? 0 : 1);
             }
         }
 
@@ -414,6 +580,8 @@ public sealed class MapTileSnapshot
         public int[] Green { get; } = new int[ElementCount];
         public int[] Blue { get; } = new int[ElementCount];
         public int[] Alpha { get; } = new int[ElementCount];
+        public int[] HeightShade { get; } = new int[ElementCount];
+        public int[] HeightShadeCount { get; } = new int[ElementCount];
     }
 }
 

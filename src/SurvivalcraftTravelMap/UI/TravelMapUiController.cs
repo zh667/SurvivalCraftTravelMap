@@ -44,6 +44,7 @@ public enum TravelMapUiCommandKind
     Zoom,
     ShowGroundMenu,
     ShowWaypointMenu,
+    ShowDeathMarkerMenu,
     ShowUnexploredMessage,
 }
 
@@ -52,6 +53,7 @@ public enum TravelMapContextAction
     TeleportNearby,
     AddWaypoint,
     TeleportToWaypoint,
+    TeleportToLastDeath,
     RenameWaypoint,
     DeleteWaypoint,
     Cancel,
@@ -60,7 +62,10 @@ public enum TravelMapContextAction
 public sealed record TravelMapContextMenu(
     Vector2 WorldPosition,
     Guid? WaypointId,
-    IReadOnlyList<TravelMapContextAction> Actions);
+    IReadOnlyList<TravelMapContextAction> Actions)
+{
+    public float? TargetY { get; init; }
+}
 
 public sealed record TravelMapUiCommand(
     TravelMapUiCommandKind Kind,
@@ -84,6 +89,12 @@ public sealed class TravelMapUiController
         TravelMapContextAction.TeleportToWaypoint,
         TravelMapContextAction.RenameWaypoint,
         TravelMapContextAction.DeleteWaypoint,
+        TravelMapContextAction.Cancel,
+    ];
+
+    private static readonly TravelMapContextAction[] DeathMarkerActions =
+    [
+        TravelMapContextAction.TeleportToLastDeath,
         TravelMapContextAction.Cancel,
     ];
 
@@ -158,8 +169,19 @@ public sealed class TravelMapUiController
     public TravelMapUiCommand HandleRightClick(
         Vector2 worldPosition,
         bool isExplored,
-        Waypoint? waypointHit)
+        Waypoint? waypointHit,
+        bool deathMarkerHit = false)
     {
+        if (deathMarkerHit)
+        {
+            return new TravelMapUiCommand(
+                TravelMapUiCommandKind.ShowDeathMarkerMenu,
+                ContextMenu: new TravelMapContextMenu(
+                    worldPosition,
+                    null,
+                    DeathMarkerActions));
+        }
+
         if (waypointHit is not null)
         {
             return new TravelMapUiCommand(

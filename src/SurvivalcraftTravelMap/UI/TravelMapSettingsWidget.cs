@@ -12,29 +12,42 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
 
     private readonly TravelMapSettings _settings;
     private readonly TravelMapSettingsStore _store;
-    private readonly Action<string> _notify;
+    private readonly Action<TravelMapNotice> _notify;
     private readonly Action _requestClose;
+    private readonly Action _requestMiniMapPlacement;
     private readonly CoalescingSaveQueue _saveQueue;
     private readonly SliderWidget _miniMapZoom;
     private readonly SliderWidget _largeMapZoom;
+    private readonly SliderWidget _creatureMarkerSize;
+    private readonly SliderWidget _compassFontScale;
     private readonly BevelledButtonWidget _doneButton;
+    private readonly BevelledButtonWidget _placementButton;
+    private readonly BevelledButtonWidget _resetButton;
     private readonly List<BevelledButtonWidget> _sizeButtons = [];
+    private readonly List<BevelledButtonWidget> _shapeButtons = [];
+    private readonly List<(CheckboxWidget Widget, Func<bool> Read)> _toggleBindings = [];
+    private bool _refreshingControls;
 
     public TravelMapSettingsWidget(
         TravelMapSettings settings,
         TravelMapSettingsStore store,
-        Action<string> notify,
-        Action requestClose)
+        Action<TravelMapNotice> notify,
+        Action requestClose,
+        Action requestMiniMapPlacement)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _notify = notify ?? throw new ArgumentNullException(nameof(notify));
         _requestClose = requestClose ?? throw new ArgumentNullException(nameof(requestClose));
+        _requestMiniMapPlacement = requestMiniMapPlacement
+            ?? throw new ArgumentNullException(nameof(requestMiniMapPlacement));
         _saveQueue = new CoalescingSaveQueue(
             PersistAsync,
-            _ => _notify("地图设置未能保存，本次会话仍保留当前值"),
+            _ => Notify(
+                TravelMapText.Get("settingsSaveFailedSession", "地图设置未能保存，本次会话仍保留当前值"),
+                TravelMapNoticeKind.Failure),
             TimeSpan.FromMilliseconds(150));
-        Size = new Vector2(420f, 470f);
+        Size = new Vector2(420f, 550f);
         HorizontalAlignment = WidgetAlignment.Center;
         VerticalAlignment = WidgetAlignment.Center;
 
@@ -49,7 +62,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
 
         var title = new LabelWidget
         {
-            Text = "测绘仪设置",
+            Text = TravelMapText.Get("settingsTitle", "旅行地图设置"),
             Color = SnowText,
             FontScale = 1.15f,
             Size = new Vector2(380f, 42f),
@@ -65,54 +78,104 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             Direction = LayoutDirection.Vertical,
             Margin = new Vector2(3f),
         };
-        Children.Add(settingsStack);
-        SetWidgetPosition(settingsStack, new Vector2(20f, 58f));
+        var settingsScroll = new ScrollPanelWidget
+        {
+            Direction = LayoutDirection.Vertical,
+            ScrollPosition = 0f,
+            ScrollSpeed = 0f,
+            DesiredSize = new Vector2(380f, 425f),
+        };
+        settingsScroll.Children.Add(settingsStack);
+        Children.Add(settingsScroll);
+        SetWidgetPosition(settingsScroll, new Vector2(20f, 58f));
 
         settingsStack.Children.Add(CreateToggle(
-            "显示右上角小地图",
-            settings.IsMiniMapVisible,
+            TravelMapText.Get("showMiniMap", "显示小地图"),
+            () => settings.IsMiniMapVisible,
             value => settings.IsMiniMapVisible = value));
         settingsStack.Children.Add(CreateToggle(
-            "显示 X / Y / Z 坐标",
-            settings.ShowCoordinates,
+            TravelMapText.Get("showCoordinates", "显示 X / Y / Z 坐标"),
+            () => settings.ShowCoordinates,
             value => settings.ShowCoordinates = value));
         settingsStack.Children.Add(CreateToggle(
-            "启用日夜地形明暗",
-            settings.UseDayNightTint,
+            TravelMapText.Get("showGameTime", "显示游戏时间"),
+            () => settings.ShowGameTime,
+            value => settings.ShowGameTime = value));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("showCreatureMarkers", "显示生物标记"),
+            () => settings.ShowCreatureMarkers,
+            value => settings.ShowCreatureMarkers = value));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("showLastDeathMarker", "显示上次死亡地点"),
+            () => settings.ShowLastDeathMarker,
+            value => settings.ShowLastDeathMarker = value));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("northUp", "固定北方朝上"),
+            () => settings.MiniMapOrientation == MiniMapOrientation.NorthUp,
+            value => settings.MiniMapOrientation = value
+                ? MiniMapOrientation.NorthUp
+                : MiniMapOrientation.HeadingUp));
+        settingsStack.Children.Add(CreateSectionLabel(
+            TravelMapText.Get("compassDirections", "显示罗盘方向")));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("showCompassNorth", "  显示北方"),
+            () => settings.ShowCompassNorth,
+            value => settings.ShowCompassNorth = value));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("showCompassOtherDirections", "  显示东 / 南 / 西"),
+            () => settings.ShowCompassOtherDirections,
+            value => settings.ShowCompassOtherDirections = value));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("useDayNightTint", "启用日夜地形明暗"),
+            () => settings.UseDayNightTint,
             value => settings.UseDayNightTint = value));
         settingsStack.Children.Add(CreateToggle(
-            "接受玩家传送邀请",
-            settings.AcceptTeleportInvitations,
+            TravelMapText.Get("useHeightShading", "启用地形高度阴影"),
+            () => settings.UseHeightShading,
+            value => settings.UseHeightShading = value));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("acceptTeleportInvitations", "接受玩家传送邀请"),
+            () => settings.AcceptTeleportInvitations,
             value => settings.AcceptTeleportInvitations = value));
 
         _miniMapZoom = CreateSlider(0.5f, 8f, settings.MiniMapBlocksPerPixel);
         _largeMapZoom = CreateSlider(0.25f, 32f, settings.LargeMapBlocksPerPixel);
-        settingsStack.Children.Add(CreateSliderRow("小地图 方块/像素", _miniMapZoom));
-        settingsStack.Children.Add(CreateSliderRow("大地图 方块/像素", _largeMapZoom));
+        _creatureMarkerSize = CreateSlider(3f, 16f, settings.CreatureMarkerSize, granularity: 1f);
+        _compassFontScale = CreateSlider(0.5f, 2f, settings.CompassFontScale, granularity: 0.1f);
+        settingsStack.Children.Add(CreateSliderRow(
+            TravelMapText.Get("miniMapZoom", "小地图 方块/像素"),
+            _miniMapZoom));
+        settingsStack.Children.Add(CreateSliderRow(
+            TravelMapText.Get("largeMapZoom", "大地图 方块/像素"),
+            _largeMapZoom));
+        settingsStack.Children.Add(CreateSliderRow(
+            TravelMapText.Get("creatureMarkerSize", "生物标记大小"),
+            _creatureMarkerSize));
+        settingsStack.Children.Add(CreateSliderRow(
+            TravelMapText.Get("compassFontScale", "罗盘文字大小"),
+            _compassFontScale));
 
         var sizeLabel = new LabelWidget
         {
-            Text = "小地图尺寸",
+            Text = TravelMapText.Get("miniMapSize", "小地图尺寸"),
             Color = SnowText,
             FontScale = TravelMapTypography.SecondaryLabelScale,
             Size = new Vector2(380f, 30f),
         };
-        Children.Add(sizeLabel);
-        SetWidgetPosition(sizeLabel, new Vector2(20f, 335f));
+        settingsStack.Children.Add(sizeLabel);
 
         var sizeStack = new StackPanelWidget
         {
             Direction = LayoutDirection.Horizontal,
             Margin = new Vector2(2f),
         };
-        Children.Add(sizeStack);
-        SetWidgetPosition(sizeStack, new Vector2(20f, 368f));
+        settingsStack.Children.Add(sizeStack);
         foreach (var size in TravelMapSettings.SupportedMiniMapSizes)
         {
             var button = new BevelledButtonWidget
             {
                 Text = size.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                Size = new Vector2(72f, 42f),
+                Size = new Vector2(72f, 38f),
                 Color = SnowText,
                 CenterColor = size == settings.MiniMapSize ? Moss : Basalt,
             };
@@ -121,15 +184,56 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             sizeStack.Children.Add(button);
         }
 
+        settingsStack.Children.Add(CreateSectionLabel(
+            TravelMapText.Get("mapShape", "地图形状")));
+        var shapeStack = new StackPanelWidget
+        {
+            Direction = LayoutDirection.Horizontal,
+            Margin = new Vector2(2f),
+        };
+        settingsStack.Children.Add(shapeStack);
+        foreach (var shape in Enum.GetValues<MapShape>())
+        {
+            var button = new BevelledButtonWidget
+            {
+                Text = TravelMapText.MapShape(shape),
+                Size = new Vector2(86f, 38f),
+                Color = SnowText,
+                CenterColor = shape == settings.MiniMapShape ? Moss : Basalt,
+                Tag = shape,
+            };
+            _shapeButtons.Add(button);
+            shapeStack.Children.Add(button);
+        }
+
+        _placementButton = new BevelledButtonWidget
+        {
+            Text = TravelMapText.Get("adjustMiniMapPosition", "调整小地图位置"),
+            Size = new Vector2(220f, 40f),
+            Color = SnowText,
+            CenterColor = Moss,
+        };
+        settingsStack.Children.Add(_placementButton);
+
         _doneButton = new BevelledButtonWidget
         {
-            Text = "完成",
+            Text = TravelMapText.Get("done", "完成"),
             Size = new Vector2(120f, 40f),
             Color = SnowText,
             CenterColor = Moss,
         };
         Children.Add(_doneButton);
-        SetWidgetPosition(_doneButton, new Vector2(150f, 418f));
+        SetWidgetPosition(_doneButton, new Vector2(280f, 501f));
+
+        _resetButton = new BevelledButtonWidget
+        {
+            Text = TravelMapText.Get("resetSettings", "恢复默认设置"),
+            Size = new Vector2(180f, 40f),
+            Color = SnowText,
+            CenterColor = Basalt,
+        };
+        Children.Add(_resetButton);
+        SetWidgetPosition(_resetButton, new Vector2(20f, 501f));
     }
 
     public override void Update()
@@ -146,7 +250,26 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             _largeMapZoom.Text = _settings.LargeMapBlocksPerPixel.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        if (_miniMapZoom.SlidingCompleted || _largeMapZoom.SlidingCompleted)
+        if (_creatureMarkerSize.IsSliding)
+        {
+            _settings.CreatureMarkerSize = _creatureMarkerSize.Value;
+            _creatureMarkerSize.Text = _settings.CreatureMarkerSize.ToString(
+                "0",
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (_compassFontScale.IsSliding)
+        {
+            _settings.CompassFontScale = _compassFontScale.Value;
+            _compassFontScale.Text = _settings.CompassFontScale.ToString(
+                "0.0",
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (_miniMapZoom.SlidingCompleted
+            || _largeMapZoom.SlidingCompleted
+            || _creatureMarkerSize.SlidingCompleted
+            || _compassFontScale.SlidingCompleted)
         {
             Persist();
         }
@@ -157,6 +280,27 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             {
                 SetMiniMapSize(size);
             }
+        }
+
+        foreach (var button in _shapeButtons)
+        {
+            if (button.IsClicked && button.Tag is MapShape shape)
+            {
+                SetMapShape(shape);
+            }
+        }
+
+        if (_placementButton.IsClicked)
+        {
+            RequestPersist();
+            _requestMiniMapPlacement();
+            return;
+        }
+
+        if (_resetButton.IsClicked)
+        {
+            RequestResetConfirmation();
+            return;
         }
 
         if (_doneButton.IsClicked)
@@ -177,32 +321,116 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
 
     public void RequestPersist() => _saveQueue.RequestSave();
 
-    private CheckboxWidget CreateToggle(string text, bool value, Action<bool> assign)
+    private CheckboxWidget CreateToggle(string text, Func<bool> read, Action<bool> assign)
     {
         var checkbox = new CheckboxWidget
         {
             Text = text,
-            IsChecked = value,
+            IsChecked = read(),
             IsAutoCheckingEnabled = true,
-            Size = new Vector2(360f, 38f),
+            Size = new Vector2(360f, 34f),
             Color = SnowText,
         };
         checkbox.CheckStatusChanged += isChecked =>
         {
+            if (_refreshingControls)
+            {
+                return;
+            }
+
             assign(isChecked);
             Persist();
         };
+        _toggleBindings.Add((checkbox, read));
         return checkbox;
     }
 
-    private static SliderWidget CreateSlider(float minimum, float maximum, float value) => new()
+    private void RequestResetConfirmation()
+    {
+        if (_store.IsReadOnly)
+        {
+            Notify(
+                TravelMapText.Get(
+                    "resetUnavailableReadOnly",
+                    "当前设置文件来自更高版本，处于只读状态，无法恢复默认设置。"),
+                TravelMapNoticeKind.Information);
+            return;
+        }
+
+        var dialog = new MessageDialog(
+            TravelMapText.Get("resetSettingsTitle", "恢复默认设置"),
+            TravelMapText.Get(
+                "resetSettingsMessage",
+                "将恢复地图的显示、尺寸、比例、位置和标记设置。探索区域、坐标点及传送邀请选项不会改变。"),
+            TravelMapText.Get("resetConfirm", "恢复默认"),
+            TravelMapText.Get("cancel", "取消"),
+            button =>
+            {
+                if (button == MessageDialogButton.Button1)
+                {
+                    ApplyReset();
+                }
+            });
+        DialogsManager.ShowDialog(ParentWidget as ContainerWidget, dialog);
+    }
+
+    private void ApplyReset()
+    {
+        _settings.ResetPresentationToDefaults();
+        RefreshControlsFromSettings();
+        RequestPersist();
+        Notify(
+            TravelMapText.Get("resetSuccess", "地图显示设置已恢复默认值"),
+            TravelMapNoticeKind.Success);
+    }
+
+    private void RefreshControlsFromSettings()
+    {
+        _refreshingControls = true;
+        try
+        {
+            foreach (var binding in _toggleBindings)
+            {
+                binding.Widget.IsChecked = binding.Read();
+            }
+
+            _miniMapZoom.Value = _settings.MiniMapBlocksPerPixel;
+            _largeMapZoom.Value = _settings.LargeMapBlocksPerPixel;
+            _creatureMarkerSize.Value = _settings.CreatureMarkerSize;
+            _compassFontScale.Value = _settings.CompassFontScale;
+            _miniMapZoom.Text = _settings.MiniMapBlocksPerPixel.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+            _largeMapZoom.Text = _settings.LargeMapBlocksPerPixel.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+            _creatureMarkerSize.Text = _settings.CreatureMarkerSize.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+            _compassFontScale.Text = _settings.CompassFontScale.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+            RefreshSizeButtons();
+            RefreshShapeButtons();
+        }
+        finally
+        {
+            _refreshingControls = false;
+        }
+    }
+
+    private static LabelWidget CreateSectionLabel(string text) => new()
+    {
+        Text = text,
+        Color = Moss,
+        FontScale = TravelMapTypography.SecondaryLabelScale,
+        Size = new Vector2(360f, 28f),
+    };
+
+    private static SliderWidget CreateSlider(
+        float minimum,
+        float maximum,
+        float value,
+        float granularity = 0f) => new()
     {
         MinValue = minimum,
         MaxValue = maximum,
-        Granularity = 0f,
+        Granularity = granularity,
         Value = value,
         LayoutDirection = LayoutDirection.Horizontal,
-        Size = new Vector2(200f, 36f),
+        Size = new Vector2(200f, 34f),
         IsLabelVisible = true,
         LabelWidth = 60f,
         TextColor = SnowText,
@@ -211,13 +439,13 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
 
     private static CanvasWidget CreateSliderRow(string labelText, SliderWidget slider)
     {
-        var row = new CanvasWidget { Size = new Vector2(360f, 40f) };
+        var row = new CanvasWidget { Size = new Vector2(360f, 36f) };
         var label = new LabelWidget
         {
             Text = labelText,
             Color = SnowText,
             FontScale = TravelMapTypography.SecondaryLabelScale,
-            Size = new Vector2(160f, 36f),
+            Size = new Vector2(160f, 34f),
         };
         row.Children.Add(label);
         row.Children.Add(slider);
@@ -228,15 +456,37 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
     private void SetMiniMapSize(int size)
     {
         _settings.MiniMapSize = size;
+        RefreshSizeButtons();
+        Persist();
+    }
+
+    private void RefreshSizeButtons()
+    {
         foreach (var button in _sizeButtons)
         {
             if (button.Tag is int buttonSize)
             {
-                button.CenterColor = buttonSize == size ? Moss : Basalt;
+                button.CenterColor = buttonSize == _settings.MiniMapSize ? Moss : Basalt;
             }
         }
+    }
 
+    private void SetMapShape(MapShape shape)
+    {
+        _settings.MiniMapShape = shape;
+        RefreshShapeButtons();
         Persist();
+    }
+
+    private void RefreshShapeButtons()
+    {
+        foreach (var button in _shapeButtons)
+        {
+            if (button.Tag is MapShape buttonShape)
+            {
+                button.CenterColor = buttonShape == _settings.MiniMapShape ? Moss : Basalt;
+            }
+        }
     }
 
     private void Persist() => RequestPersist();
@@ -249,7 +499,12 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            _notify("地图设置未能保存；本次会话仍会保留更改。");
+            Notify(
+                TravelMapText.Get("settingsSaveFailed", "地图设置未能保存；本次会话仍会保留更改。"),
+                TravelMapNoticeKind.Failure);
         }
     }
+
+    private void Notify(string text, TravelMapNoticeKind kind) =>
+        _notify(new TravelMapNotice(text, kind));
 }

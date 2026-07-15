@@ -16,6 +16,8 @@ public static class TravelMapPalette
 
     public static Rgba32 HazardAmber { get; } = new(0xE2, 0xA3, 0x3B, 0xFF);
 
+    public static Rgba32 CompassNorth { get; } = HazardAmber;
+
     public static Rgba32 SnowText { get; } = new(0xE8, 0xEC, 0xE7, 0xFF);
 
     public static Rgba32 MiniMapBackground { get; } = new(0x27, 0x29, 0x2A, 0xFF);
@@ -32,6 +34,10 @@ public static class TravelMapPalette
 
     public static Rgba32 MiniMapPlayerOutline { get; } = new(0x2A, 0x1C, 0x1C, 0xFF);
 
+    public static Rgba32 DeathMarkerBone { get; } = new(0xEE, 0xEA, 0xD8, 0xFF);
+
+    public static Rgba32 DeathMarkerOutline { get; } = new(0x35, 0x20, 0x20, 0xFF);
+
     public static Rgba32 MiniMapCoordinateBackdrop { get; } = new(0x12, 0x12, 0x12, 0xA0);
 }
 
@@ -43,6 +49,13 @@ public interface IExploredMapPixelSource
 public interface IExploredMapReadSession : IDisposable
 {
     bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color);
+
+    bool TryGetExploredTerrainPixel(int worldX, int worldZ, out MapTerrainPixel pixel)
+    {
+        var found = TryGetExploredPixel(worldX, worldZ, out var color);
+        pixel = found ? new MapTerrainPixel(color, TerrainHeightShading.Unknown) : default;
+        return found;
+    }
 }
 
 internal interface IExploredMapAggregateReadSession
@@ -53,6 +66,18 @@ internal interface IExploredMapAggregateReadSession
         int width,
         int height,
         out Rgba32 color);
+
+    bool TryGetExploredTerrainRegion(
+        int worldX,
+        int worldZ,
+        int width,
+        int height,
+        out MapTerrainPixel pixel)
+    {
+        var found = TryGetExploredRegion(worldX, worldZ, width, height, out var color);
+        pixel = found ? new MapTerrainPixel(color, TerrainHeightShading.Unknown) : default;
+        return found;
+    }
 }
 
 public interface ITravelMapRenderSink
@@ -65,15 +90,30 @@ public interface ITravelMapRenderSink
 
     void Waypoint(Waypoint waypoint, Rgba32 color);
 
+    void LastDeath(DeathMapMarker marker, Rgba32 color)
+    {
+    }
+
     void Label(string text, Vector3 worldPosition, Rgba32 color);
 }
 
 public readonly record struct MapTerrainCell(
     int WorldX,
     int WorldZ,
-    Vector2 ScreenMinimum,
-    Vector2 ScreenMaximum,
-    Rgba32 Color);
+    Vector2 ScreenTopLeft,
+    Vector2 ScreenTopRight,
+    Vector2 ScreenBottomRight,
+    Vector2 ScreenBottomLeft,
+    Rgba32 Color)
+{
+    public Vector2 ScreenMinimum => Vector2.Min(
+        Vector2.Min(ScreenTopLeft, ScreenTopRight),
+        Vector2.Min(ScreenBottomRight, ScreenBottomLeft));
+
+    public Vector2 ScreenMaximum => Vector2.Max(
+        Vector2.Max(ScreenTopLeft, ScreenTopRight),
+        Vector2.Max(ScreenBottomRight, ScreenBottomLeft));
+}
 
 public readonly record struct MapBoundaryEdge(Vector2 Start, Vector2 End, Rgba32 Color);
 
@@ -85,6 +125,8 @@ public readonly record struct MapOverlayState(
     bool ShowCoordinates,
     Rgba32? PlayerMarkerColor)
 {
+    public DeathMapMarker? LastDeath { get; init; }
+
     public MapOverlayState(
         Vector3 PlayerPosition,
         float PlayerHeading,
@@ -282,14 +324,14 @@ public sealed class TileStoreMapPixelSource :
                     var width = Math.Min(stride, plan.EndX - worldX + 1);
                     var height = Math.Min(stride, plan.EndZ - worldZ + 1);
                     var found = stride == 1
-                        ? snapshot.TryGetPixel(localX, localZ, out var color)
-                        : snapshot.TryGetExploredRegion(
+                        ? snapshot.TryGetTerrainPixel(localX, localZ, out var pixel)
+                        : snapshot.TryGetExploredTerrainRegion(
                             localX,
                             localZ,
                             checked((int)width),
                             checked((int)height),
-                            out color);
-                    cells[index++] = new LodCell(found, color);
+                            out pixel);
+                    cells[index++] = new LodCell(found, pixel);
                 }
             }
 
@@ -376,11 +418,21 @@ public sealed class TileStoreMapPixelSource :
 
         public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
         {
+            var found = TryGetExploredTerrainPixel(worldX, worldZ, out var pixel);
+            color = pixel.Color;
+            return found;
+        }
+
+        public bool TryGetExploredTerrainPixel(
+            int worldX,
+            int worldZ,
+            out MapTerrainPixel pixel)
+        {
             var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
             var key = (coordinate.TileX, coordinate.TileZ);
             if (_unknownTiles.Contains(key))
             {
-                color = default;
+                pixel = default;
                 return false;
             }
 
@@ -389,7 +441,7 @@ public sealed class TileStoreMapPixelSource :
                 if (!source._provider.IsKnownTile(key.TileX, key.TileZ))
                 {
                     _unknownTiles.Add(key);
-                    color = default;
+                    pixel = default;
                     return false;
                 }
 
@@ -397,7 +449,7 @@ public sealed class TileStoreMapPixelSource :
                 _tiles.Add(key, snapshot);
             }
 
-            return snapshot.TryGetPixel(coordinate.LocalX, coordinate.LocalZ, out color);
+            return snapshot.TryGetTerrainPixel(coordinate.LocalX, coordinate.LocalZ, out pixel);
         }
 
         public bool TryGetExploredRegion(
@@ -407,20 +459,32 @@ public sealed class TileStoreMapPixelSource :
             int height,
             out Rgba32 color)
         {
+            var found = TryGetExploredTerrainRegion(worldX, worldZ, width, height, out var pixel);
+            color = pixel.Color;
+            return found;
+        }
+
+        public bool TryGetExploredTerrainRegion(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out MapTerrainPixel pixel)
+        {
             var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
             if (width <= 0
                 || height <= 0
                 || width > MapTile.Size - coordinate.LocalX
                 || height > MapTile.Size - coordinate.LocalZ)
             {
-                color = default;
+                pixel = default;
                 return false;
             }
 
             var key = (coordinate.TileX, coordinate.TileZ);
             if (_unknownTiles.Contains(key))
             {
-                color = default;
+                pixel = default;
                 return false;
             }
 
@@ -429,7 +493,7 @@ public sealed class TileStoreMapPixelSource :
                 if (!source._provider.IsKnownTile(key.TileX, key.TileZ))
                 {
                     _unknownTiles.Add(key);
-                    color = default;
+                    pixel = default;
                     return false;
                 }
 
@@ -437,12 +501,12 @@ public sealed class TileStoreMapPixelSource :
                 _tiles.Add(key, snapshot);
             }
 
-            return snapshot.TryGetExploredRegion(
+            return snapshot.TryGetExploredTerrainRegion(
                 coordinate.LocalX,
                 coordinate.LocalZ,
                 width,
                 height,
-                out color);
+                out pixel);
         }
 
         public void Dispose()
@@ -465,18 +529,42 @@ public sealed class TileStoreMapPixelSource :
         private int _remainingNewTiles = maximumNewTiles;
 
         public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color) =>
-            TryGet(worldX, worldZ, 1, 1, out color);
+            TryGetColor(worldX, worldZ, 1, 1, out color);
+
+        public bool TryGetExploredTerrainPixel(
+            int worldX,
+            int worldZ,
+            out MapTerrainPixel pixel) => TryGet(worldX, worldZ, 1, 1, out pixel);
 
         public bool TryGetExploredRegion(
             int worldX,
             int worldZ,
             int width,
             int height,
-            out Rgba32 color) => TryGet(worldX, worldZ, width, height, out color);
+            out Rgba32 color) => TryGetColor(worldX, worldZ, width, height, out color);
+
+        public bool TryGetExploredTerrainRegion(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out MapTerrainPixel pixel) => TryGet(worldX, worldZ, width, height, out pixel);
 
         public void Dispose()
         {
             _plans.Clear();
+        }
+
+        private bool TryGetColor(
+            int worldX,
+            int worldZ,
+            int width,
+            int height,
+            out Rgba32 color)
+        {
+            var found = TryGet(worldX, worldZ, width, height, out var pixel);
+            color = pixel.Color;
+            return found;
         }
 
         private bool TryGet(
@@ -484,23 +572,23 @@ public sealed class TileStoreMapPixelSource :
             int worldZ,
             int width,
             int height,
-            out Rgba32 color)
+            out MapTerrainPixel pixel)
         {
             var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
             if (!_plans.TryGetValue((coordinate.TileX, coordinate.TileZ), out var plan))
             {
-                color = default;
+                pixel = default;
                 return false;
             }
 
             var entry = source.GetOrBuildLodEntry(plan, stride, ref _remainingNewTiles);
             if (entry is null)
             {
-                color = default;
+                pixel = default;
                 return false;
             }
 
-            return entry.TryGet(worldX, worldZ, width, height, out color);
+            return entry.TryGet(worldX, worldZ, width, height, out pixel);
         }
     }
 
@@ -543,7 +631,7 @@ public sealed class TileStoreMapPixelSource :
             stride);
     }
 
-    private readonly record struct LodCell(bool IsExplored, Rgba32 Color);
+    private readonly record struct LodCell(bool IsExplored, MapTerrainPixel Pixel);
 
     private sealed class LodCacheEntry(
         MapTileSamplePlan plan,
@@ -564,7 +652,7 @@ public sealed class TileStoreMapPixelSource :
             int worldZ,
             int width,
             int height,
-            out Rgba32 color)
+            out MapTerrainPixel pixel)
         {
             var offsetX = worldX - plan.StartX;
             var offsetZ = worldZ - plan.StartZ;
@@ -577,13 +665,13 @@ public sealed class TileStoreMapPixelSource :
                 || width != Math.Min(stride, plan.EndX - worldX + 1)
                 || height != Math.Min(stride, plan.EndZ - worldZ + 1))
             {
-                color = default;
+                pixel = default;
                 return false;
             }
 
             var index = checked(((offsetZ / stride) * columns) + (offsetX / stride));
             var cell = cells[index];
-            color = cell.Color;
+            pixel = cell.Pixel;
             return cell.IsExplored;
         }
     }
@@ -610,7 +698,8 @@ public static class TravelMapRenderModel
         IExploredMapPixelSource source,
         MapTransform transform,
         float brightness,
-        ITravelMapRenderSink sink)
+        ITravelMapRenderSink sink,
+        bool useHeightShading = false)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(sink);
@@ -628,12 +717,22 @@ public static class TravelMapRenderModel
         }
 
         var tint = Math.Clamp(float.IsFinite(brightness) ? brightness : 1f, 0f, 1f);
-        var halfWorldWidth = (double)transform.ViewportSize.X * transform.BlocksPerPixel / 2d;
-        var halfWorldHeight = (double)transform.ViewportSize.Y * transform.BlocksPerPixel / 2d;
-        var minimumX = Math.Max((double)int.MinValue, (double)transform.Center.X - halfWorldWidth);
-        var maximumX = Math.Min((double)int.MaxValue, (double)transform.Center.X + halfWorldWidth);
-        var minimumZ = Math.Max((double)int.MinValue, (double)transform.Center.Y - halfWorldHeight);
-        var maximumZ = Math.Min((double)int.MaxValue, (double)transform.Center.Y + halfWorldHeight);
+        var topLeft = transform.ScreenToWorld(Vector2.Zero);
+        var topRight = transform.ScreenToWorld(new Vector2(transform.ViewportSize.X, 0f));
+        var bottomRight = transform.ScreenToWorld(transform.ViewportSize);
+        var bottomLeft = transform.ScreenToWorld(new Vector2(0f, transform.ViewportSize.Y));
+        var minimumX = Math.Max(
+            (double)int.MinValue,
+            Math.Min(Math.Min(topLeft.X, topRight.X), Math.Min(bottomRight.X, bottomLeft.X)));
+        var maximumX = Math.Min(
+            (double)int.MaxValue,
+            Math.Max(Math.Max(topLeft.X, topRight.X), Math.Max(bottomRight.X, bottomLeft.X)));
+        var minimumZ = Math.Max(
+            (double)int.MinValue,
+            Math.Min(Math.Min(topLeft.Y, topRight.Y), Math.Min(bottomRight.Y, bottomLeft.Y)));
+        var maximumZ = Math.Min(
+            (double)int.MaxValue,
+            Math.Max(Math.Max(topLeft.Y, topRight.Y), Math.Max(bottomRight.Y, bottomLeft.Y)));
         if (minimumX > maximumX || minimumZ > maximumZ)
         {
             return default;
@@ -649,7 +748,8 @@ public static class TravelMapRenderModel
                 minimumX,
                 maximumX,
                 minimumZ,
-                maximumZ);
+                maximumZ,
+                useHeightShading);
         }
 
         var visibleStartX = (long)Math.Ceiling(minimumX);
@@ -692,28 +792,31 @@ public static class TravelMapRenderModel
                 var renderHeight = 1;
                 var found = stride > 1
                     && session is IExploredMapAggregateReadSession aggregateSession
-                    ? aggregateSession.TryGetExploredRegion(
+                    ? aggregateSession.TryGetExploredTerrainRegion(
                         x,
                         z,
                         renderWidth = aggregateWidth,
                         renderHeight = aggregateHeight,
-                        out var color)
-                    : session.TryGetExploredPixel(x, z, out color);
+                        out var pixel)
+                    : session.TryGetExploredTerrainPixel(x, z, out pixel);
                 if (!found)
                 {
                     continue;
                 }
 
-                var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
-                var screenMaximum = transform.WorldToScreen(new Vector2(
-                    (float)((double)x + renderWidth),
-                    (float)((double)z + renderHeight)));
+                var right = (float)((double)x + renderWidth);
+                var bottom = (float)((double)z + renderHeight);
                 sink.TerrainCell(new MapTerrainCell(
                     x,
                     z,
-                    Vector2.Min(screenMinimum, screenMaximum),
-                    Vector2.Max(screenMinimum, screenMaximum),
-                    TintTerrain(color, tint)));
+                    transform.WorldToScreen(new Vector2(x, z)),
+                    transform.WorldToScreen(new Vector2(right, z)),
+                    transform.WorldToScreen(new Vector2(right, bottom)),
+                    transform.WorldToScreen(new Vector2(x, bottom)),
+                    TerrainHeightShading.Apply(
+                        pixel.Color,
+                        useHeightShading ? pixel.HeightShade : TerrainHeightShading.Unknown,
+                        tint)));
                 primitives++;
             }
         }
@@ -734,6 +837,11 @@ public static class TravelMapRenderModel
         foreach (var waypoint in state.Waypoints)
         {
             sink.Waypoint(waypoint, TravelMapPalette.HazardAmber);
+        }
+
+        if (state.LastDeath is { } lastDeath)
+        {
+            sink.LastDeath(lastDeath, TravelMapPalette.DeathMarkerBone);
         }
 
         if (state.ShowCoordinates)
@@ -763,12 +871,6 @@ public static class TravelMapRenderModel
         (int)position.X,
         (int)position.Y,
         (int)position.Z);
-
-    private static Rgba32 TintTerrain(Rgba32 color, float brightness) => new(
-        (byte)Math.Clamp((int)MathF.Round(color.R * brightness), 0, byte.MaxValue),
-        (byte)Math.Clamp((int)MathF.Round(color.G * brightness), 0, byte.MaxValue),
-        (byte)Math.Clamp((int)MathF.Round(color.B * brightness), 0, byte.MaxValue),
-        color.A);
 
     private static int CalculateAlignedStride(
         long minimumX,
@@ -804,7 +906,8 @@ public static class TravelMapRenderModel
         double minimumX,
         double maximumX,
         double minimumZ,
-        double maximumZ)
+        double maximumZ,
+        bool useHeightShading)
     {
         var region = new MapTileRegion(
             TileCoordinate.FromWorld((int)Math.Floor(minimumX), 0).TileX,
@@ -860,28 +963,31 @@ public static class TravelMapRenderModel
                     var renderHeight = 1;
                     var found = pixelStride > 1
                         && session is IExploredMapAggregateReadSession aggregateSession
-                        ? aggregateSession.TryGetExploredRegion(
+                        ? aggregateSession.TryGetExploredTerrainRegion(
                             x,
                             z,
                             renderWidth = aggregateWidth,
                             renderHeight = aggregateHeight,
-                            out var color)
-                        : session.TryGetExploredPixel(x, z, out color);
+                            out var pixel)
+                        : session.TryGetExploredTerrainPixel(x, z, out pixel);
                     if (!found)
                     {
                         continue;
                     }
 
-                    var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
-                    var screenMaximum = transform.WorldToScreen(new Vector2(
-                        (long)x + renderWidth > int.MaxValue ? int.MaxValue : x + renderWidth,
-                        (long)z + renderHeight > int.MaxValue ? int.MaxValue : z + renderHeight));
+                    var right = (long)x + renderWidth > int.MaxValue ? int.MaxValue : x + renderWidth;
+                    var bottom = (long)z + renderHeight > int.MaxValue ? int.MaxValue : z + renderHeight;
                     sink.TerrainCell(new MapTerrainCell(
                         x,
                         z,
-                        Vector2.Min(screenMinimum, screenMaximum),
-                        Vector2.Max(screenMinimum, screenMaximum),
-                        TintTerrain(color, tint)));
+                        transform.WorldToScreen(new Vector2(x, z)),
+                        transform.WorldToScreen(new Vector2(right, z)),
+                        transform.WorldToScreen(new Vector2(right, bottom)),
+                        transform.WorldToScreen(new Vector2(x, bottom)),
+                        TerrainHeightShading.Apply(
+                            pixel.Color,
+                            useHeightShading ? pixel.HeightShade : TerrainHeightShading.Unknown,
+                            tint)));
                     primitives++;
                 }
             }

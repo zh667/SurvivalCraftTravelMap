@@ -7,7 +7,7 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TerrainMapSamplerTests
 {
-    private static readonly int[] TransparentTopContents = [28, 99, 19, 174, 25];
+    private static readonly int[] TransparentTopContents = [28, 99, 174, 25];
     private static readonly int[] WaterVariantContents = [226, 229, 232, 233];
 
     [Theory]
@@ -70,6 +70,55 @@ public sealed class TerrainMapSamplerTests
             source.SampledColumns);
         Assert.Equal(TerrainChunkCoordinate.PixelCount, source.ContentCalls.Count);
         Assert.All(destination, color => Assert.Equal(new Rgba32(10, 20, 30, 255), color));
+    }
+
+    [Fact]
+    public void Try_sample_chunk_calculates_reference_height_shading_for_sloped_ground()
+    {
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 1);
+        for (var z = 0; z < TerrainChunkCoordinate.Size; z++)
+        {
+            for (var x = 0; x < TerrainChunkCoordinate.Size; x++)
+            {
+                source.SetTopHeight(x, z, 60 + x + z);
+            }
+        }
+
+        var sampler = new TerrainMapSampler(source, CreatePixelData());
+        var colors = new Rgba32[TerrainChunkCoordinate.PixelCount];
+        var heightShades = new byte[TerrainChunkCoordinate.PixelCount];
+
+        var sampled = sampler.TrySampleChunk(new TerrainChunkCoordinate(0, 0), colors, heightShades);
+
+        Assert.True(sampled);
+        Assert.DoesNotContain(TerrainHeightShading.Unknown, heightShades);
+        Assert.Contains(heightShades, shade => shade > TerrainHeightShading.Neutral);
+    }
+
+    [Fact]
+    public void Cross_plants_keep_neutral_shading_on_sloped_ground()
+    {
+        var source = new FakeTerrainMapSource(topHeight: 64, defaultContent: 19);
+        source.CrossPlantContents.Add(19);
+        for (var z = 0; z < TerrainChunkCoordinate.Size; z++)
+        {
+            for (var x = 0; x < TerrainChunkCoordinate.Size; x++)
+            {
+                source.SetTopHeight(x, z, 60 + x + z);
+            }
+        }
+
+        var sampler = new TerrainMapSampler(source, CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+        {
+            [19] = Pixel(19, 171, 171, 171, changesWithEnvironment: true),
+        }));
+        var colors = new Rgba32[TerrainChunkCoordinate.PixelCount];
+        var heightShades = new byte[TerrainChunkCoordinate.PixelCount];
+
+        var sampled = sampler.TrySampleChunk(new TerrainChunkCoordinate(0, 0), colors, heightShades);
+
+        Assert.True(sampled);
+        Assert.All(heightShades, shade => Assert.Equal(TerrainHeightShading.Neutral, shade));
     }
 
     [Fact]
@@ -227,6 +276,7 @@ public sealed class TerrainMapSamplerTests
     [InlineData(13, 76, 181, 96)]
     [InlineData(14, 96, 161, 155)]
     [InlineData(18, 0, 0, 120)]
+    [InlineData(19, 151, 184, 195)]
     [InlineData(225, 90, 141, 165)]
     [InlineData(256, 146, 191, 176)]
     public void Environment_sensitive_contents_use_their_daytime_palette(
@@ -270,6 +320,30 @@ public sealed class TerrainMapSamplerTests
         // Temperature 0 receives a +1 height adjustment at Y=54. The grass palette
         // therefore interpolates its cold and warm corners by 1/8 before multiplication.
         Assert.Equal(new Rgba32(79, 46, 22, 255), color);
+    }
+
+    [Fact]
+    public void Production_environment_color_source_takes_precedence_over_the_fallback_approximation()
+    {
+        var source = new FakeTerrainMapSource(
+            topHeight: 64,
+            defaultContent: 8,
+            seasonalTemperature: 5,
+            seasonalHumidity: 9)
+        {
+            EnvironmentColor = (content, temperature, humidity) =>
+                content == 8 && temperature == 5 && humidity == 9
+                    ? new Rgba32(12, 34, 56, 255)
+                    : null,
+        };
+        var sampler = new TerrainMapSampler(source, CreatePixelData(overrides: new Dictionary<int, BlockPixelData>
+        {
+            [8] = Pixel(8, 171, 171, 171, changesWithEnvironment: true),
+        }));
+
+        var color = sampler.Sample(3, 4);
+
+        Assert.Equal(new Rgba32(8, 22, 37, 255), color);
     }
 
     [Fact]
@@ -399,7 +473,7 @@ public sealed class TerrainMapSamplerTests
 
         Assert.Equal(Enumerable.Range(0, 257), entries.Keys.Order());
         Assert.Equal(
-            [8, 12, 13, 14, 18, 225, 256],
+            [8, 12, 13, 14, 18, 19, 225, 256],
             entries.Values
                 .Where(entry => entry.NeedChangeWithEnvironment)
                 .Select(entry => entry.BlockIndex)
@@ -410,20 +484,24 @@ public sealed class TerrainMapSamplerTests
         Assert.NotEqual("656ECD47A8C01514A3B4F6D90E6EC7AFE2B0590A31758825C7A64B311FC0D55A", hash);
 
         Assert.Equal(new Rgba32(0, 0, 0, 0), entries[0].Color); // Air.
-        Assert.Equal(new Rgba32(112, 106, 99, 255), entries[1].Color); // Stone.
-        Assert.Equal(new Rgba32(126, 91, 58, 255), entries[2].Color); // Dirt.
-        Assert.Equal(new Rgba32(215, 195, 139, 255), entries[7].Color); // Sand.
-        Assert.Equal(new Rgba32(131, 91, 52, 255), entries[9].Color); // Oak wood.
-        Assert.Equal(new Rgba32(238, 85, 30, 255), entries[92].Color); // Magma.
-        Assert.Equal(new Rgba32(52, 122, 65, 255), entries[127].Color); // Cactus.
-        Assert.Equal(new Rgba32(255, 255, 255, 255), entries[8].Color); // Runtime grass tint.
-        Assert.Equal(new Rgba32(255, 255, 255, 255), entries[18].Color); // Runtime water tint.
+        Assert.Equal(new Rgba32(97, 97, 97, 255), entries[1].Color); // Stone.
+        Assert.Equal(new Rgba32(132, 106, 58, 255), entries[2].Color); // Dirt.
+        Assert.Equal(new Rgba32(211, 196, 149, 255), entries[7].Color); // Sand.
+        Assert.Equal(new Rgba32(198, 154, 83, 255), entries[9].Color); // Oak wood.
+        Assert.Equal(new Rgba32(233, 122, 29, 255), entries[92].Color); // Magma.
+        Assert.Equal(new Rgba32(92, 116, 52, 255), entries[127].Color); // Cactus.
+        Assert.Equal(new Rgba32(171, 171, 171, 255), entries[8].Color); // Runtime grass multiplier.
+        Assert.Equal(new Rgba32(168, 168, 168, 255), entries[18].Color); // Runtime water multiplier.
+        Assert.Equal(new Rgba32(165, 165, 165, 165), entries[57].Color); // Translucent glass.
         Assert.Equal(
             [0],
             entries.Values
                 .Where(entry => entry.Color.A == 0)
                 .Select(entry => entry.BlockIndex)
                 .ToArray());
+
+        Assert.All(entries, pair =>
+            Assert.Equal(LegacyTerrainPaletteMigration.GetReferenceColor(pair.Key), pair.Value.Color));
     }
 
     [Fact]
@@ -571,6 +649,7 @@ internal sealed class FakeTerrainMapSource(
 {
     private readonly Dictionary<(int X, int Y, int Z), int> _contents = [];
     private readonly Dictionary<(int X, int Z), Exception> _topHeightFailures = [];
+    private readonly Dictionary<(int X, int Z), int> _topHeights = [];
 
     internal List<(int X, int Y, int Z)> ContentCalls { get; } = [];
 
@@ -586,7 +665,13 @@ internal sealed class FakeTerrainMapSource(
 
     internal List<TerrainChunkCoordinate> RequestedChunks { get; } = [];
 
+    internal HashSet<int> CrossPlantContents { get; } = [];
+
+    internal Func<int, int, int, Rgba32?>? EnvironmentColor { get; init; }
+
     internal void SetContent(int x, int y, int z, int content) => _contents[(x, y, z)] = content;
+
+    internal void SetTopHeight(int x, int z, int height) => _topHeights[(x, z)] = height;
 
     internal void ThrowFromTopHeightAt(int x, int z, Exception exception) =>
         _topHeightFailures[(x, z)] = exception;
@@ -612,7 +697,7 @@ internal sealed class FakeTerrainMapSource(
             throw exception;
         }
 
-        return topHeight;
+        return _topHeights.GetValueOrDefault((x, z), topHeight);
     }
 
     public int GetContent(int x, int y, int z)
@@ -631,6 +716,19 @@ internal sealed class FakeTerrainMapSource(
     {
         HumidityCalls.Add((x, z));
         return seasonalHumidity;
+    }
+
+    public bool IsCrossPlant(int content) => CrossPlantContents.Contains(content);
+
+    public bool TryGetEnvironmentColor(
+        int content,
+        int temperature,
+        int humidity,
+        out Rgba32 color)
+    {
+        var result = EnvironmentColor?.Invoke(content, temperature, humidity);
+        color = result.GetValueOrDefault();
+        return result.HasValue;
     }
 }
 

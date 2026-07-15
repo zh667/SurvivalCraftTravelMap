@@ -56,6 +56,40 @@ public sealed class ExplorationRecorderTests
     }
 
     [Fact]
+    public void Palette_only_legacy_chunk_is_lazily_upgraded_without_losing_exploration()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ExplorationTileStore(directory.Path);
+        var chunk = new TerrainChunkCoordinate(0, 0);
+        var recorder = CreateRecorder(
+            new FakeTerrainMapSource(defaultContent: 1),
+            store,
+            new Rgba32(10, 20, 30, 255));
+        using (var lease = store.AcquireMutation(0, 0))
+        {
+            lease.Tile.SetRegion(
+                0,
+                0,
+                TerrainChunkCoordinate.Size,
+                TerrainChunkCoordinate.Size,
+                Enumerable.Repeat(
+                    new Rgba32(1, 2, 3, 255),
+                    TerrainChunkCoordinate.PixelCount).ToArray());
+        }
+
+        Assert.True(store.IsRegionFullyExplored(0, 0, 0, 0, 16, 16));
+        Assert.False(store.IsRegionFullyHeightShaded(0, 0, 0, 0, 16, 16));
+        Assert.False(recorder.IsChunkFullyExplored(chunk));
+
+        Assert.Equal(ExplorationRecordResult.Recorded, recorder.RecordChunk(chunk));
+
+        Assert.True(recorder.IsChunkFullyExplored(chunk));
+        Assert.True(store.IsRegionFullyHeightShaded(0, 0, 0, 0, 16, 16));
+        Assert.True(store.GetOrLoad(0, 0).TryGetTerrainPixel(0, 0, out var pixel));
+        Assert.Equal(TerrainHeightShading.Neutral, pixel.HeightShade);
+    }
+
+    [Fact]
     public void Region_coverage_treats_legacy_explored_bit_with_zero_alpha_as_unexplored()
     {
         var explored = new byte[MapTile.ExploredByteCount];

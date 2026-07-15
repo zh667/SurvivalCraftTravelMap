@@ -1,5 +1,6 @@
 using Game.NetWork;
 using Game;
+using SurvivalcraftTravelMap.UI;
 
 namespace SurvivalcraftTravelMap.Network;
 
@@ -233,18 +234,18 @@ public static class CoordinateTeleportResultText
 {
     public static string For(CoordinateTeleportResultCode result) => result switch
     {
-        CoordinateTeleportResultCode.Rejected => "服务器拒绝了地图传送请求",
-        CoordinateTeleportResultCode.Unsupported => "服务器不支持地图传送",
-        CoordinateTeleportResultCode.Disabled => "服务器已关闭此类地图传送",
+        CoordinateTeleportResultCode.Rejected => TravelMapText.Get("teleportRejected", "服务器拒绝了地图传送请求"),
+        CoordinateTeleportResultCode.Unsupported => TravelMapText.Get("teleportUnsupported", "服务器不支持地图传送"),
+        CoordinateTeleportResultCode.Disabled => TravelMapText.Get("teleportDisabled", "服务器已关闭此类地图传送"),
         CoordinateTeleportResultCode.TimedOut => CoordinateTeleportClientSession.UnsupportedOrTimeoutMessage,
-        CoordinateTeleportResultCode.NoSafePosition => "目标附近没有安全落点",
-        CoordinateTeleportResultCode.OutOfWorld => "目标坐标超出世界范围",
-        CoordinateTeleportResultCode.RolledBack => "落点复查失败，已回到原位置",
-        CoordinateTeleportResultCode.Malformed => "服务器拒绝了无效请求",
-        CoordinateTeleportResultCode.Duplicate => "重复的地图传送请求已被拒绝",
-        CoordinateTeleportResultCode.Disconnected => "连接已断开，地图传送已取消",
-        CoordinateTeleportResultCode.InternalError => "传送失败，详细原因已写入日志",
-        CoordinateTeleportResultCode.Success => "传送完成",
-        _ => "地图传送未完成",
+        CoordinateTeleportResultCode.NoSafePosition => TravelMapText.Get("noSafePosition", "目标附近没有安全落点"),
+        CoordinateTeleportResultCode.OutOfWorld => TravelMapText.Get("targetOutOfWorld", "目标坐标超出世界范围"),
+        CoordinateTeleportResultCode.RolledBack => TravelMapText.Get("teleportRolledBack", "落点复查失败，已回到原位置"),
+        CoordinateTeleportResultCode.Malformed => TravelMapText.Get("teleportMalformed", "服务器拒绝了无效请求"),
+        CoordinateTeleportResultCode.Duplicate => TravelMapText.Get("teleportDuplicate", "重复的地图传送请求已被拒绝"),
+        CoordinateTeleportResultCode.Disconnected => TravelMapText.Get("teleportDisconnected", "连接已断开，地图传送已取消"),
+        CoordinateTeleportResultCode.InternalError => TravelMapText.Get("teleportInternalError", "传送失败，详细原因已写入日志"),
+        CoordinateTeleportResultCode.Success => TravelMapText.Get("teleportSuccess", "传送完成"),
+        _ => TravelMapText.Get("teleportIncomplete", "地图传送未完成"),
     };
 }

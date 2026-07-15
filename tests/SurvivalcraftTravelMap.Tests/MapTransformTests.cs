@@ -39,6 +39,52 @@ public sealed class MapTransformTests
         AssertVectorNear(before, after.ScreenToWorld(cursor), 0.001f);
     }
 
+    [Fact]
+    public void Rotated_transform_places_the_heading_direction_at_the_top()
+    {
+        var map = new MapTransform(
+            Vector2.Zero,
+            1f,
+            new Vector2(200f),
+            RotationRadians: -MathF.PI / 2f);
+
+        var result = map.WorldToScreen(new Vector2(10f, 0f));
+
+        AssertVectorNear(new Vector2(100f, 90f), result, 0.001f);
+    }
+
+    [Fact]
+    public void Rotated_transform_round_trips_world_coordinates()
+    {
+        var map = new MapTransform(
+            new Vector2(100f, -50f),
+            2f,
+            new Vector2(800f, 600f),
+            RotationRadians: 0.73f);
+        var world = new Vector2(-12.5f, 78.25f);
+
+        var result = map.ScreenToWorld(map.WorldToScreen(world));
+
+        AssertVectorNear(world, result, 0.001f);
+    }
+
+    [Fact]
+    public void ZoomAt_keeps_rotated_world_coordinate_under_cursor()
+    {
+        var map = new MapTransform(
+            new Vector2(100f, -50f),
+            2f,
+            new Vector2(800f, 600f),
+            RotationRadians: -1.17f);
+        var cursor = new Vector2(610f, 210f);
+        var before = map.ScreenToWorld(cursor);
+
+        var after = map.ZoomAt(cursor, 0.5f);
+
+        AssertVectorNear(before, after.ScreenToWorld(cursor), 0.001f);
+        Assert.Equal(map.RotationRadians, after.RotationRadians);
+    }
+
     private static void AssertVectorNear(Vector2 expected, Vector2 actual, float tolerance)
     {
         Assert.InRange(actual.X, expected.X - tolerance, expected.X + tolerance);

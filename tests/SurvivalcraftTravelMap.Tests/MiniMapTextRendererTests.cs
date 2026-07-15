@@ -1,6 +1,8 @@
 using System.Numerics;
 using Engine.Media;
+using Game;
 using SurvivalcraftTravelMap.Map;
+using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
 using Xunit;
@@ -106,6 +108,79 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Fact]
+    public void Compass_queue_centers_text_and_uses_the_configured_scale()
+    {
+        var queue = new RecordingMapFontQueue();
+
+        MiniMapTextRenderer.QueueCompassLabel(
+            queue,
+            "北",
+            new Vector2(96f, 12f),
+            TravelMapPalette.CompassNorth,
+            1.5f);
+
+        var item = Assert.Single(queue.Items);
+        Assert.Equal(MapTextAlignment.Center, item.Alignment);
+        Assert.Equal(1.5f, item.Scale);
+    }
+
+    [Fact]
+    public void Actual_minimap_compass_draw_queues_four_centered_labels()
+    {
+        using var widget = CreateSurface(
+            orientation: MiniMapOrientation.HeadingUp,
+            heading: MathF.PI / 2f);
+        widget.ApplyConfiguredMiniMapOrientation = true;
+        widget.ShowCompassOverlay = true;
+        var primitives = new RecordingMapSurfacePrimitiveQueue();
+        var text = new RecordingMapFontQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), primitives, text));
+
+        Assert.Equal(4, text.Items.Count);
+        Assert.All(text.Items, item => Assert.Equal(MapTextAlignment.Center, item.Alignment));
+    }
+
+    [Fact]
+    public void Game_time_draws_even_when_coordinates_are_hidden()
+    {
+        using var widget = CreateSurface(showGameTime: true);
+        widget.GameTimeProvider = () => 0.5f;
+        var primitives = new RecordingMapSurfacePrimitiveQueue();
+        var text = new RecordingMapFontQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), primitives, text));
+
+        var index = Assert.Single(
+            Enumerable.Range(0, text.Texts.Count),
+            item => text.Texts[item] == "12:00");
+        Assert.Equal(MapTextAlignment.BottomRight, text.Items[index].Alignment);
+    }
+
+    [Fact]
+    public void Minimap_information_uses_two_transparent_footer_lines()
+    {
+        using var widget = CreateSurface(showGameTime: true, showCoordinates: true);
+        widget.GameTimeProvider = () => 0.5f;
+        widget.PlaceMapInformationBelowSurface = true;
+        widget.ShowCoordinateBackdrop = true;
+        var primitives = new RecordingMapSurfacePrimitiveQueue();
+        var text = new RecordingMapFontQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), primitives, text));
+
+        Assert.DoesNotContain(
+            primitives.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.CoordinateBackdrop);
+        var timeIndex = text.Texts.IndexOf("12:00");
+        var coordinateIndex = text.Texts.FindIndex(item => item.StartsWith("X:", StringComparison.Ordinal));
+        Assert.True(timeIndex >= 0);
+        Assert.True(coordinateIndex >= 0);
+        Assert.Equal(210f, text.Positions[timeIndex].Y);
+        Assert.Equal(230f, text.Positions[coordinateIndex].Y);
+    }
+
+    [Fact]
     public void Minimap_frame_primitives_keep_shadow_inside_192_footprint_before_two_warm_frames()
     {
         var primitives = MiniMapVisualStyle.CreateFramePrimitives(
@@ -196,6 +271,156 @@ public sealed class MiniMapTextRendererTests
         Assert.True(primitives[0].Tip.Y < primitives[1].Tip.Y);
     }
 
+    [Theory]
+    [InlineData(CreatureMapMarkerKind.Predator, 255, 60, 60)]
+    [InlineData(CreatureMapMarkerKind.Bird, 255, 220, 60)]
+    [InlineData(CreatureMapMarkerKind.Other, 60, 220, 80)]
+    public void Creature_marker_palette_matches_the_reference_categories(
+        CreatureMapMarkerKind kind,
+        byte red,
+        byte green,
+        byte blue)
+    {
+        Assert.Equal(
+            new Rgba32(red, green, blue, byte.MaxValue),
+            CreatureMapMarkerStyle.ColorFor(kind));
+    }
+
+    [Fact]
+    public void Actual_map_draw_queues_outlined_creatures_before_the_player_marker()
+    {
+        using var widget = CreateSurface(
+        [
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Predator),
+        ]);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+        widget.PlayerArrowSize = 18f;
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var creaturePrimitives = queue.Primitives
+            .Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.Creature)
+            .ToArray();
+        Assert.Collection(
+            creaturePrimitives,
+            outline =>
+            {
+                Assert.Equal(CreatureMapMarkerStyle.OutlineColor, outline.Color);
+                Assert.Equal(8f, outline.Size);
+            },
+            fill =>
+            {
+                Assert.Equal(CreatureMapMarkerStyle.PredatorColor, fill.Color);
+                Assert.Equal(5f, fill.Size);
+            });
+        Assert.True(
+            queue.Primitives.IndexOf(creaturePrimitives[1])
+            < queue.Primitives.FindIndex(primitive => primitive.Kind == MapSurfacePrimitiveKind.Player));
+    }
+
+    [Fact]
+    public void Creature_setting_hides_all_creature_primitives()
+    {
+        using var widget = CreateSurface(
+        [
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Other),
+        ],
+        showCreatures: false);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        Assert.DoesNotContain(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Creature);
+    }
+
+    [Fact]
+    public void Last_death_is_drawn_as_one_skull_symbol()
+    {
+        var marker = new DeathMapMarker(new Vector3(8f, 22f, 0f), 3.25, "fall");
+        using var widget = CreateSurface(lastDeath: marker);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var skull = queue.Primitives
+            .Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.DeathMarker)
+            .ToArray();
+        Assert.True(skull.Length >= 8);
+        Assert.Contains(skull, primitive => primitive.Color == TravelMapPalette.DeathMarkerBone);
+        Assert.Contains(skull, primitive => primitive.Color == TravelMapPalette.DeathMarkerOutline);
+    }
+
+    [Fact]
+    public void Last_death_setting_hides_the_skull_and_disables_its_hit_target()
+    {
+        var marker = new DeathMapMarker(new Vector3(8f, 22f, 0f), 3.25, "fall");
+        using var widget = CreateSurface(lastDeath: marker, showLastDeath: false);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        Assert.DoesNotContain(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.DeathMarker);
+    }
+
+    [Fact]
+    public void Offscreen_last_death_draws_on_the_edge_and_uses_the_edge_position_as_hit_target()
+    {
+        var marker = new DeathMapMarker(new Vector3(800f, 22f, 0f), 3.25, "fall");
+        using var widget = CreateSurface(lastDeath: marker);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+        var projection = widget.ProjectLastDeath(marker);
+
+        Assert.True(projection.IsOffscreen);
+        Assert.NotNull(widget.HitLastDeath(projection.Position));
+        Assert.Contains(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.DeathMarker);
+    }
+
+    [Theory]
+    [InlineData(CreatureCategory.LandPredator, CreatureMapMarkerKind.Predator)]
+    [InlineData(CreatureCategory.WaterPredator, CreatureMapMarkerKind.Predator)]
+    [InlineData(CreatureCategory.Bird, CreatureMapMarkerKind.Bird)]
+    [InlineData(CreatureCategory.LandOther, CreatureMapMarkerKind.Other)]
+    [InlineData(CreatureCategory.WaterOther, CreatureMapMarkerKind.Other)]
+    public void Game_creature_categories_map_to_stable_marker_kinds(
+        CreatureCategory category,
+        CreatureMapMarkerKind expected)
+    {
+        Assert.Equal(expected, TravelMapComponent.ToCreatureMarkerKind(category));
+    }
+
+    [Fact]
+    public void Native_player_death_history_selects_only_the_latest_record_for_the_map()
+    {
+        var stats = new PlayerStats();
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 1.5,
+            Location = new Engine.Vector3(10f, 20f, 30f),
+            Cause = "old",
+        });
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 2.5,
+            Location = new Engine.Vector3(40f, 50f, 60f),
+            Cause = "latest",
+        });
+
+        var marker = TravelMapComponent.SelectLastDeath(stats);
+
+        Assert.NotNull(marker);
+        Assert.Equal(new Vector3(40f, 50f, 60f), marker.Position);
+        Assert.Equal(2.5, marker.Day);
+        Assert.Equal("latest", marker.Cause);
+    }
+
     [Fact]
     public void Actual_minimap_draw_queues_shadow_then_two_frames_and_dark_outline_then_red_marker()
     {
@@ -256,6 +481,43 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Fact]
+    public void Heading_up_minimap_keeps_an_east_facing_player_arrow_pointing_up()
+    {
+        using var widget = CreateSurface(
+            orientation: MiniMapOrientation.HeadingUp,
+            heading: MathF.PI / 2f);
+        widget.ApplyConfiguredMiniMapOrientation = true;
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var player = Assert.Single(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Player);
+        Assert.Equal(96f, player.Vertices[0].X, 3);
+        Assert.True(player.Vertices[0].Y < 96f);
+        Assert.Equal(-MathF.PI / 2f, widget.Transform.RotationRadians, 3);
+    }
+
+    [Fact]
+    public void Large_map_ignores_heading_up_setting_and_remains_north_up()
+    {
+        using var widget = CreateSurface(
+            orientation: MiniMapOrientation.HeadingUp,
+            heading: MathF.PI / 2f);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var player = Assert.Single(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Player);
+        Assert.True(player.Vertices[0].X > 96f);
+        Assert.Equal(96f, player.Vertices[0].Y, 3);
+        Assert.Equal(0f, widget.Transform.RotationRadians);
+    }
+
+    [Fact]
     public void Actual_default_large_map_draw_queues_no_shadow()
     {
         using var widget = CreateSurface();
@@ -275,6 +537,21 @@ public sealed class MiniMapTextRendererTests
             1f,
             new Vector2(639f, 479f),
             TravelMapPalette.Moss);
+    }
+
+    [Fact]
+    public void Large_map_stays_rectangular_when_the_minimap_shape_is_circle()
+    {
+        using var widget = CreateSurface(mapShape: MapShape.Circle);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(640f, 480f), queue));
+
+        var frame = Assert.Single(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Frame);
+        Assert.Equal(new Vector2(1f), frame.Minimum);
+        Assert.Equal(new Vector2(639f, 479f), frame.Maximum);
     }
 
     [Fact]
@@ -298,15 +575,34 @@ public sealed class MiniMapTextRendererTests
         Assert.Equal(MiniMapVisualStyle.FrameShadowAlpha, TravelMapPalette.MiniMapFrameShadow.A);
     }
 
-    private static MapSurfaceWidget CreateSurface()
+    private static MapSurfaceWidget CreateSurface(
+        IReadOnlyList<CreatureMapMarker>? creatures = null,
+        bool showCreatures = true,
+        MiniMapOrientation orientation = MiniMapOrientation.NorthUp,
+        float heading = 0f,
+        bool showGameTime = false,
+        MapShape mapShape = MapShape.Square,
+        bool showCoordinates = false,
+        DeathMapMarker? lastDeath = null,
+        bool showLastDeath = true)
     {
         var font = (BitmapFont)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
             typeof(BitmapFont));
         return new MapSurfaceWidget(
             new EmptyPixelSource(),
-            new TravelMapSettings { ShowCoordinates = false },
-            () => new PlayerMapPose(new System.Numerics.Vector3(0f, 64f, 0f), 0f),
+            new TravelMapSettings
+            {
+                ShowCoordinates = showCoordinates,
+                ShowCreatureMarkers = showCreatures,
+                ShowLastDeathMarker = showLastDeath,
+                MiniMapOrientation = orientation,
+                MiniMapShape = mapShape,
+                ShowGameTime = showGameTime,
+            },
+            () => new PlayerMapPose(new System.Numerics.Vector3(0f, 64f, 0f), heading),
             () => [],
+            () => creatures ?? [],
+            () => lastDeath,
             () => 1f,
             font);
     }
@@ -342,6 +638,10 @@ public sealed class MiniMapTextRendererTests
 
         public List<(MapTextAlignment Alignment, float Scale)> Items { get; } = [];
 
+        public List<string> Texts { get; } = [];
+
+        public List<Vector2> Positions { get; } = [];
+
         public void QueueText(
             string text,
             Vector2 position,
@@ -351,6 +651,8 @@ public sealed class MiniMapTextRendererTests
         {
             Scales.Add(scale);
             Items.Add((alignment, scale));
+            Texts.Add(text);
+            Positions.Add(position);
         }
     }
 
@@ -427,6 +729,36 @@ public sealed class MiniMapTextRendererTests
                 [primitive.Tip, primitive.Left, primitive.Right],
                 primitive.Size,
                 primitive.Color));
+
+        public void QueueTriangle(
+            MapSurfacePrimitiveKind kind,
+            Vector2 point1,
+            Vector2 point2,
+            Vector2 point3,
+            Rgba32 color)
+        {
+            var vertices = new[] { point1, point2, point3 };
+            Primitives.Add(new RecordedMapSurfacePrimitive(
+                kind,
+                new Vector2(vertices.Min(point => point.X), vertices.Min(point => point.Y)),
+                new Vector2(vertices.Max(point => point.X), vertices.Max(point => point.Y)),
+                vertices,
+                0f,
+                color));
+        }
+
+        public void QueueDisc(
+            MapSurfacePrimitiveKind kind,
+            Vector2 center,
+            float radius,
+            Rgba32 color,
+            int segments) => Primitives.Add(new RecordedMapSurfacePrimitive(
+                kind,
+                center - new Vector2(radius),
+                center + new Vector2(radius),
+                [center],
+                radius * 2f,
+                color));
 
         public void QueueRectangle(MapFramePrimitive primitive) =>
             Primitives.Add(new RecordedMapSurfacePrimitive(

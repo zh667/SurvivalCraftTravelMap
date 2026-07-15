@@ -1,4 +1,4 @@
-# Survivalcraft Travel Map
+# 旅行地图（Survivalcraft Travel Map）
 
 Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / NetMod API 1.44 的旅行地图 Mod。它在单人、主机和联机客户端显示持久化探索地图，并提供安全坐标传送、完整 XYZ 坐标点和玩家邀请传送。
 
@@ -13,13 +13,17 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 
 ## 操作
 
-- 右上角小地图：默认逻辑尺寸为 `192`，显示已探索地形、玩家方向、坐标点和可选 XYZ 坐标。位置按玩家 `GuiWidget.ActualSize` 的逻辑坐标计算，不使用物理视口像素，因此会跟随游戏 UI 缩放；当前实机验收目标约为 `256×256` 物理像素，并需分别在 UI 缩放 `0.75 / 1.0 / 1.25` 下确认。单击小地图或按 `M` 均可打开大地图。
+- 小地图：默认逻辑尺寸为 `160`，显示已探索地形、玩家方向、坐标点、可选 XYZ 坐标、游戏时间、生物标记和最近一次死亡地点。死亡地点使用骷髅图标；发生新死亡后地图只显示最新位置。支持北方朝上/行进方向朝上、圆形/方形/圆角方形、独立罗盘方向和字号。捕食者、鸟类和其他生物分别显示为红、黄、绿色。可用鼠标或触摸调整位置；轻触小地图或按 `M` 均可打开大地图。
 - `M`：打开或关闭大地图；聊天输入、文本输入或其他模态对话框占用焦点时不会触发。背包、角色、合成、睡眠、大地图或其他模态界面出现时，小地图和邀请图标会自动隐藏，关闭后按原设置恢复。
 - 鼠标滚轮：光标位于地图上时缩放。
 - 按住鼠标左键拖动：平移大地图。
 - 右键已探索区域：传送到附近安全地面，或选择“保存当前位置”把玩家此刻的真实 XYZ 保存为坐标点。右键位置不会被伪造为一个远处 Y。
 - 右键坐标点：传送、重命名或删除。
-- 大地图“设置”：开关小地图、坐标、日夜明暗和邀请；调整小地图尺寸与两种地图缩放。
+- 上次死亡地点始终按方向追踪：若骷髅不在当前大小地图视野内，会贴在对应方向的地图边缘。鼠标或触屏点骷髅会打开并定位大地图；右键骷髅或使用大地图右下角“返回死亡点”可执行安全传送。
+- 大地图左下角可切换“地表 / 洞穴”。洞穴模式使用游戏真实的 Y=1～254，每次 `Y− / Y+` 调整 1 格，也可点击中间的 Y 数值直接输入高度或跟随玩家 Y 轴。地图会投影所选 Y 上下 8 格内最接近的可通行空间，使斜坡、台阶和起伏洞穴保持连续，并用明暗表示相对高度。洞穴地图继承地表地图已经探索的 X/Z 范围，并在对应区块加载时自动生成当前高度投影；未探索的地表范围仍保持隐藏。洞穴地图右键传送会按当前 Y 层寻找安全落脚点。
+- 大地图“设置”：开关小地图、坐标、时间、生物标记、罗盘方向、朝向、日夜明暗和邀请；调整标记、字号、尺寸、形状、缩放与位置。大地图支持跟随玩家、鼠标拖动/滚轮缩放和触屏单指拖动/双指缩放，并始终保持北方朝上。
+- “恢复默认设置”会先显示确认对话框，只复位地图显示配置；探索区域、坐标点、服务器设置和“接受玩家传送邀请”不会改变。未来版本的只读设置文件禁止复位和写入。
+- 界面语言随游戏自动加载，内置 `zh-CN`、`en-US`、`es-419`、`pt-BR`、`ro-RO`、`ru-RU`、`vi-VN` 七套完整语言表。
 - 多人邀请图标：仅在邀请功能可用且当前还有其他玩家时显示；单击后打开玩家列表，每页 4 人。单人时不显示，旧 ID 41 邀请协议保持兼容。
 
 未探索区域不会被地图渲染或允许右键传送。地图地形随日夜变暗，玩家箭头、坐标点和文字保持可读亮度。
@@ -42,8 +46,9 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 
 所有路径均位于游戏的 `app:/SurvivalcraftTravelMap`：
 
-- 全局界面设置：`settings.json`（当前 `schemaVersion: 2`；显式 v1 加载结果为 `MigratedPreviousSchema` 并重写为 v2，其中仅 v1 `MiniMapSize=384` 会一次改为 `192`，v1 的 `160 / 192 / 256 / 320` 保持不变；无版本 JSON 与 v2 的 `384` 不执行这项尺寸迁移；旧 `travel-map-settings.json` 仍会一次性迁移且保留原文件）
+- 全局界面设置：`settings.json`（当前 `schemaVersion: 3`；v1/v2 均以 `MigratedPreviousSchema` 迁移并重写为 v3。仅 v1 `MiniMapSize=384` 会一次改为 `192`；v2、无版本 JSON 和 v3 的 `384` 保持不变；旧 `travel-map-settings.json` 仍会一次性迁移且保留原文件）
 - 每世界、每玩家地图：`maps/<world-key>/<player-guid>/tiles/*.sctm`
+- 每世界、每玩家洞穴投影：`maps/<world-key>/<player-guid>/caves/projection_v2/y_<Y值>/*.sctm`
 - 每世界、每玩家坐标点：`maps/<world-key>/<player-guid>/waypoints.json`
 - 服务器开关：`server-settings.json`
 
@@ -53,7 +58,7 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 
 玩家离开后再次进入同一区块会重新调度并刷新完整 256 像素，因此 World2 等旧世界里已经存在的 partial legacy cache 会在重入时补全，无需删除地图目录。格式版本 1 将 `A=0` 保留给空气/不可用采样哨兵；旧缓存中“探索位已设置但颜色透明”的像素仍会自动按未探索处理。
 
-一般设置文件读取失败时会使用只读的安全默认设置继续初始化；检测到 `schemaVersion > 2` 的 `settings.json` 时，本版本同样只在内存中使用安全默认值并提示一次，所有保存均被禁止，原文件字节保持不变。地图已成功初始化后，若后续瓦片写入持续失败，缓存达到上限会暂停接收新区块探索并提示一次；已有脏瓦片继续保留和重试，成功刷新后自动恢复。
+一般设置文件读取失败时会使用只读的安全默认设置继续初始化；检测到 `schemaVersion > 3` 的 `settings.json` 时，本版本同样只在内存中使用安全默认值并提示一次，所有保存均被禁止，原文件字节保持不变。地图已成功初始化后，若后续瓦片写入持续失败，缓存达到上限会暂停接收新区块探索并提示一次；已有脏瓦片继续保留和重试，成功刷新后自动恢复。
 
 备份时退出游戏，然后复制整个 `SurvivalcraftTravelMap` 数据目录。卸载 Mod 前也建议这样做。
 
@@ -86,8 +91,11 @@ SCTM 不扫描、统计或上报已安装 Mod 的数量，也不包含旧的 Mod
 - 当前仅针对 Windows PC、Survivalcraft 2.4.40.6 与 NetMod API 1.44 构建。
 - 联机坐标传送要求服务器安装 SCTM；旧服务器只能使用其已有的邀请传送能力。
 - 全细节地图在 64 格瓦片接缝处，探索边界青线可能出现一小段不连续；探索数据本身不受影响。
-- 当前自动 release gate 绑定源码 HEAD `5c3e38ddf777f4520f740a18fda1ccf7376ee856`（`fix: preserve global map lod coverage`）：Release 测试 `642/642`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。同一 clean HEAD 连续两次封包，每次 `Verify-Package.ps1` 均输出 `PACKAGE_OK`；两次 package SHA-256 都是 `492863FB137CB20FEE36FB7E351F5C711C2CB67D6F48079306FB67935DD2EC5D`（166181 bytes，精确 8 entries），包内 DLL 与 Release DLL 的 SHA-256 都是 `1D4C36157AD4730A6E51D9C0C64E5ECFE2C55C04B3A75080A82EB1D640869593`（374784 bytes），逐字节一致。
-- 当前包已按 exact paths 安装到 worktree 的隔离 smoke-game，artifact 与 installed SHA-256 相同；主游戏原 `34GPSFix.netmod` 始终保持 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。隔离 World2 和旧 travel-map cache 均保留，但尚未启动游戏。
+- 当前 `feature/travel-map` 候选已通过 Debug 与 Release 全量测试 `870/870`（0 failed，0 skipped）、warnings-as-errors 构建（0 warnings / 0 errors）及 `PACKAGE_OK` 封包校验。最新隔离包 SHA-256 为 `91C79C880ADC6000B1A45CB63F810F24208BCE6766435C4B16DF02E7557B26BC`。
+- “生物标记”阶段通过 Release 测试 `770/770`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `64B75540EA0F5B9E1F320CCF53524169DDD51F7CA753E4A58AFDC7E7CD9627FE`（177792 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `0774AC5D49E9E55A89B9C45CF4BB4490CF69D70610E46D63B677B65164FBA423`（402432 bytes）。用户已在隔离版确认该阶段可以进入下一项。
+- “地图朝向”阶段通过 Release 测试 `780/780`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `EF8C3570FCE57BCB25E96D651F33EEDCB8DBFA598CEAEE120F8100BF00AF8BEF`（178676 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `5D60E6841EA4FDF5E803F920B9E7DF824C44215665314A6EA1EEBAE2E873812D`（405504 bytes）。用户已在隔离版确认小地图两种朝向和固定北方朝上的大地图正常，可以进入下一项。
+- “罗盘方向 + 小地图位置”阶段通过 Debug 与 Release 测试 `800/800`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `47B7F64F134D88AF8655A019AE5C8486447F3CBDB3B4617DD24090213503718E`（182975 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `A7D4A15C547892E20C969BEF2F62548A712E451B5F985C3F8063D5FEDB4AB890`（419328 bytes）。用户已在隔离版确认罗盘选项、鼠标拖动、确认/取消和界面布局正常，可以进入下一项。
+- 当前候选已按 exact paths 安装到 worktree 的隔离 smoke-game，artifact 与 installed SHA-256 相同；主游戏原 `34GPSFix.netmod` 始终保持 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。隔离 World2（4 files）和现有 travel-map cache（244 个 `.sctm`）均保留。
 - 小地图逻辑坐标、entered-chunk 原子探索、全局地图 LOD 与集成主机/联机传送链路均有自动测试覆盖，但不等于游戏内验收。批准的 10 项基础矩阵和 7 项公开分享前扩展矩阵（共 17 项）仍全部 `PENDING`；实际游戏内布局（含 UI 缩放 `0.75 / 1.0 / 1.25`）、World2 旧缓存补全、地表/坐标点/失败回退传送、运行模式/绑定同步和多人邀请均须按 [烟雾测试清单](docs/smoke-test-2026-07-13.md) 由用户确认。
 
 更完整的操作、故障恢复与测试步骤见 [用户指南](docs/user-guide.md)。

@@ -4,6 +4,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Teleport;
+using SurvivalcraftTravelMap.UI;
 
 namespace SurvivalcraftTravelMap.Network;
 
@@ -176,7 +177,7 @@ internal static class TravelMapNetworkRuntime
                         netNode).ConfigureAwait(false);
                     break;
                 case LegacyGpsMessageKind.MultiServerTeleport:
-                    SendResult(netNode, sourcePlayer, "此服务器不支持跨服务器玩家传送");
+                    SendResult(netNode, sourcePlayer, TravelMapText.Get("crossServerTeleportUnsupported", "此服务器不支持跨服务器玩家传送"));
                     break;
             }
         }
@@ -188,7 +189,7 @@ internal static class TravelMapNetworkRuntime
                 var inviter = FindPlayer(invitation.Inviter.Id);
                 if (inviter is not null)
                 {
-                    SendResult(netNode, inviter, "玩家传送邀请等待超时");
+                    SendResult(netNode, inviter, TravelMapText.Get("invitationTimedOut", "玩家传送邀请等待超时"));
                 }
             }
         }
@@ -200,7 +201,7 @@ internal static class TravelMapNetworkRuntime
         {
             if (!Guid.TryParse(message.PlayerName, out var targetId))
             {
-                SendResult(netNode, inviter, "目标玩家标识无效");
+                SendResult(netNode, inviter, TravelMapText.Get("targetPlayerInvalid", "目标玩家标识无效"));
                 return;
             }
 
@@ -214,25 +215,25 @@ internal static class TravelMapNetworkRuntime
             switch (request.Status)
             {
                 case InvitationRequestStatus.Self:
-                    SendResult(netNode, inviter, "不能邀请自己传送");
+                    SendResult(netNode, inviter, TravelMapText.Get("cannotInviteSelf", "不能邀请自己传送"));
                     break;
                 case InvitationRequestStatus.TargetOffline:
-                    SendResult(netNode, inviter, "目标玩家已离线");
+                    SendResult(netNode, inviter, TravelMapText.Get("targetPlayerOffline", "目标玩家已离线"));
                     break;
                 case InvitationRequestStatus.AlreadyPending:
-                    SendResult(netNode, inviter, "相关玩家已有待处理的传送邀请");
+                    SendResult(netNode, inviter, TravelMapText.Get("invitationAlreadyPending", "相关玩家已有待处理的传送邀请"));
                     break;
                 case InvitationRequestStatus.AdminImmediateTeleport:
                     await TeleportInviterAsync(inviter, invitee!, netNode).ConfigureAwait(false);
                     break;
                 case InvitationRequestStatus.InvitationCreated:
-                    SendResult(netNode, inviter, "传送邀请已发送");
+                    SendResult(netNode, inviter, TravelMapText.Get("invitationSent", "传送邀请已发送"));
                     Send(
                         netNode,
                         invitee!.PlayerData.Client,
                         LegacyGpsMessage.TeleportResponse(
                             1,
-                            $"{inviter.PlayerData.Name} 邀请传送到你的位置，是否同意？"));
+                            TravelMapText.Format("invitationPromptFormat", "{0} 邀请传送到你的位置，是否同意？", inviter.PlayerData.Name)));
                     break;
             }
         }
@@ -246,7 +247,7 @@ internal static class TravelMapNetworkRuntime
             if (resolution.Status is InvitationResolutionStatus.NotFound
                 or InvitationResolutionStatus.Expired)
             {
-                SendResult(netNode, invitee, "传送邀请已失效");
+                SendResult(netNode, invitee, TravelMapText.Get("invitationExpired", "传送邀请已失效"));
                 return;
             }
 
@@ -256,7 +257,7 @@ internal static class TravelMapNetworkRuntime
             {
                 if (inviter is not null)
                 {
-                    SendResult(netNode, inviter, "对方已离线，传送邀请已取消");
+                    SendResult(netNode, inviter, TravelMapText.Get("invitationCancelledOffline", "对方已离线，传送邀请已取消"));
                 }
 
                 return;
@@ -264,7 +265,7 @@ internal static class TravelMapNetworkRuntime
 
             if (resolution.Status == InvitationResolutionStatus.Rejected)
             {
-                SendResult(netNode, inviter, "对方拒绝了传送邀请");
+                SendResult(netNode, inviter, TravelMapText.Get("invitationDeclined", "对方拒绝了传送邀请"));
                 return;
             }
 
@@ -279,7 +280,7 @@ internal static class TravelMapNetworkRuntime
             var component = inviter.Entity.FindComponent<TravelMapComponent>(false);
             if (component is null)
             {
-                SendResult(netNode, inviter, "服务器地图传送组件不可用");
+                SendResult(netNode, inviter, TravelMapText.Get("serverTeleportComponentUnavailable", "服务器地图传送组件不可用"));
                 return;
             }
 
@@ -289,15 +290,15 @@ internal static class TravelMapNetworkRuntime
                     new Vector3(position.X, position.Y, position.Z),
                     cancellationToken),
                 static result => result == TeleportResult.Success
-                    ? "传送完成"
+                    ? TravelMapText.Get("teleportSuccess", "传送完成")
                     : result switch
                     {
-                        TeleportResult.ChunkTimeout => "目标区块加载超时",
-                        TeleportResult.NoSafePosition => "目标玩家附近没有安全落点",
-                        TeleportResult.OutOfWorld => "目标位置超出世界范围",
-                        TeleportResult.RolledBack => "落点复查失败，已回到原位置",
-                        TeleportResult.Busy => "已有传送正在进行，请稍后再试",
-                        _ => "传送失败，详细原因已写入日志",
+                        TeleportResult.ChunkTimeout => TravelMapText.Get("targetChunkTimedOut", "目标区块加载超时"),
+                        TeleportResult.NoSafePosition => TravelMapText.Get("targetPlayerNoSafePosition", "目标玩家附近没有安全落点"),
+                        TeleportResult.OutOfWorld => TravelMapText.Get("targetPositionOutOfWorld", "目标位置超出世界范围"),
+                        TeleportResult.RolledBack => TravelMapText.Get("teleportRolledBack", "落点复查失败，已回到原位置"),
+                        TeleportResult.Busy => TravelMapText.Get("teleportBusy", "已有传送正在进行，请稍后再试"),
+                        _ => TravelMapText.Get("teleportInternalError", "传送失败，详细原因已写入日志"),
                     },
                 TeleportDiagnosticReporter.Report,
                 CancellationToken.None).ConfigureAwait(false);
@@ -326,7 +327,9 @@ internal static class TravelMapNetworkRuntime
 
 internal static class LegacyInvitationTeleportExecution
 {
-    internal const string FailureResponse = "传送失败，详细原因已写入日志";
+    internal static string FailureResponse => TravelMapText.Get(
+        "teleportInternalError",
+        "传送失败，详细原因已写入日志");
 
     internal static async Task<string> ExecuteAsync(
         Func<CancellationToken, Task<TeleportResult>> executor,

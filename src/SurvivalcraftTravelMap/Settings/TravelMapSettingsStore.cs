@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
 using SurvivalcraftTravelMap.Persistence;
+using SurvivalcraftTravelMap.UI;
 
 namespace SurvivalcraftTravelMap.Settings;
 
@@ -36,14 +37,16 @@ public sealed class TravelMapSettingsFutureSchemaWarningGate
         ArgumentNullException.ThrowIfNull(notify);
         if (result.IsReadOnly && Interlocked.Exchange(ref _notified, 1) == 0)
         {
-            notify("检测到更高版本的地图设置；本次会话只读，原文件不会被覆盖。");
+            notify(TravelMapText.Get(
+                "futureSettingsReadOnly",
+                "检测到更高版本的地图设置；本次会话只读，原文件不会被覆盖。"));
         }
     }
 }
 
 public sealed class TravelMapSettingsStore
 {
-    private const int CurrentSchemaVersion = 2;
+    private const int CurrentSchemaVersion = 3;
     private const string SettingsFileName = "settings.json";
     private const string PreviousSettingsFileName = "travel-map-settings.json";
     private const string LegacyFileName = "GPSSetting.xml";
@@ -115,7 +118,7 @@ public sealed class TravelMapSettingsStore
                         : migrated with { Outcome = TravelMapSettingsLoadOutcome.MigratedPreviousPath };
             }
 
-            var settings = new TravelMapSettings();
+            var settings = TravelMapSettings.CreateDefaults();
             TryMigrateLegacyFlags(settings);
             settings.Normalize();
             await SaveCoreAsync(settings, cancellationToken).ConfigureAwait(false);
@@ -172,7 +175,7 @@ public sealed class TravelMapSettingsStore
                 {
                     IsReadOnly = true;
                     return new TravelMapSettingsLoadResult(
-                        new TravelMapSettings(),
+                        TravelMapSettings.CreateDefaults(),
                         TravelMapSettingsLoadOutcome.UnsupportedFutureSchemaReadOnly,
                         IsReadOnly: true);
                 }
@@ -186,7 +189,7 @@ public sealed class TravelMapSettingsStore
             var document = JsonSerializer.Deserialize<SettingsDocument>(json, SerializerOptions)
                 ?? throw new InvalidDataException("The settings document is empty.");
             var settings = document.ToSettings();
-            if (schema == SchemaKind.Previous && settings.MiniMapSize == 384)
+            if (schema == SchemaKind.PreviousOne && settings.MiniMapSize == 384)
             {
                 settings.MiniMapSize = 192;
             }
@@ -200,7 +203,8 @@ public sealed class TravelMapSettingsStore
                 settings,
                 schema switch
                 {
-                    SchemaKind.Previous => TravelMapSettingsLoadOutcome.MigratedPreviousSchema,
+                    SchemaKind.PreviousOne or SchemaKind.PreviousTwo =>
+                        TravelMapSettingsLoadOutcome.MigratedPreviousSchema,
                     SchemaKind.Current => TravelMapSettingsLoadOutcome.Loaded,
                     _ => TravelMapSettingsLoadOutcome.MigratedUnversioned,
                 },
@@ -209,8 +213,7 @@ public sealed class TravelMapSettingsStore
         catch (Exception exception) when (exception is JsonException or InvalidDataException)
         {
             IsolateCorruptSettings(sourcePath);
-            var defaults = new TravelMapSettings();
-            defaults.Normalize();
+            var defaults = TravelMapSettings.CreateDefaults();
             await SaveCoreAsync(defaults, cancellationToken).ConfigureAwait(false);
             return new TravelMapSettingsLoadResult(
                 defaults,
@@ -324,9 +327,10 @@ public sealed class TravelMapSettingsStore
 
         return raw[firstNonZero] switch
         {
-            '1' when !hasNonZeroTail => SchemaKind.Previous,
-            '2' when !hasNonZeroTail => SchemaKind.Current,
-            >= '2' and <= '9' => SchemaKind.Future,
+            '1' when !hasNonZeroTail => SchemaKind.PreviousOne,
+            '2' when !hasNonZeroTail => SchemaKind.PreviousTwo,
+            '3' when !hasNonZeroTail => SchemaKind.Current,
+            '3' or >= '4' and <= '9' => SchemaKind.Future,
             _ => SchemaKind.Invalid,
         };
     }
@@ -491,7 +495,8 @@ public sealed class TravelMapSettingsStore
     private enum SchemaKind
     {
         Invalid,
-        Previous,
+        PreviousOne,
+        PreviousTwo,
         Current,
         Future,
     }
@@ -508,7 +513,39 @@ public sealed class TravelMapSettingsStore
 
         public bool UseDayNightTint { get; set; } = true;
 
+        public bool UseHeightShading { get; set; } = true;
+
         public bool AcceptTeleportInvitations { get; set; } = true;
+
+        public bool ShowCreatureMarkers { get; set; } = true;
+
+        public bool ShowLastDeathMarker { get; set; } = true;
+
+        public float CreatureMarkerSize { get; set; } = 5f;
+
+        public string MiniMapOrientation { get; set; } = nameof(
+            global::SurvivalcraftTravelMap.Settings.MiniMapOrientation.NorthUp);
+
+        public bool? ShowCompassNorth { get; set; }
+
+        public bool? ShowCompassOtherDirections { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? ShowCompassDirections { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? CompassNorthOnly { get; set; }
+
+        public float CompassFontScale { get; set; } = 1f;
+
+        public float? MiniMapAnchorX { get; set; }
+
+        public float? MiniMapAnchorY { get; set; }
+
+        public string MiniMapShape { get; set; } = nameof(
+            global::SurvivalcraftTravelMap.Settings.MapShape.RoundedSquare);
+
+        public bool ShowGameTime { get; set; } = true;
 
         public int MiniMapSize { get; set; } = 160;
 
@@ -523,18 +560,36 @@ public sealed class TravelMapSettingsStore
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 
-        public TravelMapSettings ToSettings() => new()
+        public TravelMapSettings ToSettings()
         {
-            IsMiniMapVisible = IsMiniMapVisible,
-            ShowCoordinates = ShowCoordinates,
-            UseDayNightTint = UseDayNightTint,
-            AcceptTeleportInvitations = AcceptTeleportInvitations,
-            MiniMapSize = MiniMapSize,
-            MiniMapBlocksPerPixel = MiniMapBlocksPerPixel,
-            LargeMapBlocksPerPixel = LargeMapBlocksPerPixel,
-            LargeMapHotkey = LargeMapHotkey,
-            NightMinimumBrightness = NightMinimumBrightness,
-        };
+            var legacyShow = ShowCompassDirections ?? true;
+            var legacyNorthOnly = CompassNorthOnly ?? false;
+            return new TravelMapSettings
+            {
+                IsMiniMapVisible = IsMiniMapVisible,
+                ShowCoordinates = ShowCoordinates,
+                UseDayNightTint = UseDayNightTint,
+                UseHeightShading = UseHeightShading,
+                AcceptTeleportInvitations = AcceptTeleportInvitations,
+                ShowCreatureMarkers = ShowCreatureMarkers,
+                ShowLastDeathMarker = ShowLastDeathMarker,
+                CreatureMarkerSize = CreatureMarkerSize,
+                MiniMapOrientation = ParseMiniMapOrientation(MiniMapOrientation),
+                ShowCompassNorth = ShowCompassNorth ?? (legacyNorthOnly || legacyShow),
+                ShowCompassOtherDirections = ShowCompassOtherDirections
+                    ?? (legacyShow && !legacyNorthOnly),
+                CompassFontScale = CompassFontScale,
+                MiniMapAnchorX = MiniMapAnchorX,
+                MiniMapAnchorY = MiniMapAnchorY,
+                MiniMapShape = ParseMapShape(MiniMapShape),
+                ShowGameTime = ShowGameTime,
+                MiniMapSize = MiniMapSize,
+                MiniMapBlocksPerPixel = MiniMapBlocksPerPixel,
+                LargeMapBlocksPerPixel = LargeMapBlocksPerPixel,
+                LargeMapHotkey = LargeMapHotkey,
+                NightMinimumBrightness = NightMinimumBrightness,
+            };
+        }
 
         public static SettingsDocument FromSettings(
             TravelMapSettings settings,
@@ -544,7 +599,19 @@ public sealed class TravelMapSettingsStore
             IsMiniMapVisible = settings.IsMiniMapVisible,
             ShowCoordinates = settings.ShowCoordinates,
             UseDayNightTint = settings.UseDayNightTint,
+            UseHeightShading = settings.UseHeightShading,
             AcceptTeleportInvitations = settings.AcceptTeleportInvitations,
+            ShowCreatureMarkers = settings.ShowCreatureMarkers,
+            ShowLastDeathMarker = settings.ShowLastDeathMarker,
+            CreatureMarkerSize = settings.CreatureMarkerSize,
+            MiniMapOrientation = settings.MiniMapOrientation.ToString(),
+            ShowCompassNorth = settings.ShowCompassNorth,
+            ShowCompassOtherDirections = settings.ShowCompassOtherDirections,
+            CompassFontScale = settings.CompassFontScale,
+            MiniMapAnchorX = settings.MiniMapAnchorX,
+            MiniMapAnchorY = settings.MiniMapAnchorY,
+            MiniMapShape = settings.MiniMapShape.ToString(),
+            ShowGameTime = settings.ShowGameTime,
             MiniMapSize = settings.MiniMapSize,
             MiniMapBlocksPerPixel = settings.MiniMapBlocksPerPixel,
             LargeMapBlocksPerPixel = settings.LargeMapBlocksPerPixel,
@@ -552,5 +619,24 @@ public sealed class TravelMapSettingsStore
             NightMinimumBrightness = settings.NightMinimumBrightness,
             ExtensionData = extensionData,
         };
+
+        private static global::SurvivalcraftTravelMap.Settings.MiniMapOrientation ParseMiniMapOrientation(
+            string? value) =>
+            Enum.TryParse<global::SurvivalcraftTravelMap.Settings.MiniMapOrientation>(
+                value,
+                ignoreCase: false,
+                out var parsed)
+            && Enum.IsDefined(parsed)
+                ? parsed
+                : global::SurvivalcraftTravelMap.Settings.MiniMapOrientation.NorthUp;
+
+        private static global::SurvivalcraftTravelMap.Settings.MapShape ParseMapShape(string? value) =>
+            Enum.TryParse<global::SurvivalcraftTravelMap.Settings.MapShape>(
+                value,
+                ignoreCase: false,
+                out var parsed)
+            && Enum.IsDefined(parsed)
+                ? parsed
+                : global::SurvivalcraftTravelMap.Settings.MapShape.RoundedSquare;
     }
 }

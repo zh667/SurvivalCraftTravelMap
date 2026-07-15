@@ -21,7 +21,14 @@ $requiredEntries = @(
     "Assets/Point.png",
     "Assets/TeleportButton.png",
     "Assets/TeleportButton_Pressed.png",
-    "Assets/TeleportTo.png"
+    "Assets/TeleportTo.png",
+    "Assets/Lang/zh-CN.json",
+    "Assets/Lang/en-US.json",
+    "Assets/Lang/es-419.json",
+    "Assets/Lang/pt-BR.json",
+    "Assets/Lang/ro-RO.json",
+    "Assets/Lang/ru-RU.json",
+    "Assets/Lang/vi-VN.json"
 )
 $gameDlls = @(
     "Survivalcraft.dll",
