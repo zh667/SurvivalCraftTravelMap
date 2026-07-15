@@ -1,4 +1,4 @@
-# Survivalcraft Travel Map
+# 旅行地图（Survivalcraft Travel Map）
 
 Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / NetMod API 1.44 的旅行地图 Mod。它在单人、主机和联机客户端显示持久化探索地图，并提供安全坐标传送、完整 XYZ 坐标点和玩家邀请传送。
 
@@ -48,7 +48,7 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 
 - 全局界面设置：`settings.json`（当前 `schemaVersion: 3`；v1/v2 均以 `MigratedPreviousSchema` 迁移并重写为 v3。仅 v1 `MiniMapSize=384` 会一次改为 `192`；v2、无版本 JSON 和 v3 的 `384` 保持不变；旧 `travel-map-settings.json` 仍会一次性迁移且保留原文件）
 - 每世界、每玩家地图：`maps/<world-key>/<player-guid>/tiles/*.sctm`
-- 每世界、每玩家洞穴层：`maps/<world-key>/<player-guid>/caves/y_<层中心>/*.sctm`
+- 每世界、每玩家洞穴投影：`maps/<world-key>/<player-guid>/caves/projection_v2/y_<Y值>/*.sctm`
 - 每世界、每玩家坐标点：`maps/<world-key>/<player-guid>/waypoints.json`
 - 服务器开关：`server-settings.json`
 
@@ -91,6 +91,7 @@ SCTM 不扫描、统计或上报已安装 Mod 的数量，也不包含旧的 Mod
 - 当前仅针对 Windows PC、Survivalcraft 2.4.40.6 与 NetMod API 1.44 构建。
 - 联机坐标传送要求服务器安装 SCTM；旧服务器只能使用其已有的邀请传送能力。
 - 全细节地图在 64 格瓦片接缝处，探索边界青线可能出现一小段不连续；探索数据本身不受影响。
+- 当前 `feature/travel-map` 候选已通过 Debug 与 Release 全量测试 `870/870`（0 failed，0 skipped）、warnings-as-errors 构建（0 warnings / 0 errors）及 `PACKAGE_OK` 封包校验。最新隔离包 SHA-256 为 `91C79C880ADC6000B1A45CB63F810F24208BCE6766435C4B16DF02E7557B26BC`。
 - “生物标记”阶段通过 Release 测试 `770/770`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `64B75540EA0F5B9E1F320CCF53524169DDD51F7CA753E4A58AFDC7E7CD9627FE`（177792 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `0774AC5D49E9E55A89B9C45CF4BB4490CF69D70610E46D63B677B65164FBA423`（402432 bytes）。用户已在隔离版确认该阶段可以进入下一项。
 - “地图朝向”阶段通过 Release 测试 `780/780`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `EF8C3570FCE57BCB25E96D651F33EEDCB8DBFA598CEAEE120F8100BF00AF8BEF`（178676 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `5D60E6841EA4FDF5E803F920B9E7DF824C44215665314A6EA1EEBAE2E873812D`（405504 bytes）。用户已在隔离版确认小地图两种朝向和固定北方朝上的大地图正常，可以进入下一项。
 - “罗盘方向 + 小地图位置”阶段通过 Debug 与 Release 测试 `800/800`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `47B7F64F134D88AF8655A019AE5C8486447F3CBDB3B4617DD24090213503718E`（182975 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `A7D4A15C547892E20C969BEF2F62548A712E451B5F985C3F8063D5FEDB4AB890`（419328 bytes）。用户已在隔离版确认罗盘选项、鼠标拖动、确认/取消和界面布局正常，可以进入下一项。
