@@ -37,8 +37,8 @@ New presentation defaults:
 | `ShowCreatureMarkers` | `true` | Boolean |
 | `CreatureMarkerSize` | `5` px | `3..16` |
 | `MiniMapOrientation` | `NorthUp` | Known enum only |
-| `ShowCompassDirections` | `true` | Boolean |
-| `CompassNorthOnly` | `false` | Boolean |
+| `ShowCompassNorth` | `true` | Boolean |
+| `ShowCompassOtherDirections` | `true` | Boolean |
 | `CompassFontScale` | `1.0` | `0.5..2.0` |
 | `MiniMapAnchorX/Y` | top-right default | finite normalized values clamped to GUI |
 | `MiniMapShape` | `RoundedSquare` | Circle/Square/Hexagon/RoundedSquare |
@@ -104,9 +104,11 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 
 ## Phase 3 — Compass directions
 
+**Status:** Accepted in the isolated game on 2026-07-15.
+
 **Behavior**
 
-- Add N/E/S/W edge labels, show/hide, north-only mode, and font scale.
+- Add N/E/S/W edge labels, independent north/other-direction choices, and font scale.
 - North is visually distinct; use localized labels.
 - Labels follow the selected map shape and orientation.
 
@@ -123,6 +125,8 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 - Labels remain inside all four map shapes and at every supported map size.
 
 ## Phase 4 — Movable minimap
+
+**Status:** Accepted in the isolated game on 2026-07-15.
 
 **Behavior**
 

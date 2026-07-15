@@ -35,14 +35,23 @@ internal static class TravelMapOverlayLayout
 
     internal static TravelMapHudPositions PlaceHud(
         Vector2 guiLogicalSize,
-        float miniMapSize)
+        float miniMapSize) => PlaceHud(
+            guiLogicalSize,
+            miniMapSize,
+            anchorX: null,
+            anchorY: null);
+
+    internal static TravelMapHudPositions PlaceHud(
+        Vector2 guiLogicalSize,
+        float miniMapSize,
+        float? anchorX,
+        float? anchorY)
     {
         var size = NormalizeExtent(miniMapSize);
-        var miniMap = PlaceTopRight(
-            guiLogicalSize,
-            new Vector2(size),
-            RightMargin,
-            TopMargin);
+        var overlaySize = new Vector2(size);
+        var miniMap = anchorX.HasValue && anchorY.HasValue
+            ? PlaceCustom(guiLogicalSize, overlaySize, new Vector2(anchorX.Value, anchorY.Value))
+            : PlaceTopRight(guiLogicalSize, overlaySize, RightMargin, TopMargin);
         var teleportButton = ClampToGui(
             new Vector2(
                 miniMap.X + size - TeleportButtonSize.X,
@@ -53,7 +62,42 @@ internal static class TravelMapOverlayLayout
         return new TravelMapHudPositions(miniMap, teleportButton);
     }
 
-    private static Vector2 ClampToGui(
+    internal static Vector2 PlaceCustom(
+        Vector2 guiLogicalSize,
+        Vector2 overlaySize,
+        Vector2 normalizedAnchor)
+    {
+        var availableWidth = NormalizeExtent(guiLogicalSize.X);
+        var availableHeight = NormalizeExtent(guiLogicalSize.Y);
+        var maximumX = MathF.Max(0f, availableWidth - NormalizeExtent(overlaySize.X));
+        var maximumY = MathF.Max(0f, availableHeight - NormalizeExtent(overlaySize.Y));
+        var anchorX = float.IsFinite(normalizedAnchor.X)
+            ? Math.Clamp(normalizedAnchor.X, 0f, 1f)
+            : 0f;
+        var anchorY = float.IsFinite(normalizedAnchor.Y)
+            ? Math.Clamp(normalizedAnchor.Y, 0f, 1f)
+            : 0f;
+        return new Vector2(maximumX * anchorX, maximumY * anchorY);
+    }
+
+    internal static Vector2 NormalizeCustomPosition(
+        Vector2 position,
+        Vector2 guiLogicalSize,
+        Vector2 overlaySize)
+    {
+        var clamped = ClampToGui(position, overlaySize, guiLogicalSize);
+        var maximumX = MathF.Max(
+            0f,
+            NormalizeExtent(guiLogicalSize.X) - NormalizeExtent(overlaySize.X));
+        var maximumY = MathF.Max(
+            0f,
+            NormalizeExtent(guiLogicalSize.Y) - NormalizeExtent(overlaySize.Y));
+        return new Vector2(
+            maximumX > 0f ? clamped.X / maximumX : 0f,
+            maximumY > 0f ? clamped.Y / maximumY : 0f);
+    }
+
+    internal static Vector2 ClampToGui(
         Vector2 position,
         Vector2 widgetSize,
         Vector2 guiLogicalSize)

@@ -16,6 +16,8 @@ public static class TravelMapPalette
 
     public static Rgba32 HazardAmber { get; } = new(0xE2, 0xA3, 0x3B, 0xFF);
 
+    public static Rgba32 CompassNorth { get; } = HazardAmber;
+
     public static Rgba32 SnowText { get; } = new(0xE8, 0xEC, 0xE7, 0xFF);
 
     public static Rgba32 MiniMapBackground { get; } = new(0x27, 0x29, 0x2A, 0xFF);

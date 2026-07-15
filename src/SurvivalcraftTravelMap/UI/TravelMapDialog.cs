@@ -84,7 +84,8 @@ public sealed class TravelMapDialog : Dialog
         Func<IReadOnlyList<CreatureMapMarker>> creatures,
         Func<float> brightness,
         TravelMapContextActionHandler actionHandler,
-        Action<TravelMapNotice> notify)
+        Action<TravelMapNotice> notify,
+        Action requestMiniMapPlacement)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
@@ -159,7 +160,12 @@ public sealed class TravelMapDialog : Dialog
             settings,
             settingsStore,
             message => Notify(message, TravelMapNoticeKind.Failure),
-            CloseSettings)
+            CloseSettings,
+            () =>
+            {
+                CloseSettings();
+                requestMiniMapPlacement();
+            })
         {
             IsVisible = false,
         };

@@ -17,11 +17,44 @@ public sealed class TravelMapSettingsTests
         Assert.True(settings.ShowCreatureMarkers);
         Assert.Equal(5f, settings.CreatureMarkerSize);
         Assert.Equal(MiniMapOrientation.NorthUp, settings.MiniMapOrientation);
+        Assert.True(settings.ShowCompassNorth);
+        Assert.True(settings.ShowCompassOtherDirections);
+        Assert.Equal(1f, settings.CompassFontScale);
         Assert.Equal(160, settings.MiniMapSize);
         Assert.Equal(1.0f, settings.MiniMapBlocksPerPixel);
         Assert.Equal(2.0f, settings.LargeMapBlocksPerPixel);
         Assert.Equal("M", settings.LargeMapHotkey);
         Assert.Equal(0.4f, settings.NightMinimumBrightness);
+    }
+
+    [Fact]
+    public void Normalize_clears_incomplete_or_non_finite_custom_minimap_anchor()
+    {
+        var settings = new TravelMapSettings
+        {
+            MiniMapAnchorX = 0.25f,
+            MiniMapAnchorY = float.NaN,
+        };
+
+        settings.Normalize();
+
+        Assert.Null(settings.MiniMapAnchorX);
+        Assert.Null(settings.MiniMapAnchorY);
+    }
+
+    [Fact]
+    public void Normalize_clamps_complete_custom_minimap_anchor()
+    {
+        var settings = new TravelMapSettings
+        {
+            MiniMapAnchorX = -2f,
+            MiniMapAnchorY = 3f,
+        };
+
+        settings.Normalize();
+
+        Assert.Equal(0f, settings.MiniMapAnchorX);
+        Assert.Equal(1f, settings.MiniMapAnchorY);
     }
 
     [Fact]
@@ -60,6 +93,7 @@ public sealed class TravelMapSettingsTests
             LargeMapBlocksPerPixel = 100f,
             NightMinimumBrightness = 2f,
             CreatureMarkerSize = 100f,
+            CompassFontScale = 100f,
         };
 
         settings.Normalize();
@@ -68,6 +102,7 @@ public sealed class TravelMapSettingsTests
         Assert.Equal(32f, settings.LargeMapBlocksPerPixel);
         Assert.Equal(1f, settings.NightMinimumBrightness);
         Assert.Equal(16f, settings.CreatureMarkerSize);
+        Assert.Equal(2f, settings.CompassFontScale);
     }
 
     [Fact]
@@ -79,6 +114,7 @@ public sealed class TravelMapSettingsTests
             LargeMapBlocksPerPixel = float.NaN,
             NightMinimumBrightness = float.NaN,
             CreatureMarkerSize = float.NaN,
+            CompassFontScale = float.NaN,
         };
 
         settings.Normalize();
@@ -87,5 +123,6 @@ public sealed class TravelMapSettingsTests
         Assert.Equal(2f, settings.LargeMapBlocksPerPixel);
         Assert.Equal(0.4f, settings.NightMinimumBrightness);
         Assert.Equal(5f, settings.CreatureMarkerSize);
+        Assert.Equal(1f, settings.CompassFontScale);
     }
 }

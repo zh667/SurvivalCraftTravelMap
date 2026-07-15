@@ -17,6 +17,7 @@ internal enum MapTextAlignment
 {
     Default,
     BottomLeft,
+    Center,
 }
 
 internal interface IMapFontQueue
@@ -63,6 +64,18 @@ internal static class MiniMapTextRenderer
             position,
             color,
             MapTextAlignment.BottomLeft,
+            scale);
+
+    public static void QueueCompassLabel(
+        IMapFontQueue queue,
+        string text,
+        NVector2 position,
+        Rgba32 color,
+        float scale) => queue.QueueText(
+            text,
+            position,
+            color,
+            MapTextAlignment.Center,
             scale);
 }
 
@@ -324,6 +337,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public bool ApplyConfiguredMiniMapOrientation { get; set; }
 
+    public bool ShowCompassOverlay { get; set; }
+
+    internal CompassBoundaryShape CompassBoundaryShape { get; set; } =
+        CompassBoundaryShape.RoundedSquare;
+
     public bool ShowWaypointLabels { get; set; }
 
     public bool ShowSurveyCrosshair { get; set; } = true;
@@ -482,6 +500,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 _settings.ShowCoordinates,
                 PlayerMarkerColor),
             this);
+        DrawCompass();
         if (ShowSurveyCrosshair)
         {
             QueueSurveyCrosshair(Transform.WorldToScreen(new NVector2(pose.Position.X, pose.Position.Z)));
@@ -657,6 +676,34 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         return true;
     }
 
+    private void DrawCompass()
+    {
+        if (!ShowCompassOverlay || _mapFontQueue is null)
+        {
+            return;
+        }
+
+        var bottomReservedHeight = _settings.ShowCoordinates && ShowCoordinateBackdrop
+            ? MiniMapVisualStyle.CoordinateStripHeight
+            : 0f;
+        foreach (var label in CompassLayout.Create(
+                     _drawMapTransform.ViewportSize,
+                     _drawMapTransform.RotationRadians,
+                     CompassBoundaryShape,
+                     _settings.ShowCompassNorth,
+                     _settings.ShowCompassOtherDirections,
+                     _settings.CompassFontScale,
+                     bottomReservedHeight))
+        {
+            MiniMapTextRenderer.QueueCompassLabel(
+                _mapFontQueue,
+                TravelMapText.CompassDirection(label.Direction),
+                label.Position,
+                label.IsNorth ? TravelMapPalette.CompassNorth : TravelMapPalette.SnowText,
+                _settings.CompassFontScale);
+        }
+    }
+
     private sealed class EngineMapFontQueue(FontBatch2D batch) : IMapFontQueue
     {
         public void QueueText(
@@ -669,9 +716,12 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 ToEngine(position),
                 0f,
                 ToEngineColor(color),
-                alignment == MapTextAlignment.BottomLeft
-                    ? TextAnchor.Bottom | TextAnchor.Left
-                    : TextAnchor.Default,
+                alignment switch
+                {
+                    MapTextAlignment.BottomLeft => TextAnchor.Bottom | TextAnchor.Left,
+                    MapTextAlignment.Center => TextAnchor.HorizontalCenter | TextAnchor.VerticalCenter,
+                    _ => TextAnchor.Default,
+                },
                 new Engine.Vector2(scale),
                 Engine.Vector2.Zero);
     }
@@ -918,6 +968,7 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
             _ => notify("小地图比例未能保存，本次会话将保留当前值"));
         AutoCenterOnPlayer = true;
         ApplyConfiguredMiniMapOrientation = true;
+        ShowCompassOverlay = true;
         PlayerMarkerColor = TravelMapPalette.MiniMapPlayer;
         BackgroundColor = TravelMapPalette.MiniMapBackground;
         FrameColor = TravelMapPalette.MiniMapFrame;

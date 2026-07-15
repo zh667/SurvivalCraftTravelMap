@@ -108,6 +108,40 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Fact]
+    public void Compass_queue_centers_text_and_uses_the_configured_scale()
+    {
+        var queue = new RecordingMapFontQueue();
+
+        MiniMapTextRenderer.QueueCompassLabel(
+            queue,
+            "北",
+            new Vector2(96f, 12f),
+            TravelMapPalette.CompassNorth,
+            1.5f);
+
+        var item = Assert.Single(queue.Items);
+        Assert.Equal(MapTextAlignment.Center, item.Alignment);
+        Assert.Equal(1.5f, item.Scale);
+    }
+
+    [Fact]
+    public void Actual_minimap_compass_draw_queues_four_centered_labels()
+    {
+        using var widget = CreateSurface(
+            orientation: MiniMapOrientation.HeadingUp,
+            heading: MathF.PI / 2f);
+        widget.ApplyConfiguredMiniMapOrientation = true;
+        widget.ShowCompassOverlay = true;
+        var primitives = new RecordingMapSurfacePrimitiveQueue();
+        var text = new RecordingMapFontQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), primitives, text));
+
+        Assert.Equal(4, text.Items.Count);
+        Assert.All(text.Items, item => Assert.Equal(MapTextAlignment.Center, item.Alignment));
+    }
+
+    [Fact]
     public void Minimap_frame_primitives_keep_shadow_inside_192_footprint_before_two_warm_frames()
     {
         var primitives = MiniMapVisualStyle.CreateFramePrimitives(

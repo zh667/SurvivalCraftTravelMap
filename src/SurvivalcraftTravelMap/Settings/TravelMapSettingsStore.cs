@@ -520,6 +520,22 @@ public sealed class TravelMapSettingsStore
         public string MiniMapOrientation { get; set; } = nameof(
             global::SurvivalcraftTravelMap.Settings.MiniMapOrientation.NorthUp);
 
+        public bool? ShowCompassNorth { get; set; }
+
+        public bool? ShowCompassOtherDirections { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? ShowCompassDirections { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? CompassNorthOnly { get; set; }
+
+        public float CompassFontScale { get; set; } = 1f;
+
+        public float? MiniMapAnchorX { get; set; }
+
+        public float? MiniMapAnchorY { get; set; }
+
         public int MiniMapSize { get; set; } = 160;
 
         public float MiniMapBlocksPerPixel { get; set; } = 1f;
@@ -533,21 +549,32 @@ public sealed class TravelMapSettingsStore
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 
-        public TravelMapSettings ToSettings() => new()
+        public TravelMapSettings ToSettings()
         {
-            IsMiniMapVisible = IsMiniMapVisible,
-            ShowCoordinates = ShowCoordinates,
-            UseDayNightTint = UseDayNightTint,
-            AcceptTeleportInvitations = AcceptTeleportInvitations,
-            ShowCreatureMarkers = ShowCreatureMarkers,
-            CreatureMarkerSize = CreatureMarkerSize,
-            MiniMapOrientation = ParseMiniMapOrientation(MiniMapOrientation),
-            MiniMapSize = MiniMapSize,
-            MiniMapBlocksPerPixel = MiniMapBlocksPerPixel,
-            LargeMapBlocksPerPixel = LargeMapBlocksPerPixel,
-            LargeMapHotkey = LargeMapHotkey,
-            NightMinimumBrightness = NightMinimumBrightness,
-        };
+            var legacyShow = ShowCompassDirections ?? true;
+            var legacyNorthOnly = CompassNorthOnly ?? false;
+            return new TravelMapSettings
+            {
+                IsMiniMapVisible = IsMiniMapVisible,
+                ShowCoordinates = ShowCoordinates,
+                UseDayNightTint = UseDayNightTint,
+                AcceptTeleportInvitations = AcceptTeleportInvitations,
+                ShowCreatureMarkers = ShowCreatureMarkers,
+                CreatureMarkerSize = CreatureMarkerSize,
+                MiniMapOrientation = ParseMiniMapOrientation(MiniMapOrientation),
+                ShowCompassNorth = ShowCompassNorth ?? (legacyNorthOnly || legacyShow),
+                ShowCompassOtherDirections = ShowCompassOtherDirections
+                    ?? (legacyShow && !legacyNorthOnly),
+                CompassFontScale = CompassFontScale,
+                MiniMapAnchorX = MiniMapAnchorX,
+                MiniMapAnchorY = MiniMapAnchorY,
+                MiniMapSize = MiniMapSize,
+                MiniMapBlocksPerPixel = MiniMapBlocksPerPixel,
+                LargeMapBlocksPerPixel = LargeMapBlocksPerPixel,
+                LargeMapHotkey = LargeMapHotkey,
+                NightMinimumBrightness = NightMinimumBrightness,
+            };
+        }
 
         public static SettingsDocument FromSettings(
             TravelMapSettings settings,
@@ -561,6 +588,11 @@ public sealed class TravelMapSettingsStore
             ShowCreatureMarkers = settings.ShowCreatureMarkers,
             CreatureMarkerSize = settings.CreatureMarkerSize,
             MiniMapOrientation = settings.MiniMapOrientation.ToString(),
+            ShowCompassNorth = settings.ShowCompassNorth,
+            ShowCompassOtherDirections = settings.ShowCompassOtherDirections,
+            CompassFontScale = settings.CompassFontScale,
+            MiniMapAnchorX = settings.MiniMapAnchorX,
+            MiniMapAnchorY = settings.MiniMapAnchorY,
             MiniMapSize = settings.MiniMapSize,
             MiniMapBlocksPerPixel = settings.MiniMapBlocksPerPixel,
             LargeMapBlocksPerPixel = settings.LargeMapBlocksPerPixel,

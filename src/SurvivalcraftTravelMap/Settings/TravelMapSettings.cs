@@ -26,6 +26,16 @@ public sealed class TravelMapSettings
 
     public MiniMapOrientation MiniMapOrientation { get; set; } = MiniMapOrientation.NorthUp;
 
+    public bool ShowCompassNorth { get; set; } = true;
+
+    public bool ShowCompassOtherDirections { get; set; } = true;
+
+    public float CompassFontScale { get; set; } = 1f;
+
+    public float? MiniMapAnchorX { get; set; }
+
+    public float? MiniMapAnchorY { get; set; }
+
     public int MiniMapSize { get; set; } = 160;
 
     public float MiniMapBlocksPerPixel { get; set; } = 1f;
@@ -43,6 +53,8 @@ public sealed class TravelMapSettings
         LargeMapBlocksPerPixel = ClampOrDefault(LargeMapBlocksPerPixel, 0.25f, 32f, 2f);
         NightMinimumBrightness = ClampOrDefault(NightMinimumBrightness, 0.4f, 1f, 0.4f);
         CreatureMarkerSize = ClampOrDefault(CreatureMarkerSize, 3f, 16f, 5f);
+        CompassFontScale = ClampOrDefault(CompassFontScale, 0.5f, 2f, 1f);
+        NormalizeMiniMapAnchor();
         if (!Enum.IsDefined(MiniMapOrientation))
         {
             MiniMapOrientation = MiniMapOrientation.NorthUp;
@@ -73,4 +85,20 @@ public sealed class TravelMapSettings
 
     private static float ClampOrDefault(float value, float minimum, float maximum, float fallback) =>
         float.IsNaN(value) ? fallback : Math.Clamp(value, minimum, maximum);
+
+    private void NormalizeMiniMapAnchor()
+    {
+        if (!MiniMapAnchorX.HasValue
+            || !MiniMapAnchorY.HasValue
+            || !float.IsFinite(MiniMapAnchorX.Value)
+            || !float.IsFinite(MiniMapAnchorY.Value))
+        {
+            MiniMapAnchorX = null;
+            MiniMapAnchorY = null;
+            return;
+        }
+
+        MiniMapAnchorX = Math.Clamp(MiniMapAnchorX.Value, 0f, 1f);
+        MiniMapAnchorY = Math.Clamp(MiniMapAnchorY.Value, 0f, 1f);
+    }
 }

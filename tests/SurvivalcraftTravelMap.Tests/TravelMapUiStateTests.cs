@@ -91,6 +91,56 @@ public sealed class TravelMapUiStateTests
         Assert.Equal(new Vector2(144f, 164f), positions.TeleportButton);
     }
 
+    [Fact]
+    public void Custom_anchor_round_trips_across_gui_sizes_and_keeps_invitation_attached()
+    {
+        var first = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1000f, 600f),
+            miniMapSize: 200f,
+            anchorX: 0.25f,
+            anchorY: 0.75f);
+        var anchor = TravelMapOverlayLayout.NormalizeCustomPosition(
+            first.MiniMap,
+            new Vector2(1000f, 600f),
+            new Vector2(200f));
+        var resized = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1400f, 900f),
+            miniMapSize: 200f,
+            anchor.X,
+            anchor.Y);
+
+        Assert.Equal(new Vector2(200f, 300f), first.MiniMap);
+        Assert.Equal(new Vector2(352f, 504f), first.TeleportButton);
+        Assert.Equal(new Vector2(0.25f, 0.75f), anchor);
+        Assert.Equal(new Vector2(300f, 525f), resized.MiniMap);
+        Assert.Equal(new Vector2(452f, 729f), resized.TeleportButton);
+    }
+
+    [Fact]
+    public void Placement_session_clamps_drag_and_cancel_restores_the_original_position()
+    {
+        var session = new MiniMapPlacementSession(new Vector2(700f, 24f));
+
+        Assert.True(session.TryBeginDrag(new Vector2(710f, 34f), 192f));
+        session.DragTo(new Vector2(-100f, 900f), new Vector2(900f, 600f), 192f);
+        Assert.Equal(new Vector2(0f, 408f), session.PreviewPosition);
+
+        session.Cancel();
+
+        Assert.Equal(new Vector2(700f, 24f), session.PreviewPosition);
+    }
+
+    [Fact]
+    public void Placement_session_ignores_drag_starts_outside_the_minimap()
+    {
+        var session = new MiniMapPlacementSession(new Vector2(700f, 24f));
+
+        Assert.False(session.TryBeginDrag(new Vector2(699f, 24f), 192f));
+        session.DragTo(new Vector2(10f), new Vector2(900f, 600f), 192f);
+
+        Assert.Equal(new Vector2(700f, 24f), session.PreviewPosition);
+    }
+
     [Theory]
     [InlineData(40f, 40f)]
     [InlineData(0f, 0f)]
@@ -483,7 +533,68 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(
             "NorthUp",
             document.RootElement.GetProperty("MiniMapOrientation").GetString());
+        Assert.True(document.RootElement.GetProperty("ShowCompassNorth").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("ShowCompassOtherDirections").GetBoolean());
+        Assert.Equal(1f, document.RootElement.GetProperty("CompassFontScale").GetSingle());
         Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_independent_compass_presentation_settings()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"ShowCompassNorth\":false,"
+            + "\"ShowCompassOtherDirections\":true,\"CompassFontScale\":1.5}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(result.Settings.ShowCompassNorth);
+        Assert.True(result.Settings.ShowCompassOtherDirections);
+        Assert.Equal(1.5f, result.Settings.CompassFontScale);
+    }
+
+    [Fact]
+    public async Task Conflicting_legacy_compass_flags_preserve_the_users_north_only_intent()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"ShowCompassDirections\":false,"
+            + "\"CompassNorthOnly\":true}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
+            store.SettingsPath,
+            TestContext.Current.CancellationToken));
+
+        Assert.True(result.Settings.ShowCompassNorth);
+        Assert.False(result.Settings.ShowCompassOtherDirections);
+        Assert.True(document.RootElement.GetProperty("ShowCompassNorth").GetBoolean());
+        Assert.False(document.RootElement.GetProperty("ShowCompassOtherDirections").GetBoolean());
+        Assert.False(document.RootElement.TryGetProperty("ShowCompassDirections", out _));
+        Assert.False(document.RootElement.TryGetProperty("CompassNorthOnly", out _));
+    }
+
+    [Fact]
+    public async Task Current_schema_preserves_normalized_minimap_anchor()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"MiniMapAnchorX\":0.2,\"MiniMapAnchorY\":0.8}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(0.2f, result.Settings.MiniMapAnchorX);
+        Assert.Equal(0.8f, result.Settings.MiniMapAnchorY);
     }
 
     [Theory]

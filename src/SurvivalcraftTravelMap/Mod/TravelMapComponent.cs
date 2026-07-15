@@ -1,5 +1,6 @@
 using System.Numerics;
 using Engine.Graphics;
+using Engine.Input;
 using Game;
 using Game.NetWork;
 using Game.NetWork.Packages;
@@ -107,6 +108,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private IReadOnlyList<Waypoint> _waypoints = Array.Empty<Waypoint>();
     private MiniMapRenderer? _miniMap;
     private TravelMapDialog? _largeMapDialog;
+    private MiniMapPlacementWidget? _miniMapPlacementWidget;
+    private MiniMapPlacementSession? _miniMapPlacementSession;
+    private Task? _miniMapPlacementSaveTask;
     private TrackedUiActionRunner? _uiActions;
     private Task? _flushTask;
     private readonly object _networkSync = new();
@@ -201,9 +205,13 @@ public sealed class TravelMapComponent : Component, IUpdateable
         var hudState = TravelMapHudPolicy.Evaluate(GetHudSignals());
         ApplyHudState(hudState);
         UpdateHudPositions();
+        UpdateMiniMapPlacement();
         UpdateInvitationUi(hudState);
         UpdateExploration();
-        HandleLargeMapHotkey();
+        if (_miniMapPlacementSession is null)
+        {
+            HandleLargeMapHotkey();
+        }
         if (_miniMap is null || _settings is null)
         {
             return;
@@ -667,6 +675,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
             OpenLargeMap,
             message => ShowMessage(message));
         Player.GuiWidget.Children.Add(_miniMap);
+        _miniMapPlacementWidget = new MiniMapPlacementWidget(
+            ConfirmMiniMapPlacement,
+            CancelMiniMapPlacement);
         UpdateHudPositions();
 
         _largeMapDialog = new TravelMapDialog(
@@ -678,7 +689,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             GetCreatureMarkers,
             GetTerrainBrightness,
             HandleContextActionAsync,
-            ShowMessage);
+            ShowMessage,
+            BeginMiniMapPlacement);
         if (state.WaypointLoadOutcome == WaypointLoadOutcome.CorruptIsolated)
         {
             ShowMessage("坐标点文件已损坏，已隔离并使用空列表", TravelMapNoticeKind.Failure);
@@ -724,7 +736,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
         var guiSize = Player.GuiWidget.ActualSize;
         var positions = TravelMapOverlayLayout.PlaceHud(
             new Vector2(guiSize.X, guiSize.Y),
-            _settings.MiniMapSize);
+            _settings.MiniMapSize,
+            _settings.MiniMapAnchorX,
+            _settings.MiniMapAnchorY);
+        if (_miniMapPlacementSession is not null)
+        {
+            positions = positions with { MiniMap = _miniMapPlacementSession.PreviewPosition };
+        }
+
         if (_miniMap is not null)
         {
             SetHudWidgetPosition(_miniMap, positions.MiniMap);
@@ -734,6 +753,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         {
             SetHudWidgetPosition(_teleportPanelButton, positions.TeleportButton);
         }
+
     }
 
     private void SetHudWidgetPosition(Widget widget, Vector2 position)
@@ -823,16 +843,164 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void ApplyHudState(TravelMapHudState state)
     {
+        var isPlacingMiniMap = _miniMapPlacementSession is not null;
         if (_miniMap is not null)
         {
-            _miniMap.IsVisible = state.ShowMiniMap;
-            _miniMap.IsEnabled = state.AllowMiniMapInput;
+            _miniMap.IsVisible = isPlacingMiniMap || state.ShowMiniMap;
+            _miniMap.IsEnabled = !isPlacingMiniMap && state.AllowMiniMapInput;
         }
 
         if (_teleportPanelButton is not null)
         {
-            _teleportPanelButton.IsVisible = state.ShowTeleportButton;
-            _teleportPanelButton.IsEnabled = state.ShowTeleportButton && state.AllowMiniMapInput;
+            _teleportPanelButton.IsVisible = !isPlacingMiniMap && state.ShowTeleportButton;
+            _teleportPanelButton.IsEnabled = !isPlacingMiniMap
+                && state.ShowTeleportButton
+                && state.AllowMiniMapInput;
+        }
+    }
+
+    private void BeginMiniMapPlacement()
+    {
+        if (_settings is null || _miniMap is null || _miniMapPlacementWidget is null)
+        {
+            return;
+        }
+
+        var guiSize = Player.GuiWidget.ActualSize;
+        var positions = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(guiSize.X, guiSize.Y),
+            _settings.MiniMapSize,
+            _settings.MiniMapAnchorX,
+            _settings.MiniMapAnchorY);
+        _miniMapPlacementSession = new MiniMapPlacementSession(positions.MiniMap);
+        if (_largeMapDialog is not null && DialogsManager.Dialogs.Contains(_largeMapDialog))
+        {
+            DialogsManager.HideDialog(_largeMapDialog);
+        }
+
+        DialogsManager.ShowDialog(Player.GuiWidget, _miniMapPlacementWidget);
+        ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));
+        UpdateHudPositions();
+        Player.GameWidget.Input.Clear();
+    }
+
+    private void UpdateMiniMapPlacement()
+    {
+        var session = _miniMapPlacementSession;
+        if (session is null || _settings is null)
+        {
+            return;
+        }
+
+        var input = Player.GameWidget.Input;
+        if (input.Cancel)
+        {
+            CancelMiniMapPlacement();
+            return;
+        }
+
+        Engine.Vector2? startPointer = null;
+        if (input.IsMouseButtonDownOnce(MouseButton.Left) && input.MousePosition.HasValue)
+        {
+            startPointer = input.MousePosition;
+        }
+        else if (input.Tap.HasValue)
+        {
+            startPointer = input.Tap;
+        }
+
+        if (startPointer.HasValue)
+        {
+            var local = Player.GuiWidget.ScreenToWidget(startPointer.Value);
+            session.TryBeginDrag(new Vector2(local.X, local.Y), _settings.MiniMapSize);
+        }
+
+        Engine.Vector2? activePointer = null;
+        if (input.IsMouseButtonDown(MouseButton.Left) && input.MousePosition.HasValue)
+        {
+            activePointer = input.MousePosition;
+        }
+        else if (input.Press.HasValue)
+        {
+            activePointer = input.Press;
+        }
+
+        if (session.IsDragging && activePointer.HasValue)
+        {
+            var local = Player.GuiWidget.ScreenToWidget(activePointer.Value);
+            var guiSize = Player.GuiWidget.ActualSize;
+            session.DragTo(
+                new Vector2(local.X, local.Y),
+                new Vector2(guiSize.X, guiSize.Y),
+                _settings.MiniMapSize);
+            UpdateHudPositions();
+            input.Clear();
+        }
+        else if (session.IsDragging)
+        {
+            session.EndDrag();
+        }
+    }
+
+    private void ConfirmMiniMapPlacement()
+    {
+        if (_miniMapPlacementSession is null || _settings is null)
+        {
+            return;
+        }
+
+        var guiSize = Player.GuiWidget.ActualSize;
+        var anchor = _miniMapPlacementSession.CreateNormalizedAnchor(
+            new Vector2(guiSize.X, guiSize.Y),
+            _settings.MiniMapSize);
+        _settings.MiniMapAnchorX = anchor.X;
+        _settings.MiniMapAnchorY = anchor.Y;
+        _miniMapPlacementSession = null;
+        if (_miniMapPlacementWidget is not null)
+        {
+            DialogsManager.HideDialog(_miniMapPlacementWidget);
+        }
+
+        UpdateHudPositions();
+        ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));
+        _miniMapPlacementSaveTask = PersistMiniMapPlacementAsync();
+        ShowMessage("小地图位置已保存", TravelMapNoticeKind.Success);
+        Player.GameWidget.Input.Clear();
+    }
+
+    private void CancelMiniMapPlacement()
+    {
+        if (_miniMapPlacementSession is null)
+        {
+            return;
+        }
+
+        _miniMapPlacementSession.Cancel();
+        _miniMapPlacementSession = null;
+        if (_miniMapPlacementWidget is not null)
+        {
+            DialogsManager.HideDialog(_miniMapPlacementWidget);
+        }
+
+        UpdateHudPositions();
+        ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));
+        ShowMessage("已取消调整小地图位置", TravelMapNoticeKind.Information);
+        Player.GameWidget.Input.Clear();
+    }
+
+    private async Task PersistMiniMapPlacementAsync()
+    {
+        try
+        {
+            if (_settingsStore is not null && _settings is not null)
+            {
+                await _settingsStore.SaveAsync(_settings, _lifetimeCancellation.Token)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            ShowMessage("小地图位置未能保存，本次会话仍保留当前位置", TravelMapNoticeKind.Failure);
         }
     }
 
@@ -1331,6 +1499,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
             Engine.Log.Warning($"[TravelMap] Shutdown operation failed: {exception.Message}");
         Task? dialogWork = null;
         Task? miniMapWork = null;
+        var placementSaveWork = _miniMapPlacementSaveTask;
+        _miniMapPlacementSaveTask = null;
+        _miniMapPlacementSession = null;
         if (_largeMapDialog is not null)
         {
             var largeMapDialog = _largeMapDialog;
@@ -1347,6 +1518,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
             RunCleanupStep(() => miniMapWork = miniMap.WhenSaveIdleAsync());
             RunCleanupStep(() => miniMap.ParentWidget?.Children.Remove(miniMap));
             RunCleanupStep(miniMap.Dispose);
+        }
+
+        if (_miniMapPlacementWidget is not null)
+        {
+            var placementWidget = _miniMapPlacementWidget;
+            _miniMapPlacementWidget = null;
+            RunCleanupStep(() => DialogsManager.HideDialog(placementWidget));
+            RunCleanupStep(placementWidget.Dispose);
         }
 
         if (_teleportPanel is not null)
@@ -1413,6 +1592,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
         {
             RunCleanupStep(() => BoundedTaskObserver.ObserveWithin(
                     miniMapWork,
+                    RemainingTime(),
+                    ReportShutdownFailure));
+        }
+
+        if (placementSaveWork is not null && RemainingTime() > TimeSpan.Zero)
+        {
+            RunCleanupStep(() => BoundedTaskObserver.ObserveWithin(
+                    placementSaveWork,
                     RemainingTime(),
                     ReportShutdownFailure));
         }
