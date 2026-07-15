@@ -19,13 +19,13 @@ internal sealed class MiniMapPlacementSession
 
     public bool TryBeginDrag(Vector2 pointer, float miniMapSize)
     {
-        var size = MathF.Max(0f, float.IsFinite(miniMapSize) ? miniMapSize : 0f);
+        var size = TravelMapOverlayLayout.MiniMapFootprint(miniMapSize);
         if (!float.IsFinite(pointer.X)
             || !float.IsFinite(pointer.Y)
             || pointer.X < PreviewPosition.X
             || pointer.Y < PreviewPosition.Y
-            || pointer.X > PreviewPosition.X + size
-            || pointer.Y > PreviewPosition.Y + size)
+            || pointer.X > PreviewPosition.X + size.X
+            || pointer.Y > PreviewPosition.Y + size.Y)
         {
             return false;
         }
@@ -41,10 +41,9 @@ internal sealed class MiniMapPlacementSession
             return;
         }
 
-        var size = MathF.Max(0f, float.IsFinite(miniMapSize) ? miniMapSize : 0f);
         PreviewPosition = TravelMapOverlayLayout.ClampToGui(
             pointer - _dragOffset.Value,
-            new Vector2(size),
+            TravelMapOverlayLayout.MiniMapFootprint(miniMapSize),
             guiLogicalSize);
     }
 
@@ -60,5 +59,5 @@ internal sealed class MiniMapPlacementSession
         TravelMapOverlayLayout.NormalizeCustomPosition(
             PreviewPosition,
             guiLogicalSize,
-            new Vector2(MathF.Max(0f, miniMapSize)));
+            TravelMapOverlayLayout.MiniMapFootprint(miniMapSize));
 }

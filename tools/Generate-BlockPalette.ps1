@@ -5,96 +5,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# This palette is project-owned and generated without reading any existing palette.
-# Known overrides use the public block Index constants exposed by the referenced
-# Survivalcraft runtime. Remaining indices receive a deterministic, subdued HSV
-# color so new or uncommon blocks remain distinguishable on the map.
-function ConvertFrom-Hsv {
-    param(
-        [double]$Hue,
-        [double]$Saturation,
-        [double]$Value
-    )
-
-    $chroma = $Value * $Saturation
-    $sector = $Hue / 60.0
-    $x = $chroma * (1.0 - [Math]::Abs(($sector % 2.0) - 1.0))
-    $red = 0.0
-    $green = 0.0
-    $blue = 0.0
-
-    if ($sector -lt 1.0) { $red = $chroma; $green = $x }
-    elseif ($sector -lt 2.0) { $red = $x; $green = $chroma }
-    elseif ($sector -lt 3.0) { $green = $chroma; $blue = $x }
-    elseif ($sector -lt 4.0) { $green = $x; $blue = $chroma }
-    elseif ($sector -lt 5.0) { $red = $x; $blue = $chroma }
-    else { $red = $chroma; $blue = $x }
-
-    $match = $Value - $chroma
-    @(
-        [int][Math]::Round(($red + $match) * 255.0),
-        [int][Math]::Round(($green + $match) * 255.0),
-        [int][Math]::Round(($blue + $match) * 255.0),
-        255
-    )
-}
-
-function Get-GeneratedColor {
-    param([int]$Index)
-
-    $hue = ($Index * 47) % 360
-    $saturation = 0.24 + ((($Index * 13) % 5) * 0.035)
-    $value = 0.44 + ((($Index * 7) % 6) * 0.035)
-    ConvertFrom-Hsv -Hue $hue -Saturation $saturation -Value $value
-}
-
-# Air, common terrain, ores, liquids and vegetation get recognizable colors.
-# IDs 8, 12, 13, 14, 18, 225 and 256 are white because TerrainMapSampler
-# multiplies them by the game's temperature/humidity environment palette.
-$knownColors = @{
-    0   = @(0, 0, 0, 0)          # Air
-    1   = @(112, 106, 99, 255)   # Stone
-    2   = @(126, 91, 58, 255)    # Dirt
-    3   = @(132, 126, 121, 255)  # Granite
-    7   = @(215, 195, 139, 255)  # Sand
-    8   = @(255, 255, 255, 255)  # Grass (environment tint)
-    9   = @(131, 91, 52, 255)    # Oak wood
-    12  = @(255, 255, 255, 255)  # Leaves (environment tint)
-    13  = @(255, 255, 255, 255)  # Leaves (environment tint)
-    14  = @(255, 255, 255, 255)  # Leaves (environment tint)
-    16  = @(58, 58, 55, 255)     # Coal ore
-    18  = @(255, 255, 255, 255)  # Water (environment tint)
-    39  = @(142, 124, 103, 255)  # Iron ore
-    41  = @(169, 102, 65, 255)   # Copper ore
-    61  = @(238, 242, 244, 255)  # Snow
-    62  = @(168, 217, 228, 255)  # Ice
-    66  = @(205, 198, 166, 255)  # Limestone
-    67  = @(55, 62, 64, 255)     # Basalt
-    92  = @(238, 85, 30, 255)    # Magma
-    104 = @(244, 143, 35, 255)   # Fire
-    112 = @(74, 191, 196, 255)   # Diamond ore
-    127 = @(52, 122, 65, 255)    # Cactus
-    225 = @(255, 255, 255, 255)  # Environment-tinted vegetation
-    226 = @(47, 112, 154, 255)   # Water variant
-    229 = @(47, 112, 154, 255)   # Water variant
-    232 = @(47, 112, 154, 255)   # Water variant
-    233 = @(47, 112, 154, 255)   # Water variant
-    256 = @(255, 255, 255, 255)  # Environment-tinted vegetation
+# RGBA bytes for block IDs 0..256. The colors follow the restrained terrain
+# style of the user-supplied custom-minimap reference. Air remains transparent
+# for this mod's exploration contract; the remaining entries keep the reference
+# colors, including the translucent glass entry at ID 57.
+$paletteBytes = [Convert]::FromBase64String(
+    "AAAAAGFhYf+Eajr/gICA/7mrgP98fHz/g3t6/9PElf+rq6v/xppT/8aaU//GmlP/oKCg/6CgoP94eHj//////5KSkv94XDL/qKio/6urq/+0AAD/h2U3/yVLCf/+/v7/cD/2//////+Pj4//h2U3/0o1F//+/v7/mpqa/+3Zlf+ampr/mpqa/5qamv+ampr/Q0ND//////8hISH/iIiI/yIiIv+JiYn//v7+/yVLCf//////QCoS/9HR0f+MQCH/fHx8/4dlN/+Pj4//uauA/7mrgP98fHz/j4+P/4dlN/+HZTf/paWlpXZ2dv9ePRr//////+709P/Y4vP/bkYe/3x8fP98fHz/iYmJ/3R0dP/WxrH/1sax/9bGsf8yyqb/n52V/4c9M/9AIxL/hz0z/4c9M/8lSwn/JUsJ/yVLCf/+/v7//v7+//7+/v92VzD/hoaG/+709P+HZTf/mpqa/7FVUP+xVVD/39/f/9/f3//peh3/39/f/4dlN/90dHT/dHR0/4dlN/+HZTf/ZFI8/8G0jv90dHT//Pz8/yVLCf//MjL/h2U3/4dlN/+HZTf//v7+/2BiO//f39///wAA/3R0dP//////JUsJ/3BKJP/+/v7/Xj0a//z8/P88aQD/39/f/9/f3//+/v7//v7+//7+/v/+/v7/WKf//1x0NP/f39//39/f/+rq6v++eS3/vnkt/5xWNf9DQ0P/Q0ND/4CAgP9DQ0P/Q0ND/0NDQ/9DQ0P/Q0ND/0NDQ/9DQ0P/Q0ND/0NDQ/9DQ0P/ppQA/3R0dP8lSwn/DAwM/0NDQ/9DQ0P/h2U3/4CAgP9DQ0P/Q0ND/0NDQ//k4+D/5OPg/9/f3/+vz8r/r8/K/3R0dP+HPTP//////4dlN//f39//f2U2/yVLCf+ampr//////yVLCf/+/v7/EUEW/+rq6v8lSwn/k2g3/4dlN/9DQ0P/Q0ND/0NDQ/9DQ0P/Q0ND/0NDQ/9DQ0P/Q0ND/0NDQ/9DQ0P/gICA/4CAgP/+/v7//v7+/8DAwP/AwMD/JUsJ/yIiIv8RcCr//v7+///////+/v7/JUsJ/4CAgP/+/v7///////7+/v/k4+D/LB8J/9LOw/8MDAz/39/f/9/f3//+/v7/39/f/2dnZ/8lSwn/QCoS/4CAgP8hISH///////7+/v/+/v7/Q0ND/4c9M/9DQ0P/eHh4/7CwsP+HZTf/JUsJ/7CwsP//////Q0ND/7CwsP+wsLD/h2U3/4dlN/+HZTf/Q0ND/3BKJP8lSwn/sVVQ/6/Pyv+TaDf/fHx8/21kQv/f39///Pz8/yVLCf+ampr/JUsJ/yVLCf/f39//39/f/0NDQ/9DQ0P/xppT/3h4eP8=")
+if ($paletteBytes.Length -ne (257 * 4)) {
+    throw "Terrain palette must contain exactly 257 RGBA entries."
 }
 
 $environmentSensitive = [Collections.Generic.HashSet[int]]::new()
-foreach ($index in @(8, 12, 13, 14, 18, 225, 256)) {
+foreach ($index in @(8, 12, 13, 14, 18, 19, 225, 256)) {
     [void]$environmentSensitive.Add($index)
 }
 
 $document = [ordered]@{}
 foreach ($index in 0..256) {
-    $rgba = if ($knownColors.ContainsKey($index)) {
-        $knownColors[$index]
-    }
-    else {
-        Get-GeneratedColor -Index $index
-    }
+    $offset = $index * 4
+    $rgba = @(
+        $paletteBytes[$offset],
+        $paletteBytes[$offset + 1],
+        $paletteBytes[$offset + 2],
+        $paletteBytes[$offset + 3]
+    )
 
     $packedValue = [uint64]$rgba[0] `
         -bor ([uint64]$rgba[1] -shl 8) `
@@ -121,4 +55,4 @@ if (-not [string]::IsNullOrEmpty($outputDirectory)) {
 
 $json = $document | ConvertTo-Json -Depth 6
 [IO.File]::WriteAllText($resolvedOutput, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-Write-Output "Generated independent block palette: $resolvedOutput"
+Write-Output "Generated reference-style block palette: $resolvedOutput"

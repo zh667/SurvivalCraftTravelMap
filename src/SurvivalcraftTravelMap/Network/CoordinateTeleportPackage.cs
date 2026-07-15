@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Text;
 using Game.NetWork;
 using SurvivalcraftTravelMap.Teleport;
+using SurvivalcraftTravelMap.UI;
 
 namespace SurvivalcraftTravelMap.Network;
 
@@ -898,7 +899,9 @@ public sealed class CoordinateTeleportRequestIdSequence
 public sealed class CoordinateTeleportClientSession : IDisposable
 {
     public static readonly TimeSpan ResponseTimeout = TimeSpan.FromSeconds(5);
-    public const string UnsupportedOrTimeoutMessage = "服务器不支持地图传送或请求超时";
+    public static string UnsupportedOrTimeoutMessage => TravelMapText.Get(
+        "teleportUnsupportedOrTimeout",
+        "服务器不支持地图传送或请求超时");
 
     private readonly object _sync = new();
     private readonly string _serverPeerId;

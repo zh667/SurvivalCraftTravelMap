@@ -1,5 +1,5 @@
-using System.Globalization;
 using System.Numerics;
+using SurvivalcraftTravelMap.UI;
 
 namespace SurvivalcraftTravelMap.Waypoints;
 
@@ -20,9 +20,12 @@ public sealed class CurrentPositionWaypointHandler
         CancellationToken cancellationToken = default)
     {
         var position = _currentPosition();
-        var name = string.Create(
-            CultureInfo.InvariantCulture,
-            $"当前位置 {position.X:0.##}, {position.Y:0.##}, {position.Z:0.##}");
+        var name = TravelMapText.Format(
+            "currentPositionWaypointFormat",
+            "当前位置 {0:0.##}, {1:0.##}, {2:0.##}",
+            position.X,
+            position.Y,
+            position.Z);
         _repository.Add(name, position);
         return await WaypointPersistence.SaveOrReloadAsync(
             _repository,

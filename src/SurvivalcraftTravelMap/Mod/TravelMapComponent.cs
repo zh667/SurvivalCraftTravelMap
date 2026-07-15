@@ -86,6 +86,7 @@ public static class TravelMapRuntimePolicy
 public sealed class TravelMapComponent : Component, IUpdateable
 {
     private const int MaximumChunkAttemptsPerFrame = 16;
+    private const int MaximumCaveChunkAttemptsPerFrame = 2;
     private const int MaximumCoverageChecksPerFrame = 16;
     private static int s_nextUpdateLocationId = -1_000_000;
     private static readonly CoordinateTeleportFutureSchemaWarningGate ServerSettingsWarningGate = new();
@@ -101,8 +102,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private TravelMapSettingsStore? _settingsStore;
     private TravelMapSettings? _settings;
     private ExplorationTileStore? _tileStore;
+    private CaveExplorationStore? _caveStore;
     private ExplorationRecorder? _explorationRecorder;
+    private CaveMapSampler? _caveSampler;
     private ExplorationCoverageProbe? _explorationCoverageProbe;
+    private MapViewState? _mapViewState;
     private WaypointRepository? _waypointRepository;
     private CurrentPositionWaypointHandler? _currentPositionWaypointHandler;
     private IReadOnlyList<Waypoint> _waypoints = Array.Empty<Waypoint>();
@@ -378,7 +382,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 break;
             case LegacyClientResponseAction.RejectInvitation:
                 QueueLegacyPackage(LegacyGpsMessage.TeleportAllow(false));
-                ShowMessage("已按设置自动拒绝玩家传送邀请");
+                ShowMessage(TravelMapText.Get("invitationAutoRejected", "已按设置自动拒绝玩家传送邀请"));
                 break;
             case LegacyClientResponseAction.ShowInvitation:
                 try
@@ -386,10 +390,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     _dispatcher?.Invoke(() => DialogsManager.ShowDialog(
                         Player.GuiWidget,
                         new MessageDialog(
-                            "玩家传送邀请",
+                            TravelMapText.Get("teleportInvitation", "玩家传送邀请"),
                             message.Message ?? string.Empty,
-                            LanguageControl.Ok,
-                            LanguageControl.Cancel,
+                            TravelMapText.Get("accept", "接受"),
+                            TravelMapText.Get("decline", "拒绝"),
                             button => QueueLegacyPackage(
                                 LegacyGpsMessage.TeleportAllow(button == MessageDialogButton.Button1)))));
                 }
@@ -411,7 +415,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         _networkActions = new TrackedUiActionRunner(
-            _ => ShowMessage("联机旅行请求未能完成", TravelMapNoticeKind.Failure));
+            _ => ShowMessage(
+                TravelMapText.Get("onlineTravelFailed", "联机旅行请求未能完成"),
+                TravelMapNoticeKind.Failure));
         _coordinateClientSession = new CoordinateTeleportClientSession(
             TravelMapNetworkPeerIdentity.ForClient(server),
             message =>
@@ -429,7 +435,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         var runner = _networkActions;
         if (runner is null || !runner.TryRun(token => SendCoordinateClientCommandAsync(command, token)))
         {
-            ShowMessage("另一项联机旅行请求仍在进行", TravelMapNoticeKind.Information);
+            ShowMessage(
+                TravelMapText.Get("onlineTravelBusy", "另一项联机旅行请求仍在进行"),
+                TravelMapNoticeKind.Information);
         }
     }
 
@@ -561,7 +569,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         _uiActions = new TrackedUiActionRunner(
-            _ => ShowMessage("地图操作未能完成", TravelMapNoticeKind.Failure));
+            _ => ShowMessage(
+                TravelMapText.Get("mapActionFailed", "地图操作未能完成"),
+                TravelMapNoticeKind.Failure));
         state.AppRoot = Engine.Storage.GetSystemPath("app:/SurvivalcraftTravelMap");
         var legacySettingsPath = Engine.Storage.GetSystemPath("app:/GPSSetting.xml");
         _settingsStore = new TravelMapSettingsStore(state.AppRoot, legacySettingsPath);
@@ -575,9 +585,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            _settings = new TravelMapSettings();
+            _settings = TravelMapSettings.CreateDefaults();
             _settingsStore.EnterReadOnlyMode();
-            WarnPersistenceOnce($"地图设置不可写，本次使用内存默认值：{exception.Message}");
+            WarnPersistenceOnce(TravelMapText.Format(
+                "settingsUnavailableFormat",
+                "地图设置不可写，本次使用内存默认值：{0}",
+                exception.Message));
         }
     }
 
@@ -607,7 +620,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         if (!TravelMapStorageIdentity.TryResolve(identity, out var storage, out var identityError))
         {
             Engine.Log.Warning($"[TravelMap] Persistence disabled: {identityError}");
-            WarnPersistenceOnce("缺少可靠的世界或玩家身份，旅行地图持久化已禁用");
+            WarnPersistenceOnce(TravelMapText.Get(
+                "persistenceIdentityMissing",
+                "缺少可靠的世界或玩家身份，旅行地图持久化已禁用"));
             throw new InvalidOperationException(
                 $"Travel-map persistence identity is unavailable: {identityError}");
         }
@@ -615,6 +630,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
         try
         {
             _tileStore = new ExplorationTileStore(Path.Combine(storage!.Directory, "tiles"));
+            _caveStore = new CaveExplorationStore(Path.Combine(storage.Directory, "caves"));
+            _mapViewState = new MapViewState();
             _waypointRepository = new WaypointRepository(storage.Directory);
             state.WaypointLoadOutcome = _waypointRepository.LoadAsync(_lifetimeCancellation.Token)
                 .GetAwaiter()
@@ -627,14 +644,23 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     var position = Player.ComponentBody.Position;
                     return new Vector3(position.X, position.Y, position.Z);
                 });
-            state.PixelSource = new TileStoreMapPixelSource(_tileStore);
+            var surfaceSource = new TileStoreMapPixelSource(_tileStore);
+            state.PixelSource = new MapViewPixelSource(
+                surfaceSource,
+                () => _mapViewState?.Mode ?? MapViewMode.Surface,
+                () => _caveStore.GetPixelSource(_mapViewState?.CaveY ?? CaveLayer.CenterForY(64)));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             _tileStore = null;
+            _caveStore = null;
+            _mapViewState = null;
             _waypointRepository = null;
             _currentPositionWaypointHandler = null;
-            WarnPersistenceOnce($"地图与坐标点持久化不可用：{exception.Message}");
+            WarnPersistenceOnce(TravelMapText.Format(
+                "persistenceUnavailableFormat",
+                "地图与坐标点持久化不可用：{0}",
+                exception.Message));
             throw;
         }
     }
@@ -668,12 +694,15 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _settings,
             _settingsStore,
             GetPlayerPose,
-            () => _waypoints,
+            GetVisibleWaypoints,
             GetCreatureMarkers,
-            GetTerrainBrightness,
+            GetLastDeathMarker,
+            GetMapBrightness,
             IsMapInputBlocked,
             OpenLargeMap,
-            message => ShowMessage(message));
+            message => ShowMessage(message),
+            OpenLargeMapAtLastDeath);
+        _miniMap.GameTimeProvider = GetGameTime;
         Player.GuiWidget.Children.Add(_miniMap);
         _miniMapPlacementWidget = new MiniMapPlacementWidget(
             ConfirmMiniMapPlacement,
@@ -685,15 +714,20 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _settings,
             _settingsStore,
             GetPlayerPose,
-            () => _waypoints,
+            GetVisibleWaypoints,
             GetCreatureMarkers,
-            GetTerrainBrightness,
+            GetMapBrightness,
+            GetGameTime,
             HandleContextActionAsync,
             ShowMessage,
-            BeginMiniMapPlacement);
+            BeginMiniMapPlacement,
+            GetLastDeathMarker,
+            _mapViewState);
         if (state.WaypointLoadOutcome == WaypointLoadOutcome.CorruptIsolated)
         {
-            ShowMessage("坐标点文件已损坏，已隔离并使用空列表", TravelMapNoticeKind.Failure);
+            ShowMessage(
+                TravelMapText.Get("waypointFileCorrupt", "坐标点文件已损坏，已隔离并使用空列表"),
+                TravelMapNoticeKind.Failure);
         }
 
         if (WorkType == TravelMapWorkType.Client)
@@ -713,8 +747,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
         {
             modEntity.GetAssetsFile("BlockPixelColor.json", stream =>
             {
-                var sampler = new TerrainMapSampler(new SurvivalcraftTerrainMapSource(Terrain), stream);
+                var terrainSource = new SurvivalcraftTerrainMapSource(Terrain);
+                var sampler = new TerrainMapSampler(terrainSource, stream);
                 _explorationRecorder = new ExplorationRecorder(sampler, _tileStore);
+                _caveSampler = new CaveMapSampler(terrainSource, sampler);
                 _explorationCoverageProbe = new ExplorationCoverageProbe(
                     _explorationRecorder.IsChunkFullyExplored,
                     _explorationFailureReporter);
@@ -964,7 +1000,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
         UpdateHudPositions();
         ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));
         _miniMapPlacementSaveTask = PersistMiniMapPlacementAsync();
-        ShowMessage("小地图位置已保存", TravelMapNoticeKind.Success);
+        ShowMessage(
+            TravelMapText.Get("miniMapPositionSaved", "小地图位置已保存"),
+            TravelMapNoticeKind.Success);
         Player.GameWidget.Input.Clear();
     }
 
@@ -984,7 +1022,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         UpdateHudPositions();
         ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));
-        ShowMessage("已取消调整小地图位置", TravelMapNoticeKind.Information);
+        ShowMessage(
+            TravelMapText.Get("miniMapPositionCancelled", "已取消调整小地图位置"),
+            TravelMapNoticeKind.Information);
         Player.GameWidget.Input.Clear();
     }
 
@@ -1000,7 +1040,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            ShowMessage("小地图位置未能保存，本次会话仍保留当前位置", TravelMapNoticeKind.Failure);
+            ShowMessage(
+                TravelMapText.Get(
+                    "miniMapPositionSaveFailed",
+                    "小地图位置未能保存，本次会话仍保留当前位置"),
+                TravelMapNoticeKind.Failure);
         }
     }
 
@@ -1039,6 +1083,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         var position = Player.ComponentBody.Position;
+        _mapViewState?.UpdatePlayerY(position.Y);
         var center = TerrainChunkCoordinate.FromWorld(
             checked((int)MathF.Floor(position.X)),
             checked((int)MathF.Floor(position.Z)));
@@ -1070,7 +1115,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 {
                     _explorationPressureWarningShown = true;
                     ShowMessage(
-                        "地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存",
+                        TravelMapText.Get(
+                            "mapStoragePaused",
+                            "地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存"),
                         TravelMapNoticeKind.Failure);
                 }
             }
@@ -1080,6 +1127,53 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     chunk,
                     ExplorationFailureOperation.Record,
                     exception);
+            }
+        }
+
+        UpdateCaveExploration(loadedChunks);
+    }
+
+    private void UpdateCaveExploration(IReadOnlyList<TerrainChunkCoordinate> loadedChunks)
+    {
+        if (_caveSampler is null
+            || _caveStore is null
+            || _explorationRecorder is null
+            || _mapViewState?.Mode != MapViewMode.Cave)
+        {
+            return;
+        }
+
+        var layerY = _mapViewState.CaveY;
+        Span<Rgba32> colors = stackalloc Rgba32[TerrainChunkCoordinate.PixelCount];
+        Span<byte> heightShades = stackalloc byte[TerrainChunkCoordinate.PixelCount];
+        var attempts = 0;
+        foreach (var chunk in loadedChunks)
+        {
+            if (attempts >= MaximumCaveChunkAttemptsPerFrame)
+            {
+                break;
+            }
+
+            if (!_explorationRecorder.IsChunkFullyExplored(chunk)
+                || _caveStore.IsChunkFullyExplored(layerY, chunk))
+            {
+                continue;
+            }
+
+            attempts++;
+            if (!_caveSampler.TrySampleChunk(chunk, layerY, colors, heightShades))
+            {
+                continue;
+            }
+
+            var result = _caveStore.RecordChunk(layerY, chunk, colors, heightShades);
+            if (result == ExplorationRecordResult.Pressure && !_explorationPressureWarningShown)
+            {
+                _explorationPressureWarningShown = true;
+                ShowMessage(
+                    TravelMapText.Get("mapStoragePaused", "地图缓存持续失败，已暂停记录新区块；稍后探索会自动重试保存"),
+                    TravelMapNoticeKind.Failure);
+                break;
             }
         }
     }
@@ -1100,7 +1194,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void UpdateFlush(float dt)
     {
-        if (_tileStore is null)
+        if (_tileStore is null && _caveStore is null)
         {
             return;
         }
@@ -1116,10 +1210,24 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         _flushElapsed += MathF.Max(0f, dt);
-        if (_flushTask is null && _flushElapsed >= (float)_tileStore.FlushInterval.TotalSeconds)
+        var flushInterval = _tileStore?.FlushInterval ?? _caveStore!.FlushInterval;
+        if (_flushTask is null && _flushElapsed >= (float)flushInterval.TotalSeconds)
         {
             _flushElapsed = 0f;
-            _flushTask = _tileStore.FlushAsync(_lifetimeCancellation.Token);
+            _flushTask = FlushMapStoresAsync(_lifetimeCancellation.Token);
+        }
+    }
+
+    private async Task FlushMapStoresAsync(CancellationToken cancellationToken)
+    {
+        if (_tileStore is not null)
+        {
+            await _tileStore.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (_caveStore is not null)
+        {
+            await _caveStore.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1161,6 +1269,19 @@ public sealed class TravelMapComponent : Component, IUpdateable
         Player.GameWidget.Input.Clear();
     }
 
+    private void OpenLargeMapAtLastDeath(DeathMapMarker marker)
+    {
+        if (_largeMapDialog is null || !GetMapInputFocus().AllowsMapHotkey)
+        {
+            return;
+        }
+
+        _largeMapDialog.ResetToWorld(new Vector2(marker.Position.X, marker.Position.Z));
+        DialogsManager.ShowDialog(Player.GuiWidget, _largeMapDialog);
+        ApplyHudState(TravelMapHudPolicy.Evaluate(GetHudSignals()));
+        Player.GameWidget.Input.Clear();
+    }
+
     private TravelMapFocusState GetMapInputFocus(bool ignoreLargeMapDialog = false)
     {
         var chat = Player.GameWidget.messageWidget;
@@ -1190,8 +1311,13 @@ public sealed class TravelMapComponent : Component, IUpdateable
         {
             case TravelMapContextAction.TeleportNearby:
             {
-                var target = new Vector3(menu.WorldPosition.X, Player.ComponentBody.Position.Y, menu.WorldPosition.Y);
-                return await RequestSurfaceTravelAsync(target, cancellationToken).ConfigureAwait(false);
+                var target = new Vector3(
+                    menu.WorldPosition.X,
+                    menu.TargetY ?? Player.ComponentBody.Position.Y,
+                    menu.WorldPosition.Y);
+                return menu.TargetY.HasValue
+                    ? await RequestWaypointTravelAsync(target, cancellationToken).ConfigureAwait(false)
+                    : await RequestSurfaceTravelAsync(target, cancellationToken).ConfigureAwait(false);
             }
             case TravelMapContextAction.TeleportToWaypoint:
             {
@@ -1199,6 +1325,20 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 return waypoint is null
                     ? TravelMapActionStatus.Failed
                     : await RequestWaypointTravelAsync(waypoint.Position, cancellationToken).ConfigureAwait(false);
+            }
+            case TravelMapContextAction.TeleportToLastDeath:
+            {
+                var lastDeath = GetLastDeathMarker();
+                if (lastDeath is null)
+                {
+                    ShowMessage(
+                        TravelMapText.Get("lastDeathUnavailable", "还没有可返回的死亡地点"),
+                        TravelMapNoticeKind.Information);
+                    return TravelMapActionStatus.FailedWithFeedback;
+                }
+
+                return await RequestWaypointTravelAsync(lastDeath.Position, cancellationToken)
+                    .ConfigureAwait(false);
             }
             case TravelMapContextAction.AddWaypoint:
             {
@@ -1209,7 +1349,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
                 _waypoints = await _currentPositionWaypointHandler.SaveAsync(cancellationToken)
                     .ConfigureAwait(false);
-                ShowMessage("坐标点已保存", TravelMapNoticeKind.Success);
+                ShowMessage(
+                    TravelMapText.Get("waypointSaved", "坐标点已保存"),
+                    TravelMapNoticeKind.Success);
                 return TravelMapActionStatus.Completed;
             }
             case TravelMapContextAction.RenameWaypoint:
@@ -1221,7 +1363,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 }
 
                 DialogsManager.Promit(
-                    "重命名坐标点",
+                    TravelMapText.Get("renameWaypoint", "重命名坐标点"),
                     waypoint.Name,
                     name => _uiActions?.TryRun(_ => RenameWaypointAsync(waypoint.Id, name)));
                 return TravelMapActionStatus.Completed;
@@ -1233,7 +1375,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 }
 
                 await SaveWaypointsAsync(cancellationToken).ConfigureAwait(false);
-                ShowMessage("坐标点已删除", TravelMapNoticeKind.Success);
+                ShowMessage(
+                    TravelMapText.Get("waypointDeleted", "坐标点已删除"),
+                    TravelMapNoticeKind.Success);
                 return TravelMapActionStatus.Completed;
             case TravelMapContextAction.Cancel:
                 return TravelMapActionStatus.Cancelled;
@@ -1314,12 +1458,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
             if (_waypointRepository is not null && _waypointRepository.Rename(id, name))
             {
                 await SaveWaypointsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
-                ShowMessage("坐标点已重命名", TravelMapNoticeKind.Success);
+                ShowMessage(
+                    TravelMapText.Get("waypointRenamed", "坐标点已重命名"),
+                    TravelMapNoticeKind.Success);
             }
         }
         catch (Exception exception) when (exception is ArgumentException or IOException)
         {
-            ShowMessage("坐标点名称未保存", TravelMapNoticeKind.Failure);
+            ShowMessage(
+                TravelMapText.Get("waypointRenameFailed", "坐标点名称未保存"),
+                TravelMapNoticeKind.Failure);
         }
     }
 
@@ -1347,6 +1495,30 @@ public sealed class TravelMapComponent : Component, IUpdateable
             MathF.Atan2(forward.X, -forward.Z));
     }
 
+    private DeathMapMarker? GetLastDeathMarker() => SelectLastDeath(Player.PlayerStats);
+
+    internal static DeathMapMarker? SelectLastDeath(PlayerStats? stats)
+    {
+        if (stats is null)
+        {
+            return null;
+        }
+
+        var records = stats.DeathRecords;
+        if (records.Count == 0)
+        {
+            return null;
+        }
+
+        var record = records[records.Count - 1];
+        var position = new Vector3(record.Location.X, record.Location.Y, record.Location.Z);
+        return float.IsFinite(position.X)
+            && float.IsFinite(position.Y)
+            && float.IsFinite(position.Z)
+                ? new DeathMapMarker(position, record.Day, record.Cause ?? string.Empty)
+                : null;
+    }
+
     private IReadOnlyList<CreatureMapMarker> GetCreatureMarkers()
     {
         if (CreatureSpawn is null)
@@ -1365,6 +1537,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
             }
 
             var position = creature.ComponentBody.Position;
+            if (_mapViewState is { Mode: MapViewMode.Cave } caveView
+                && MathF.Abs(position.Y - caveView.CaveY) > CaveLayer.MarkerVerticalRange)
+            {
+                continue;
+            }
+
             markers.Add(new CreatureMapMarker(
                 new Vector3(position.X, position.Y, position.Z),
                 ToCreatureMarkerKind(creature.Category)));
@@ -1372,6 +1550,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         return markers;
     }
+
+    private IReadOnlyList<Waypoint> GetVisibleWaypoints() =>
+        _mapViewState is { Mode: MapViewMode.Cave } caveView
+            ? _waypoints
+                .Where(waypoint => MathF.Abs(waypoint.Position.Y - caveView.CaveY)
+                    <= CaveLayer.MarkerVerticalRange)
+                .ToArray()
+            : _waypoints;
 
     internal static CreatureMapMarkerKind ToCreatureMarkerKind(CreatureCategory category)
     {
@@ -1388,6 +1574,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private float GetTerrainBrightness() => _settings is { UseDayNightTint: true }
         ? DayNightBrightness.Calculate(TimeOfDay.TimeOfDay, _settings.NightMinimumBrightness)
         : 1f;
+
+    private float GetMapBrightness() => _mapViewState?.Mode == MapViewMode.Cave
+        ? 1f
+        : GetTerrainBrightness();
+
+    private float GetGameTime() => TimeOfDay.TimeOfDay;
 
     private void ShowMessage(TravelMapNotice notice)
     {
@@ -1461,8 +1653,11 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _settingsStore = null;
         _settings = null;
         _tileStore = null;
+        _caveStore = null;
         _explorationRecorder = null;
+        _caveSampler = null;
         _explorationCoverageProbe = null;
+        _mapViewState = null;
         _waypointRepository = null;
         _currentPositionWaypointHandler = null;
         _waypoints = Array.Empty<Waypoint>();
@@ -1558,7 +1753,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             RunCleanupStep(teleportButtonPressedTexture.Dispose);
         }
 
-        if (_tileStore is not null)
+        if (_tileStore is not null || _caveStore is not null)
         {
             var pendingFlushCompleted = true;
             RunCleanupStep(() => pendingFlushCompleted = _flushTask is null
@@ -1572,7 +1767,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 {
                     using var flushCancellation = new CancellationTokenSource(RemainingTime());
                     BoundedTaskObserver.ObserveWithin(
-                        _tileStore.FlushAsync(flushCancellation.Token),
+                        FlushMapStoresAsync(flushCancellation.Token),
                         RemainingTime(),
                         ReportShutdownFailure);
                 });

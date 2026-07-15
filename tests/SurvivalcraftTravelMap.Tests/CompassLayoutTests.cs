@@ -1,4 +1,5 @@
 using System.Numerics;
+using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
 using Xunit;
 
@@ -12,7 +13,7 @@ public sealed class CompassLayoutTests
         var labels = CompassLayout.Create(
             new Vector2(160f),
             rotationRadians: 0f,
-            CompassBoundaryShape.RoundedSquare,
+            MapShape.RoundedSquare,
             showNorth: true,
             showOtherDirections: true,
             fontScale: 1f,
@@ -32,7 +33,7 @@ public sealed class CompassLayoutTests
         var labels = CompassLayout.Create(
             new Vector2(160f),
             rotationRadians: -MathF.PI / 2f,
-            CompassBoundaryShape.RoundedSquare,
+            MapShape.RoundedSquare,
             showNorth: true,
             showOtherDirections: true,
             fontScale: 1f,
@@ -50,7 +51,7 @@ public sealed class CompassLayoutTests
         var northOnly = CompassLayout.Create(
             new Vector2(192f),
             rotationRadians: 0.42f,
-            CompassBoundaryShape.Circle,
+            MapShape.Circle,
             showNorth: true,
             showOtherDirections: false,
             fontScale: 1f,
@@ -58,7 +59,7 @@ public sealed class CompassLayoutTests
         var othersOnly = CompassLayout.Create(
             new Vector2(192f),
             rotationRadians: 0.42f,
-            CompassBoundaryShape.Circle,
+            MapShape.Circle,
             showNorth: false,
             showOtherDirections: true,
             fontScale: 1f,
@@ -66,7 +67,7 @@ public sealed class CompassLayoutTests
         var hidden = CompassLayout.Create(
             new Vector2(192f),
             rotationRadians: 0.42f,
-            CompassBoundaryShape.Circle,
+            MapShape.Circle,
             showNorth: false,
             showOtherDirections: false,
             fontScale: 1f,
@@ -89,7 +90,7 @@ public sealed class CompassLayoutTests
     [InlineData(384f)]
     public void Every_shape_and_supported_size_keeps_labels_inside_the_map(float size)
     {
-        foreach (var shape in Enum.GetValues<CompassBoundaryShape>())
+        foreach (var shape in Enum.GetValues<MapShape>())
         {
             for (var heading = 0; heading < 16; heading++)
             {
@@ -118,7 +119,7 @@ public sealed class CompassLayoutTests
         var south = CompassLayout.Create(
             new Vector2(160f),
             rotationRadians: 0f,
-            CompassBoundaryShape.Square,
+            MapShape.Square,
             showNorth: true,
             showOtherDirections: true,
             fontScale: 1f,

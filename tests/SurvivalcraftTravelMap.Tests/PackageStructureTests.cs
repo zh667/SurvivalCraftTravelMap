@@ -533,9 +533,11 @@ public sealed class PackageStructureTests
         AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"adjustMiniMapPosition\"");
         AssertCodeContains(settingsConstructor, "new ScrollPanelWidget");
         AssertCodeContains(settingsConstructor, "ScrollSpeed = 0f");
-        AssertCodeContains(settingsConstructor, "Text = \"完成\"");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"done\"");
         AssertCodeContains(settingsConstructor, "Size = new Vector2(120f, 40f)");
-        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(150f, 501f));");
+        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(280f, 501f));");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"resetSettings\"");
+        AssertCodeContains(settingsUpdate, "RequestResetConfirmation();");
         AssertCodeContains(settings, "public void RequestPersist() => _saveQueue.RequestSave();");
         AssertCodeContains(settingsUpdate, "RequestPersist();");
         AssertCodeContains(settingsUpdate, "_requestClose();");
@@ -1723,6 +1725,29 @@ internal static class PackageFixtures
         AddEntry(archive, new PackageEntry("Assets/TeleportButton.png", MinimalPng.Bytes));
         AddEntry(archive, new PackageEntry("Assets/TeleportButton_Pressed.png", MinimalPng.Bytes));
         AddEntry(archive, new PackageEntry("Assets/TeleportTo.png", MinimalPng.Bytes));
+        foreach (var language in new[]
+                 {
+                     "zh-CN",
+                     "en-US",
+                     "es-419",
+                     "pt-BR",
+                     "ro-RO",
+                     "ru-RU",
+                     "vi-VN",
+                 })
+        {
+            AddEntry(
+                archive,
+                new PackageEntry(
+                    $"Assets/Lang/{language}.json",
+                    File.ReadAllBytes(Path.Combine(
+                        TestPaths.RepositoryRoot,
+                        "src",
+                        "SurvivalcraftTravelMap",
+                        "Assets",
+                        "Lang",
+                        $"{language}.json"))));
+        }
 
         foreach (var entry in additionalEntries)
         {

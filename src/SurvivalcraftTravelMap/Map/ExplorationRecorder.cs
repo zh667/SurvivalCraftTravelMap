@@ -27,13 +27,21 @@ public sealed class ExplorationRecorder(
             coordinate.LocalX,
             coordinate.LocalZ,
             TerrainChunkCoordinate.Size,
-            TerrainChunkCoordinate.Size);
+            TerrainChunkCoordinate.Size)
+            && _tileStore.IsRegionFullyHeightShaded(
+                coordinate.TileX,
+                coordinate.TileZ,
+                coordinate.LocalX,
+                coordinate.LocalZ,
+                TerrainChunkCoordinate.Size,
+                TerrainChunkCoordinate.Size);
     }
 
     public ExplorationRecordResult RecordChunk(TerrainChunkCoordinate chunk)
     {
         Span<Rgba32> colors = stackalloc Rgba32[TerrainChunkCoordinate.PixelCount];
-        if (!_sampler.TrySampleChunk(chunk, colors))
+        Span<byte> heightShades = stackalloc byte[TerrainChunkCoordinate.PixelCount];
+        if (!_sampler.TrySampleChunk(chunk, colors, heightShades))
         {
             return ExplorationRecordResult.NotReady;
         }
@@ -54,7 +62,8 @@ public sealed class ExplorationRecorder(
                 coordinate.LocalZ,
                 TerrainChunkCoordinate.Size,
                 TerrainChunkCoordinate.Size,
-                colors);
+                colors,
+                heightShades);
         }
 
         return ExplorationRecordResult.Recorded;

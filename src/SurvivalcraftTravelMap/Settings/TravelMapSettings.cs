@@ -6,6 +6,13 @@ public enum MiniMapOrientation
     HeadingUp,
 }
 
+public enum MapShape
+{
+    Circle,
+    Square,
+    RoundedSquare,
+}
+
 public sealed class TravelMapSettings
 {
     private static readonly int[] MiniMapSizes = [160, 192, 256, 320, 384];
@@ -18,9 +25,13 @@ public sealed class TravelMapSettings
 
     public bool UseDayNightTint { get; set; } = true;
 
+    public bool UseHeightShading { get; set; } = true;
+
     public bool AcceptTeleportInvitations { get; set; } = true;
 
     public bool ShowCreatureMarkers { get; set; } = true;
+
+    public bool ShowLastDeathMarker { get; set; } = true;
 
     public float CreatureMarkerSize { get; set; } = 5f;
 
@@ -36,6 +47,10 @@ public sealed class TravelMapSettings
 
     public float? MiniMapAnchorY { get; set; }
 
+    public MapShape MiniMapShape { get; set; } = MapShape.RoundedSquare;
+
+    public bool ShowGameTime { get; set; } = true;
+
     public int MiniMapSize { get; set; } = 160;
 
     public float MiniMapBlocksPerPixel { get; set; } = 1f;
@@ -45,6 +60,38 @@ public sealed class TravelMapSettings
     public string LargeMapHotkey { get; set; } = "M";
 
     public float NightMinimumBrightness { get; set; } = 0.4f;
+
+    public static TravelMapSettings CreateDefaults()
+    {
+        var settings = new TravelMapSettings();
+        settings.Normalize();
+        return settings;
+    }
+
+    public void ResetPresentationToDefaults()
+    {
+        var defaults = CreateDefaults();
+        IsMiniMapVisible = defaults.IsMiniMapVisible;
+        ShowCoordinates = defaults.ShowCoordinates;
+        UseDayNightTint = defaults.UseDayNightTint;
+        UseHeightShading = defaults.UseHeightShading;
+        ShowCreatureMarkers = defaults.ShowCreatureMarkers;
+        ShowLastDeathMarker = defaults.ShowLastDeathMarker;
+        CreatureMarkerSize = defaults.CreatureMarkerSize;
+        MiniMapOrientation = defaults.MiniMapOrientation;
+        ShowCompassNorth = defaults.ShowCompassNorth;
+        ShowCompassOtherDirections = defaults.ShowCompassOtherDirections;
+        CompassFontScale = defaults.CompassFontScale;
+        MiniMapAnchorX = defaults.MiniMapAnchorX;
+        MiniMapAnchorY = defaults.MiniMapAnchorY;
+        MiniMapShape = defaults.MiniMapShape;
+        ShowGameTime = defaults.ShowGameTime;
+        MiniMapSize = defaults.MiniMapSize;
+        MiniMapBlocksPerPixel = defaults.MiniMapBlocksPerPixel;
+        LargeMapBlocksPerPixel = defaults.LargeMapBlocksPerPixel;
+        LargeMapHotkey = defaults.LargeMapHotkey;
+        NightMinimumBrightness = defaults.NightMinimumBrightness;
+    }
 
     public void Normalize()
     {
@@ -58,6 +105,11 @@ public sealed class TravelMapSettings
         if (!Enum.IsDefined(MiniMapOrientation))
         {
             MiniMapOrientation = MiniMapOrientation.NorthUp;
+        }
+
+        if (!Enum.IsDefined(MiniMapShape))
+        {
+            MiniMapShape = MapShape.RoundedSquare;
         }
 
         LargeMapHotkey = "M";

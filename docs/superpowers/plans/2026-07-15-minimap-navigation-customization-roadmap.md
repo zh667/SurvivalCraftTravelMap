@@ -41,7 +41,7 @@ New presentation defaults:
 | `ShowCompassOtherDirections` | `true` | Boolean |
 | `CompassFontScale` | `1.0` | `0.5..2.0` |
 | `MiniMapAnchorX/Y` | top-right default | finite normalized values clamped to GUI |
-| `MiniMapShape` | `RoundedSquare` | Circle/Square/Hexagon/RoundedSquare |
+| `MiniMapShape` | `RoundedSquare` | Circle/Square/RoundedSquare |
 | `ShowGameTime` | `true` | Boolean |
 
 Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPresentationToDefaults()` source rather than duplicating literal values in the widget.
@@ -115,14 +115,14 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 **Architecture**
 
 - Use the shared rotation transform from phase 2.
-- Add a pure `CompassLayout` that intersects world direction rays with circle, square, hexagon, or rounded-square boundaries.
+- Add a pure `CompassLayout` that intersects world direction rays with circle, square, or rounded-square boundaries.
 - Reserve coordinate/time overlay space so labels do not overlap them.
 
 **Acceptance**
 
 - Direction positions are correct in both orientation modes.
 - North-only produces exactly one direction label.
-- Labels remain inside all four map shapes and at every supported map size.
+- Labels remain inside all three map shapes and at every supported map size.
 
 ## Phase 4 — Movable minimap
 
@@ -151,9 +151,9 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 
 **Behavior**
 
-- Add Circle, Square, Hexagon, and Rounded Square.
+- Add Circle, Square, and Rounded Square to the minimap; the large map keeps its rectangular viewport.
 - Clip terrain and every overlay consistently; border follows the selected shape.
-- Apply the selected shape to the minimap and the large-map viewport, matching the reference feature.
+- Keep the large-map viewport rectangular so circle selection does not add an inner ring or waste map space.
 
 **Architecture**
 
@@ -163,7 +163,7 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 
 **Acceptance**
 
-- No terrain, boundary line, waypoint, creature, player marker, compass, or input leaks beyond the shape.
+- No minimap terrain, boundary line, waypoint, creature, player marker, compass, or input leaks beyond the shape.
 - Shape changes preserve center and zoom.
 - Large-map drag and right-click remain accurate at visible edges.
 
@@ -211,7 +211,7 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 
 **Architecture**
 
-- Add a pure gesture state machine (`Idle`, `Dragging`, `Pinching`) fed by normalized touch samples.
+- Add a pure gesture state machine (`Idle`, `Dragging`, `Pinching`, `AwaitingRelease`) fed by normalized touch samples.
 - Reuse the existing `TravelMapUiController` pan/zoom commands.
 - Retain mouse wheel, left drag, right-click context menu, keyboard M, Cancel and Back behavior.
 
@@ -279,7 +279,7 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 
 - UI scale: `0.75`, `1.0`, `1.25`.
 - Minimap size: `160`, `192`, `256`, `320`, `384`.
-- Shape: all four.
+- Shape: all three.
 - Orientation: north-up and heading-up.
 - Input: mouse, keyboard, one-touch drag, two-touch pinch.
 - Runtime: single-player/integrated host and remote client.

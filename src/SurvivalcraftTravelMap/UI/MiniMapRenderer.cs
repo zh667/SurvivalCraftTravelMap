@@ -17,6 +17,8 @@ internal enum MapTextAlignment
 {
     Default,
     BottomLeft,
+    BottomCenter,
+    BottomRight,
     Center,
 }
 
@@ -59,11 +61,12 @@ internal static class MiniMapTextRenderer
         string text,
         NVector2 position,
         Rgba32 color,
-        float scale) => queue.QueueText(
+        float scale,
+        MapTextAlignment alignment = MapTextAlignment.BottomLeft) => queue.QueueText(
             text,
             position,
             color,
-            MapTextAlignment.BottomLeft,
+            alignment,
             scale);
 
     public static void QueueCompassLabel(
@@ -142,8 +145,10 @@ internal static class MiniMapVisualStyle
         return primitives;
     }
 
-    public static MapCoordinateBackdropPrimitive CreateCoordinateBackdrop(NVector2 size) => new(
-        new NVector2(0f, MathF.Max(0f, size.Y - CoordinateStripHeight)),
+    public static MapCoordinateBackdropPrimitive CreateCoordinateBackdrop(
+        NVector2 size,
+        float height = CoordinateStripHeight) => new(
+        new NVector2(0f, MathF.Max(0f, size.Y - MathF.Max(0f, height))),
         size,
         TravelMapPalette.MiniMapCoordinateBackdrop);
 
@@ -192,6 +197,7 @@ internal enum MapSurfacePrimitiveKind
     ExplorationBoundary,
     Player,
     Waypoint,
+    DeathMarker,
     Creature,
     CoordinateBackdrop,
     SurveyCrosshair,
@@ -222,6 +228,13 @@ internal interface IMapSurfacePrimitiveQueue
         Rgba32 color);
 
     void QueueTriangle(MapSurfacePrimitiveKind kind, MapPlayerPrimitive primitive);
+
+    void QueueTriangle(
+        MapSurfacePrimitiveKind kind,
+        NVector2 point1,
+        NVector2 point2,
+        NVector2 point3,
+        Rgba32 color);
 
     void QueueDisc(
         MapSurfacePrimitiveKind kind,
@@ -270,16 +283,21 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     private readonly Func<PlayerMapPose> _playerPose;
     private readonly Func<IReadOnlyList<Waypoint>> _waypoints;
     private readonly Func<IReadOnlyList<CreatureMapMarker>> _creatures;
+    private readonly Func<DeathMapMarker?> _lastDeath;
     private readonly Func<float> _brightness;
     private readonly BitmapFont _font;
     private IMapSurfacePrimitiveQueue? _primitiveQueue;
+    private IMapSurfacePrimitiveQueue? _frameQueue;
     private IMapFontQueue? _mapFontQueue;
+    private MapShapeGeometry? _shapeGeometry;
     private Engine.Matrix _drawTransform;
     private MapTransform _drawMapTransform;
     private NVector2? _labelPointer;
     private IReadOnlyList<Waypoint> _drawWaypoints = Array.Empty<Waypoint>();
     private (int X, int Y, int Z) _lastCoordinate;
     private string _coordinateText = string.Empty;
+    private int _lastGameMinute = -1;
+    private string _gameTimeText = string.Empty;
 
     public MapSurfaceWidget(
         IExploredMapPixelSource pixelSource,
@@ -287,7 +305,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<float> brightness)
-        : this(pixelSource, settings, playerPose, waypoints, () => [], brightness, font: null)
+        : this(pixelSource, settings, playerPose, waypoints, () => [], () => null, brightness, font: null)
     {
     }
 
@@ -298,7 +316,19 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<IReadOnlyList<CreatureMapMarker>> creatures,
         Func<float> brightness)
-        : this(pixelSource, settings, playerPose, waypoints, creatures, brightness, font: null)
+        : this(pixelSource, settings, playerPose, waypoints, creatures, () => null, brightness, font: null)
+    {
+    }
+
+    public MapSurfaceWidget(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
+        Func<DeathMapMarker?> lastDeath,
+        Func<float> brightness)
+        : this(pixelSource, settings, playerPose, waypoints, creatures, lastDeath, brightness, font: null)
     {
     }
 
@@ -309,7 +339,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<float> brightness,
         BitmapFont? font)
-        : this(pixelSource, settings, playerPose, waypoints, () => [], brightness, font)
+        : this(pixelSource, settings, playerPose, waypoints, () => [], () => null, brightness, font)
     {
     }
 
@@ -319,6 +349,19 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<IReadOnlyList<CreatureMapMarker>> creatures,
+        Func<float> brightness,
+        BitmapFont? font)
+        : this(pixelSource, settings, playerPose, waypoints, creatures, () => null, brightness, font)
+    {
+    }
+
+    internal MapSurfaceWidget(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
+        Func<DeathMapMarker?> lastDeath,
         Func<float> brightness,
         BitmapFont? font)
     {
@@ -327,6 +370,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         _playerPose = playerPose ?? throw new ArgumentNullException(nameof(playerPose));
         _waypoints = waypoints ?? throw new ArgumentNullException(nameof(waypoints));
         _creatures = creatures ?? throw new ArgumentNullException(nameof(creatures));
+        _lastDeath = lastDeath ?? throw new ArgumentNullException(nameof(lastDeath));
         _brightness = brightness ?? throw new ArgumentNullException(nameof(brightness));
         _font = font ?? ContentManager.Get<BitmapFont>("Fonts/Pericles");
         IsDrawRequired = true;
@@ -337,10 +381,9 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public bool ApplyConfiguredMiniMapOrientation { get; set; }
 
-    public bool ShowCompassOverlay { get; set; }
+    public bool ApplyConfiguredMiniMapShape { get; set; }
 
-    internal CompassBoundaryShape CompassBoundaryShape { get; set; } =
-        CompassBoundaryShape.RoundedSquare;
+    public bool ShowCompassOverlay { get; set; }
 
     public bool ShowWaypointLabels { get; set; }
 
@@ -349,6 +392,12 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     public bool ShowFrameShadow { get; set; }
 
     public bool ShowCoordinateBackdrop { get; set; }
+
+    public Func<float> GameTimeProvider { get; set; } = static () => 0f;
+
+    public bool ShowMapInformation { get; set; } = true;
+
+    public bool PlaceMapInformationBelowSurface { get; set; }
 
     public bool UseCompactCoordinates { get; set; }
 
@@ -371,6 +420,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         MiniMapVisualStyle.FrameShadowAlpha);
 
     public float PlayerArrowSize { get; set; } = 32f;
+
+    public float DeathMarkerSize { get; set; } = 16f;
 
     public NVector2? LabelPointer
     {
@@ -401,6 +452,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public Waypoint? HitWaypoint(NVector2 localPosition, float hitRadius = 12f)
     {
+        if (!ContainsLocalPoint(localPosition))
+        {
+            return null;
+        }
+
         var waypoints = _waypoints();
         Waypoint? nearest = null;
         var nearestDistanceSquared = hitRadius * hitRadius;
@@ -418,6 +474,38 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         return nearest;
     }
 
+    public DeathMapMarker? HitLastDeath(NVector2 localPosition, float hitRadius = 16f)
+    {
+        if (!_settings.ShowLastDeathMarker || !ContainsLocalPoint(localPosition))
+        {
+            return null;
+        }
+
+        var marker = _lastDeath();
+        if (marker is null)
+        {
+            return null;
+        }
+
+        var projection = ProjectLastDeath(marker, hitRadius);
+        return NVector2.DistanceSquared(localPosition, projection.Position) <= hitRadius * hitRadius
+            ? marker
+            : null;
+    }
+
+    internal DeathMarkerProjection ProjectLastDeath(DeathMapMarker marker, float inset = 16f) =>
+        DeathMarkerTracking.Project(
+            Transform,
+            GetSurfaceViewportSize(),
+            EffectiveMapShape,
+            new NVector2(marker.Position.X, marker.Position.Z),
+            inset);
+
+    public bool ContainsLocalPoint(NVector2 localPosition) =>
+        MapShapeGeometry.Create(
+            GetSurfaceViewportSize(),
+            EffectiveMapShape).ContainsPoint(localPosition);
+
     public override void MeasureOverride(Engine.Vector2 parentAvailableSize)
     {
         DesiredSize = new Engine.Vector2(float.PositiveInfinity);
@@ -426,7 +514,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public override void Draw(DrawContext dc)
     {
-        var viewport = new NVector2(ActualSize.X, ActualSize.Y);
+        var viewport = GetSurfaceViewportSize();
         if (viewport.X <= 0f || viewport.Y <= 0f)
         {
             return;
@@ -478,8 +566,10 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             RotationRadians = rotation,
         };
         _drawMapTransform = Transform;
-        _primitiveQueue = context.PrimitiveQueue
+        _frameQueue = context.PrimitiveQueue
             ?? throw new ArgumentNullException(nameof(context));
+        _shapeGeometry = MapShapeGeometry.Create(viewport, EffectiveMapShape);
+        _primitiveQueue = new ShapeClippedPrimitiveQueue(_frameQueue, _shapeGeometry);
         _mapFontQueue = context.FontQueue;
         _primitiveQueue.QueueQuad(
             MapSurfacePrimitiveKind.Background,
@@ -488,7 +578,12 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             new Rgba32(BackgroundColor.R, BackgroundColor.G, BackgroundColor.B, 224));
 
         var terrainBrightness = _settings.UseDayNightTint ? _brightness() : 1f;
-        TravelMapRenderModel.RenderTerrain(_pixelSource, Transform, terrainBrightness, this);
+        TravelMapRenderModel.RenderTerrain(
+            _pixelSource,
+            Transform,
+            terrainBrightness,
+            this,
+            _settings.UseHeightShading);
         _drawWaypoints = _waypoints();
         DrawCreatureMarkers();
         TravelMapRenderModel.RenderOverlays(
@@ -498,26 +593,25 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 PlayerArrowSize,
                 _drawWaypoints,
                 _settings.ShowCoordinates,
-                PlayerMarkerColor),
+                PlayerMarkerColor)
+            {
+                LastDeath = _settings.ShowLastDeathMarker ? _lastDeath() : null,
+            },
             this);
+        DrawBottomOverlayBackdrop();
+        DrawGameTime();
         DrawCompass();
         if (ShowSurveyCrosshair)
         {
             QueueSurveyCrosshair(Transform.WorldToScreen(new NVector2(pose.Position.X, pose.Position.Z)));
         }
 
-        foreach (var primitive in MiniMapVisualStyle.CreateFramePrimitives(
-                     viewport,
-                     ShowFrameShadow,
-                     FrameThickness,
-                     FrameShadowColor,
-                     FrameColor))
-        {
-            _primitiveQueue.QueueRectangle(primitive);
-        }
+        QueueShapeFrame(viewport);
 
         _primitiveQueue = null;
+        _frameQueue = null;
         _mapFontQueue = null;
+        _shapeGeometry = null;
         _drawWaypoints = Array.Empty<Waypoint>();
     }
 
@@ -581,6 +675,95 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         }
     }
 
+    public void LastDeath(DeathMapMarker marker, Rgba32 color)
+    {
+        var radius = Math.Clamp(DeathMarkerSize * 0.38f, 4.5f, 7f);
+        var projection = DeathMarkerTracking.Project(
+            _drawMapTransform,
+            GetSurfaceViewportSize(),
+            EffectiveMapShape,
+            new NVector2(marker.Position.X, marker.Position.Z),
+            radius + 6f);
+        var center = projection.Position;
+
+        var queue = _primitiveQueue!;
+        var outline = TravelMapPalette.DeathMarkerOutline;
+        var bone = color;
+
+        if (projection.IsOffscreen)
+        {
+            var side = new NVector2(-projection.Direction.Y, projection.Direction.X);
+            var tip = center + (projection.Direction * (radius + 5f));
+            queue.QueueTriangle(
+                MapSurfacePrimitiveKind.DeathMarker,
+                tip,
+                center - (projection.Direction * 2f) + (side * 4f),
+                center - (projection.Direction * 2f) - (side * 4f),
+                outline);
+        }
+
+        // Crossbones sit behind the head and keep the symbol recognizable at minimap scale.
+        queue.QueueLine(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(-radius - 3f, -radius - 3f),
+            center + new NVector2(radius + 3f, radius + 3f),
+            outline);
+        queue.QueueLine(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(radius + 3f, -radius - 3f),
+            center + new NVector2(-radius - 3f, radius + 3f),
+            outline);
+        queue.QueueDisc(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(0f, -1.5f),
+            radius + 1.5f,
+            outline,
+            segments: 16);
+        queue.QueueDisc(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(0f, -1.5f),
+            radius,
+            bone,
+            segments: 16);
+        queue.QueueQuad(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(-radius * 0.55f, radius * 0.3f),
+            center + new NVector2(radius * 0.55f, radius + 2f),
+            bone);
+        queue.QueueDisc(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(-radius * 0.38f, -radius * 0.2f),
+            MathF.Max(1.3f, radius * 0.22f),
+            outline,
+            segments: 8);
+        queue.QueueDisc(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(radius * 0.38f, -radius * 0.2f),
+            MathF.Max(1.3f, radius * 0.22f),
+            outline,
+            segments: 8);
+        queue.QueueTriangle(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(0f, radius * 0.05f),
+            center + new NVector2(-1.3f, radius * 0.32f),
+            center + new NVector2(1.3f, radius * 0.32f),
+            outline);
+        queue.QueueLine(
+            MapSurfacePrimitiveKind.DeathMarker,
+            center + new NVector2(0f, radius * 0.42f),
+            center + new NVector2(0f, radius + 1.5f),
+            outline);
+
+        if (ShowWaypointLabels && _mapFontQueue is not null)
+        {
+            MiniMapTextRenderer.QueueWaypointLabel(
+                _mapFontQueue,
+                TravelMapText.Get("lastDeathLocation", "上次死亡地点"),
+                center + new NVector2(radius + 6f, -radius - 3f),
+                TravelMapPalette.SnowText);
+        }
+    }
+
     private void DrawCreatureMarkers()
     {
         if (!_settings.ShowCreatureMarkers)
@@ -617,7 +800,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public void Label(string text, NVector3 worldPosition, Rgba32 color)
     {
-        if (!_settings.ShowCoordinates)
+        if (!ShowMapInformation || !_settings.ShowCoordinates)
         {
             return;
         }
@@ -631,27 +814,54 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 : TravelMapRenderModel.FormatCoordinates(worldPosition);
         }
 
-        if (ShowCoordinateBackdrop)
+        var viewport = _drawMapTransform.ViewportSize;
+        if (PlaceMapInformationBelowSurface)
         {
-            var backdrop = MiniMapVisualStyle.CreateCoordinateBackdrop(
-                new NVector2(ActualSize.X, ActualSize.Y));
-            _primitiveQueue!.QueueQuad(
-                MapSurfacePrimitiveKind.CoordinateBackdrop,
-                backdrop.Minimum,
-                backdrop.Maximum,
-                backdrop.Color);
+            MiniMapTextRenderer.QueueCoordinates(
+                _mapFontQueue!,
+                _coordinateText,
+                new NVector2(8f, viewport.Y + MiniMapRenderer.InformationSecondLineBaseline),
+                color,
+                CoordinateTextScale,
+                MapTextAlignment.BottomLeft);
+            return;
+        }
+
+        var centered = EffectiveMapShape == MapShape.Circle;
+        var coordinatePosition = centered
+            ? new NVector2(viewport.X / 2f, viewport.Y * 0.78f)
+            : new NVector2(10f, viewport.Y - 12f);
+        var coordinateScale = CoordinateTextScale;
+        if (centered && _shapeGeometry is not null)
+        {
+            var availableWidth = MathF.Max(1f, _shapeGeometry.HorizontalSpanAt(coordinatePosition.Y - 6f) - 12f);
+            var estimatedWidth = MathF.Max(1f, _coordinateText.Length * 8f * coordinateScale);
+            coordinateScale *= MathF.Min(1f, availableWidth / estimatedWidth);
         }
 
         MiniMapTextRenderer.QueueCoordinates(
             _mapFontQueue!,
             _coordinateText,
-            new NVector2(10f, ActualSize.Y - 12f),
+            coordinatePosition,
             color,
-            CoordinateTextScale);
+            coordinateScale,
+            centered ? MapTextAlignment.BottomCenter : MapTextAlignment.BottomLeft);
     }
 
     private bool ShouldDrawWaypointLabel(Waypoint waypoint, NVector2 position)
     {
+        var labelAnchor = position + new NVector2(9f, -9f);
+        var estimatedWidth = MathF.Max(24f, waypoint.Name.Length * 12f * TravelMapTypography.SecondaryLabelScale);
+        const float estimatedHeight = 18f;
+        if (_shapeGeometry is null
+            || !_shapeGeometry.ContainsPoint(labelAnchor)
+            || !_shapeGeometry.ContainsPoint(labelAnchor + new NVector2(estimatedWidth, 0f))
+            || !_shapeGeometry.ContainsPoint(labelAnchor + new NVector2(0f, estimatedHeight))
+            || !_shapeGeometry.ContainsPoint(labelAnchor + new NVector2(estimatedWidth, estimatedHeight)))
+        {
+            return false;
+        }
+
         var pointer = _labelPointer ?? (_drawMapTransform.ViewportSize / 2f);
         var pointerDistance = NVector2.DistanceSquared(position, pointer);
         foreach (var other in _drawWaypoints)
@@ -683,13 +893,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             return;
         }
 
-        var bottomReservedHeight = _settings.ShowCoordinates && ShowCoordinateBackdrop
-            ? MiniMapVisualStyle.CoordinateStripHeight
-            : 0f;
+        var bottomReservedHeight = GetBottomOverlayHeight();
         foreach (var label in CompassLayout.Create(
                      _drawMapTransform.ViewportSize,
                      _drawMapTransform.RotationRadians,
-                     CompassBoundaryShape,
+                     EffectiveMapShape,
                      _settings.ShowCompassNorth,
                      _settings.ShowCompassOtherDirections,
                      _settings.CompassFontScale,
@@ -719,6 +927,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 alignment switch
                 {
                     MapTextAlignment.BottomLeft => TextAnchor.Bottom | TextAnchor.Left,
+                    MapTextAlignment.BottomCenter => TextAnchor.Bottom | TextAnchor.HorizontalCenter,
+                    MapTextAlignment.BottomRight => TextAnchor.Bottom | TextAnchor.Right,
                     MapTextAlignment.Center => TextAnchor.HorizontalCenter | TextAnchor.VerticalCenter,
                     _ => TextAnchor.Default,
                 },
@@ -791,6 +1001,22 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 ToEngine(primitive.Right),
                 0f,
                 ToEngineColor(primitive.Color));
+        }
+
+        public void QueueTriangle(
+            MapSurfacePrimitiveKind kind,
+            NVector2 point1,
+            NVector2 point2,
+            NVector2 point3,
+            Rgba32 color)
+        {
+            EnsureCapacity(additionalTriangleVertices: 3, additionalLineVertices: 0);
+            batch.QueueTriangle(
+                ToEngine(point1),
+                ToEngine(point2),
+                ToEngine(point3),
+                0f,
+                ToEngineColor(color));
         }
 
         public void QueueDisc(
@@ -895,30 +1121,155 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             TravelMapPalette.SurveyCyan);
     }
 
+    private void DrawBottomOverlayBackdrop()
+    {
+        var height = GetBottomOverlayHeight();
+        if (!ShowCoordinateBackdrop || height <= 0f)
+        {
+            return;
+        }
+
+        var backdrop = MiniMapVisualStyle.CreateCoordinateBackdrop(
+            _drawMapTransform.ViewportSize,
+            height);
+        _primitiveQueue!.QueueQuad(
+            MapSurfacePrimitiveKind.CoordinateBackdrop,
+            backdrop.Minimum,
+            backdrop.Maximum,
+            backdrop.Color);
+    }
+
+    private void DrawGameTime()
+    {
+        if (!ShowMapInformation || !_settings.ShowGameTime || _mapFontQueue is null)
+        {
+            return;
+        }
+
+        var minute = GameTimeFormatter.GetDisplayedMinute(GameTimeProvider());
+        if (minute != _lastGameMinute || _gameTimeText.Length == 0)
+        {
+            _lastGameMinute = minute;
+            _gameTimeText = GameTimeFormatter.FormatMinute(minute);
+        }
+
+        var viewport = _drawMapTransform.ViewportSize;
+        if (PlaceMapInformationBelowSurface)
+        {
+            _mapFontQueue.QueueText(
+                _gameTimeText,
+                new NVector2(8f, viewport.Y + MiniMapRenderer.InformationFirstLineBaseline),
+                TravelMapPalette.SnowText,
+                MapTextAlignment.BottomLeft,
+                CoordinateTextScale);
+            return;
+        }
+
+        var centered = EffectiveMapShape == MapShape.Circle;
+        var hasCoordinates = _settings.ShowCoordinates;
+        var position = centered
+            ? new NVector2(viewport.X / 2f, viewport.Y * (hasCoordinates ? 0.66f : 0.78f))
+            : new NVector2(viewport.X - 10f, viewport.Y - (UseCompactCoordinates && hasCoordinates ? 30f : 12f));
+        _mapFontQueue.QueueText(
+            _gameTimeText,
+            position,
+            TravelMapPalette.SnowText,
+            centered ? MapTextAlignment.BottomCenter : MapTextAlignment.BottomRight,
+            CoordinateTextScale);
+    }
+
+    private float GetBottomOverlayHeight()
+    {
+        if (PlaceMapInformationBelowSurface
+            || !ShowMapInformation
+            || !ShowCoordinateBackdrop
+            || (!_settings.ShowCoordinates && !_settings.ShowGameTime))
+        {
+            return 0f;
+        }
+
+        return UseCompactCoordinates && _settings.ShowCoordinates && _settings.ShowGameTime
+            ? MiniMapVisualStyle.CoordinateStripHeight * 2f
+            : MiniMapVisualStyle.CoordinateStripHeight;
+    }
+
     private bool IsInside(NVector2 point, float margin) =>
-        point.X >= -margin
-        && point.Y >= -margin
-        && point.X <= ActualSize.X + margin
-        && point.Y <= ActualSize.Y + margin;
+        _shapeGeometry?.IntersectsDisc(point, margin) ?? false;
 
     private bool IsInsideViewport(NVector2 point, float margin) =>
-        point.X >= margin
-        && point.Y >= margin
-        && point.X <= _drawMapTransform.ViewportSize.X - margin
-        && point.Y <= _drawMapTransform.ViewportSize.Y - margin;
+        _shapeGeometry?.ContainsPoint(point, margin) ?? false;
+
+    private void QueueShapeFrame(NVector2 viewport)
+    {
+        if (_frameQueue is null)
+        {
+            return;
+        }
+
+        if (EffectiveMapShape == MapShape.Square)
+        {
+            foreach (var primitive in MiniMapVisualStyle.CreateFramePrimitives(
+                         viewport,
+                         ShowFrameShadow,
+                         FrameThickness,
+                         FrameShadowColor,
+                         FrameColor))
+            {
+                _frameQueue.QueueRectangle(primitive);
+            }
+
+            return;
+        }
+
+        if (ShowFrameShadow)
+        {
+            QueueBoundary(MapSurfacePrimitiveKind.FrameShadow, 0.5f, FrameShadowColor);
+        }
+
+        var frameCount = Math.Max(1, (int)MathF.Ceiling(FrameThickness));
+        for (var index = 0; index < frameCount; index++)
+        {
+            QueueBoundary(MapSurfacePrimitiveKind.Frame, 1.5f + index, FrameColor);
+        }
+    }
+
+    private void QueueBoundary(MapSurfacePrimitiveKind kind, float inset, Rgba32 color)
+    {
+        var geometry = MapShapeGeometry.Create(
+            _drawMapTransform.ViewportSize,
+            EffectiveMapShape,
+            inset);
+        var vertices = geometry.BoundaryVertices;
+        for (var index = 0; index < vertices.Count; index++)
+        {
+            _frameQueue!.QueueLine(kind, vertices[index], vertices[(index + 1) % vertices.Count], color);
+        }
+    }
 
     private static Engine.Vector2 ToEngine(NVector2 value) => new(value.X, value.Y);
+
+    protected virtual NVector2 GetSurfaceViewportSize() => new(ActualSize.X, ActualSize.Y);
+
+    private MapShape EffectiveMapShape => ApplyConfiguredMiniMapShape
+        ? _settings.MiniMapShape
+        : MapShape.Square;
 
     private static Color ToEngineColor(Rgba32 color) => new(color.R, color.G, color.B, color.A);
 }
 
 public sealed class MiniMapRenderer : MapSurfaceWidget
 {
+    public const float InformationFooterHeight = 42f;
+    public const float InformationFirstLineBaseline = 18f;
+    public const float InformationSecondLineBaseline = 38f;
+
     private readonly TravelMapSettings _settings;
     private readonly Func<bool> _inputBlocked;
     private readonly Action _requestOpenLargeMap;
+    private readonly Action<DeathMapMarker> _requestLocateLastDeath;
     private readonly MiniMapWheelInteraction _wheelInteraction;
     private readonly TravelMapUiController _uiController = new();
+    private readonly MiniMapTouchTapState _touchTap = new();
 
     public MiniMapRenderer(
         IExploredMapPixelSource pixelSource,
@@ -954,20 +1305,54 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         Func<float> brightness,
         Func<bool> inputBlocked,
         Action requestOpenLargeMap,
-        Action<string> notify)
-        : base(pixelSource, settings, playerPose, waypoints, creatures, brightness)
+        Action<string> notify,
+        Action<DeathMapMarker>? requestLocateLastDeath = null)
+        : this(
+            pixelSource,
+            settings,
+            settingsStore,
+            playerPose,
+            waypoints,
+            creatures,
+            () => null,
+            brightness,
+            inputBlocked,
+            requestOpenLargeMap,
+            notify,
+            requestLocateLastDeath)
+    {
+    }
+
+    public MiniMapRenderer(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        TravelMapSettingsStore settingsStore,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
+        Func<DeathMapMarker?> lastDeath,
+        Func<float> brightness,
+        Func<bool> inputBlocked,
+        Action requestOpenLargeMap,
+        Action<string> notify,
+        Action<DeathMapMarker>? requestLocateLastDeath = null)
+        : base(pixelSource, settings, playerPose, waypoints, creatures, lastDeath, brightness)
     {
         _settings = settings;
         ArgumentNullException.ThrowIfNull(settingsStore);
         _inputBlocked = inputBlocked ?? throw new ArgumentNullException(nameof(inputBlocked));
         _requestOpenLargeMap = requestOpenLargeMap ?? throw new ArgumentNullException(nameof(requestOpenLargeMap));
+        _requestLocateLastDeath = requestLocateLastDeath ?? (_ => _requestOpenLargeMap());
         ArgumentNullException.ThrowIfNull(notify);
         _wheelInteraction = new MiniMapWheelInteraction(
             settings,
             token => settingsStore.SaveAsync(settings, token),
-            _ => notify("小地图比例未能保存，本次会话将保留当前值"));
+            _ => notify(TravelMapText.Get(
+                "miniMapZoomSaveFailedSession",
+                "小地图比例未能保存，本次会话将保留当前值")));
         AutoCenterOnPlayer = true;
         ApplyConfiguredMiniMapOrientation = true;
+        ApplyConfiguredMiniMapShape = true;
         ShowCompassOverlay = true;
         PlayerMarkerColor = TravelMapPalette.MiniMapPlayer;
         BackgroundColor = TravelMapPalette.MiniMapBackground;
@@ -977,8 +1362,10 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         ShowFrameShadow = true;
         ShowWaypointLabels = false;
         ShowCoordinateBackdrop = true;
+        PlaceMapInformationBelowSurface = true;
         UseCompactCoordinates = true;
         DrawPlayerOutline = true;
+        DeathMarkerSize = 13f;
         CoordinateTextScale = TravelMapTypography.MiniMapCoordinateScale;
         FrameThickness = MiniMapVisualStyle.FrameThickness;
         Transform = new MapTransform(NVector2.Zero, settings.MiniMapBlocksPerPixel, NVector2.One);
@@ -987,34 +1374,52 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
     public override void MeasureOverride(Engine.Vector2 parentAvailableSize)
     {
         var size = _settings.MiniMapSize;
-        DesiredSize = new Engine.Vector2(size, size);
+        DesiredSize = new Engine.Vector2(size, size + InformationFooterHeight);
         PlayerArrowSize = TravelMapRenderModel.MiniMapPlayerArrowSize(size);
         Transform = Transform with { BlocksPerPixel = _settings.MiniMapBlocksPerPixel };
         IsDrawRequired = true;
     }
 
+    protected override NVector2 GetSurfaceViewportSize() =>
+        new(_settings.MiniMapSize, _settings.MiniMapSize);
+
     public override void Update()
     {
+        if (!IsVisible || _inputBlocked())
+        {
+            _touchTap.Reset();
+            return;
+        }
+
+        if (HandleTouchActivation())
+        {
+            return;
+        }
+
         var pointer = Input.MousePosition;
-        if (!IsVisible || !pointer.HasValue)
+        if (!pointer.HasValue)
         {
             return;
         }
 
         var localEngine = ScreenToWidget(pointer.Value);
         var local = new NVector2(localEngine.X, localEngine.Y);
-        var hovered = local.X >= 0f
-            && local.Y >= 0f
-            && local.X <= ActualSize.X
-            && local.Y <= ActualSize.Y;
-        var inputBlocked = _inputBlocked();
+        var hovered = ContainsLocalPoint(local);
         var activation = _uiController.HandleMiniMapActivation(
             Input.IsMouseButtonDownOnce(MouseButton.Left),
             hovered,
-            inputBlocked);
+            inputBlocked: false);
         if (activation.Kind == TravelMapUiCommandKind.OpenLargeMap)
         {
-            _requestOpenLargeMap();
+            var death = HitLastDeath(local);
+            if (death is not null)
+            {
+                _requestLocateLastDeath(death);
+            }
+            else
+            {
+                _requestOpenLargeMap();
+            }
             Input.Clear();
             return;
         }
@@ -1025,11 +1430,52 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
             local,
             Input.MouseWheelMovement / 120f,
             hovered,
-            inputBlocked);
+            inputBlocked: false);
         if (Transform != before)
         {
             Input.Clear();
         }
+    }
+
+    private bool HandleTouchActivation()
+    {
+        var consumed = false;
+        for (var index = 0; index < Input.TouchLocations.Count; index++)
+        {
+            var touch = Input.TouchLocations[index];
+            var localEngine = ScreenToWidget(touch.Position);
+            var local = new NVector2(localEngine.X, localEngine.Y);
+            var phase = touch.State switch
+            {
+                TouchLocationState.Pressed => MiniMapTouchPhase.Pressed,
+                TouchLocationState.Moved => MiniMapTouchPhase.Moved,
+                TouchLocationState.Released => MiniMapTouchPhase.Released,
+                _ => MiniMapTouchPhase.Moved,
+            };
+            var update = _touchTap.Update(
+                touch.Id,
+                local,
+                phase,
+                ContainsLocalPoint(local),
+                dragThreshold: 12f * MathF.Max(1f, GlobalScale));
+            consumed |= update.Consumed;
+            if (update.Activate)
+            {
+                var death = HitLastDeath(local);
+                if (death is not null)
+                {
+                    _requestLocateLastDeath(death);
+                }
+                else
+                {
+                    _requestOpenLargeMap();
+                }
+                Input.Clear();
+                return true;
+            }
+        }
+
+        return consumed;
     }
 
     internal Task WhenSaveIdleAsync(CancellationToken cancellationToken = default) =>

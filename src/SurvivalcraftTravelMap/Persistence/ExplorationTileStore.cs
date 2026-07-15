@@ -204,6 +204,46 @@ public sealed class ExplorationTileStore
         return tile.IsRegionFullyExplored(x, z, width, height);
     }
 
+    public bool IsRegionFullyHeightShaded(
+        int tileX,
+        int tileZ,
+        int x,
+        int z,
+        int width,
+        int height)
+    {
+        MapTile.ValidateRegion(x, z, width, height);
+        var key = new TileKey(tileX, tileZ);
+        MapTile tile;
+        lock (_sync)
+        {
+            if (!_knownTiles.Contains(key))
+            {
+                return false;
+            }
+
+            if (_cache.TryGetValue(key, out var cached))
+            {
+                Touch(cached);
+                tile = cached.Tile;
+            }
+            else
+            {
+                if (!MakeRoomForNewEntry())
+                {
+                    return false;
+                }
+
+                tile = Load(key);
+                var node = _lru.AddFirst(key);
+                _cache.Add(key, new CacheEntry(tile, node));
+                TrimCleanEntries();
+            }
+        }
+
+        return tile.IsRegionFullyHeightShaded(x, z, width, height);
+    }
+
     public MapTile GetOrLoad(int tileX, int tileZ)
     {
         var key = new TileKey(tileX, tileZ);

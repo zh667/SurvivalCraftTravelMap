@@ -48,18 +48,24 @@ internal static class TravelMapOverlayLayout
         float? anchorY)
     {
         var size = NormalizeExtent(miniMapSize);
-        var overlaySize = new Vector2(size);
+        var overlaySize = MiniMapFootprint(size);
         var miniMap = anchorX.HasValue && anchorY.HasValue
             ? PlaceCustom(guiLogicalSize, overlaySize, new Vector2(anchorX.Value, anchorY.Value))
             : PlaceTopRight(guiLogicalSize, overlaySize, RightMargin, TopMargin);
         var teleportButton = ClampToGui(
             new Vector2(
                 miniMap.X + size - TeleportButtonSize.X,
-                miniMap.Y + size + TeleportGap),
+                miniMap.Y + overlaySize.Y + TeleportGap),
             TeleportButtonSize,
             guiLogicalSize);
 
         return new TravelMapHudPositions(miniMap, teleportButton);
+    }
+
+    internal static Vector2 MiniMapFootprint(float miniMapSize)
+    {
+        var size = NormalizeExtent(miniMapSize);
+        return new Vector2(size, size + MiniMapRenderer.InformationFooterHeight);
     }
 
     internal static Vector2 PlaceCustom(
