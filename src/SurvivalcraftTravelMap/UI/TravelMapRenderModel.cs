@@ -71,9 +71,20 @@ public interface ITravelMapRenderSink
 public readonly record struct MapTerrainCell(
     int WorldX,
     int WorldZ,
-    Vector2 ScreenMinimum,
-    Vector2 ScreenMaximum,
-    Rgba32 Color);
+    Vector2 ScreenTopLeft,
+    Vector2 ScreenTopRight,
+    Vector2 ScreenBottomRight,
+    Vector2 ScreenBottomLeft,
+    Rgba32 Color)
+{
+    public Vector2 ScreenMinimum => Vector2.Min(
+        Vector2.Min(ScreenTopLeft, ScreenTopRight),
+        Vector2.Min(ScreenBottomRight, ScreenBottomLeft));
+
+    public Vector2 ScreenMaximum => Vector2.Max(
+        Vector2.Max(ScreenTopLeft, ScreenTopRight),
+        Vector2.Max(ScreenBottomRight, ScreenBottomLeft));
+}
 
 public readonly record struct MapBoundaryEdge(Vector2 Start, Vector2 End, Rgba32 Color);
 
@@ -628,12 +639,22 @@ public static class TravelMapRenderModel
         }
 
         var tint = Math.Clamp(float.IsFinite(brightness) ? brightness : 1f, 0f, 1f);
-        var halfWorldWidth = (double)transform.ViewportSize.X * transform.BlocksPerPixel / 2d;
-        var halfWorldHeight = (double)transform.ViewportSize.Y * transform.BlocksPerPixel / 2d;
-        var minimumX = Math.Max((double)int.MinValue, (double)transform.Center.X - halfWorldWidth);
-        var maximumX = Math.Min((double)int.MaxValue, (double)transform.Center.X + halfWorldWidth);
-        var minimumZ = Math.Max((double)int.MinValue, (double)transform.Center.Y - halfWorldHeight);
-        var maximumZ = Math.Min((double)int.MaxValue, (double)transform.Center.Y + halfWorldHeight);
+        var topLeft = transform.ScreenToWorld(Vector2.Zero);
+        var topRight = transform.ScreenToWorld(new Vector2(transform.ViewportSize.X, 0f));
+        var bottomRight = transform.ScreenToWorld(transform.ViewportSize);
+        var bottomLeft = transform.ScreenToWorld(new Vector2(0f, transform.ViewportSize.Y));
+        var minimumX = Math.Max(
+            (double)int.MinValue,
+            Math.Min(Math.Min(topLeft.X, topRight.X), Math.Min(bottomRight.X, bottomLeft.X)));
+        var maximumX = Math.Min(
+            (double)int.MaxValue,
+            Math.Max(Math.Max(topLeft.X, topRight.X), Math.Max(bottomRight.X, bottomLeft.X)));
+        var minimumZ = Math.Max(
+            (double)int.MinValue,
+            Math.Min(Math.Min(topLeft.Y, topRight.Y), Math.Min(bottomRight.Y, bottomLeft.Y)));
+        var maximumZ = Math.Min(
+            (double)int.MaxValue,
+            Math.Max(Math.Max(topLeft.Y, topRight.Y), Math.Max(bottomRight.Y, bottomLeft.Y)));
         if (minimumX > maximumX || minimumZ > maximumZ)
         {
             return default;
@@ -704,15 +725,15 @@ public static class TravelMapRenderModel
                     continue;
                 }
 
-                var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
-                var screenMaximum = transform.WorldToScreen(new Vector2(
-                    (float)((double)x + renderWidth),
-                    (float)((double)z + renderHeight)));
+                var right = (float)((double)x + renderWidth);
+                var bottom = (float)((double)z + renderHeight);
                 sink.TerrainCell(new MapTerrainCell(
                     x,
                     z,
-                    Vector2.Min(screenMinimum, screenMaximum),
-                    Vector2.Max(screenMinimum, screenMaximum),
+                    transform.WorldToScreen(new Vector2(x, z)),
+                    transform.WorldToScreen(new Vector2(right, z)),
+                    transform.WorldToScreen(new Vector2(right, bottom)),
+                    transform.WorldToScreen(new Vector2(x, bottom)),
                     TintTerrain(color, tint)));
                 primitives++;
             }
@@ -872,15 +893,15 @@ public static class TravelMapRenderModel
                         continue;
                     }
 
-                    var screenMinimum = transform.WorldToScreen(new Vector2(x, z));
-                    var screenMaximum = transform.WorldToScreen(new Vector2(
-                        (long)x + renderWidth > int.MaxValue ? int.MaxValue : x + renderWidth,
-                        (long)z + renderHeight > int.MaxValue ? int.MaxValue : z + renderHeight));
+                    var right = (long)x + renderWidth > int.MaxValue ? int.MaxValue : x + renderWidth;
+                    var bottom = (long)z + renderHeight > int.MaxValue ? int.MaxValue : z + renderHeight;
                     sink.TerrainCell(new MapTerrainCell(
                         x,
                         z,
-                        Vector2.Min(screenMinimum, screenMaximum),
-                        Vector2.Max(screenMinimum, screenMaximum),
+                        transform.WorldToScreen(new Vector2(x, z)),
+                        transform.WorldToScreen(new Vector2(right, z)),
+                        transform.WorldToScreen(new Vector2(right, bottom)),
+                        transform.WorldToScreen(new Vector2(x, bottom)),
                         TintTerrain(color, tint)));
                     primitives++;
                 }

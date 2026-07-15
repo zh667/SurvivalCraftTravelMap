@@ -335,6 +335,43 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Fact]
+    public void Heading_up_minimap_keeps_an_east_facing_player_arrow_pointing_up()
+    {
+        using var widget = CreateSurface(
+            orientation: MiniMapOrientation.HeadingUp,
+            heading: MathF.PI / 2f);
+        widget.ApplyConfiguredMiniMapOrientation = true;
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var player = Assert.Single(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Player);
+        Assert.Equal(96f, player.Vertices[0].X, 3);
+        Assert.True(player.Vertices[0].Y < 96f);
+        Assert.Equal(-MathF.PI / 2f, widget.Transform.RotationRadians, 3);
+    }
+
+    [Fact]
+    public void Large_map_ignores_heading_up_setting_and_remains_north_up()
+    {
+        using var widget = CreateSurface(
+            orientation: MiniMapOrientation.HeadingUp,
+            heading: MathF.PI / 2f);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var player = Assert.Single(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Player);
+        Assert.True(player.Vertices[0].X > 96f);
+        Assert.Equal(96f, player.Vertices[0].Y, 3);
+        Assert.Equal(0f, widget.Transform.RotationRadians);
+    }
+
+    [Fact]
     public void Actual_default_large_map_draw_queues_no_shadow()
     {
         using var widget = CreateSurface();
@@ -379,7 +416,9 @@ public sealed class MiniMapTextRendererTests
 
     private static MapSurfaceWidget CreateSurface(
         IReadOnlyList<CreatureMapMarker>? creatures = null,
-        bool showCreatures = true)
+        bool showCreatures = true,
+        MiniMapOrientation orientation = MiniMapOrientation.NorthUp,
+        float heading = 0f)
     {
         var font = (BitmapFont)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
             typeof(BitmapFont));
@@ -389,8 +428,9 @@ public sealed class MiniMapTextRendererTests
             {
                 ShowCoordinates = false,
                 ShowCreatureMarkers = showCreatures,
+                MiniMapOrientation = orientation,
             },
-            () => new PlayerMapPose(new System.Numerics.Vector3(0f, 64f, 0f), 0f),
+            () => new PlayerMapPose(new System.Numerics.Vector3(0f, 64f, 0f), heading),
             () => [],
             () => creatures ?? [],
             () => 1f,

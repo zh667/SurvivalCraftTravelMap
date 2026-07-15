@@ -81,6 +81,8 @@ Settings reset will use a single `TravelMapSettings.CreateDefaults()`/`ResetPres
 
 ## Phase 2 — Minimap orientation
 
+**Status:** Accepted in the isolated game on 2026-07-15.
+
 **Behavior**
 
 - Add `NorthUp` and `HeadingUp` modes.

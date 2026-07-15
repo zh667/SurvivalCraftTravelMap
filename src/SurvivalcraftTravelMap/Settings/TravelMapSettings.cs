@@ -1,5 +1,11 @@
 namespace SurvivalcraftTravelMap.Settings;
 
+public enum MiniMapOrientation
+{
+    NorthUp,
+    HeadingUp,
+}
+
 public sealed class TravelMapSettings
 {
     private static readonly int[] MiniMapSizes = [160, 192, 256, 320, 384];
@@ -18,6 +24,8 @@ public sealed class TravelMapSettings
 
     public float CreatureMarkerSize { get; set; } = 5f;
 
+    public MiniMapOrientation MiniMapOrientation { get; set; } = MiniMapOrientation.NorthUp;
+
     public int MiniMapSize { get; set; } = 160;
 
     public float MiniMapBlocksPerPixel { get; set; } = 1f;
@@ -35,6 +43,11 @@ public sealed class TravelMapSettings
         LargeMapBlocksPerPixel = ClampOrDefault(LargeMapBlocksPerPixel, 0.25f, 32f, 2f);
         NightMinimumBrightness = ClampOrDefault(NightMinimumBrightness, 0.4f, 1f, 0.4f);
         CreatureMarkerSize = ClampOrDefault(CreatureMarkerSize, 3f, 16f, 5f);
+        if (!Enum.IsDefined(MiniMapOrientation))
+        {
+            MiniMapOrientation = MiniMapOrientation.NorthUp;
+        }
+
         LargeMapHotkey = "M";
     }
 

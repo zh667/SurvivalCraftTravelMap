@@ -322,6 +322,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public bool AutoCenterOnPlayer { get; set; }
 
+    public bool ApplyConfiguredMiniMapOrientation { get; set; }
+
     public bool ShowWaypointLabels { get; set; }
 
     public bool ShowSurveyCrosshair { get; set; } = true;
@@ -447,7 +449,16 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         var center = AutoCenterOnPlayer
             ? new NVector2(pose.Position.X, pose.Position.Z)
             : Transform.Center;
-        Transform = Transform with { Center = center, ViewportSize = viewport };
+        var rotation = ApplyConfiguredMiniMapOrientation
+            && _settings.MiniMapOrientation == MiniMapOrientation.HeadingUp
+                ? -pose.Heading
+                : 0f;
+        Transform = Transform with
+        {
+            Center = center,
+            ViewportSize = viewport,
+            RotationRadians = rotation,
+        };
         _drawMapTransform = Transform;
         _primitiveQueue = context.PrimitiveQueue
             ?? throw new ArgumentNullException(nameof(context));
@@ -495,8 +506,10 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     {
         _primitiveQueue!.QueueQuad(
             MapSurfacePrimitiveKind.Terrain,
-            cell.ScreenMinimum,
-            cell.ScreenMaximum,
+            cell.ScreenTopLeft,
+            cell.ScreenTopRight,
+            cell.ScreenBottomRight,
+            cell.ScreenBottomLeft,
             cell.Color);
     }
 
@@ -514,7 +527,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         var center = _drawMapTransform.WorldToScreen(new NVector2(position.X, position.Z));
         foreach (var primitive in MiniMapVisualStyle.CreatePlayerPrimitives(
                      center,
-                     heading,
+                     heading + _drawMapTransform.RotationRadians,
                      size,
                      color,
                      DrawPlayerOutline))
@@ -904,6 +917,7 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
             token => settingsStore.SaveAsync(settings, token),
             _ => notify("小地图比例未能保存，本次会话将保留当前值"));
         AutoCenterOnPlayer = true;
+        ApplyConfiguredMiniMapOrientation = true;
         PlayerMarkerColor = TravelMapPalette.MiniMapPlayer;
         BackgroundColor = TravelMapPalette.MiniMapBackground;
         FrameColor = TravelMapPalette.MiniMapFrame;

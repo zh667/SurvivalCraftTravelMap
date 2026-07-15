@@ -16,11 +16,25 @@ public sealed class TravelMapSettingsTests
         Assert.True(settings.AcceptTeleportInvitations);
         Assert.True(settings.ShowCreatureMarkers);
         Assert.Equal(5f, settings.CreatureMarkerSize);
+        Assert.Equal(MiniMapOrientation.NorthUp, settings.MiniMapOrientation);
         Assert.Equal(160, settings.MiniMapSize);
         Assert.Equal(1.0f, settings.MiniMapBlocksPerPixel);
         Assert.Equal(2.0f, settings.LargeMapBlocksPerPixel);
         Assert.Equal("M", settings.LargeMapHotkey);
         Assert.Equal(0.4f, settings.NightMinimumBrightness);
+    }
+
+    [Fact]
+    public void Normalize_restores_unknown_minimap_orientation_to_north_up()
+    {
+        var settings = new TravelMapSettings
+        {
+            MiniMapOrientation = (MiniMapOrientation)999,
+        };
+
+        settings.Normalize();
+
+        Assert.Equal(MiniMapOrientation.NorthUp, settings.MiniMapOrientation);
     }
 
     [Theory]

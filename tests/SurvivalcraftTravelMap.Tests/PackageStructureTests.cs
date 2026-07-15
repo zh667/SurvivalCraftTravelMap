@@ -505,7 +505,7 @@ public sealed class PackageStructureTests
         AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"creatureMarkerSize\"");
         AssertCodeContains(settingsConstructor, "Text = \"完成\"");
         AssertCodeContains(settingsConstructor, "Size = new Vector2(120f, 40f)");
-        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(150f, 496f));");
+        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(150f, 501f));");
         AssertCodeContains(settings, "public void RequestPersist() => _saveQueue.RequestSave();");
         AssertCodeContains(settingsUpdate, "RequestPersist();");
         AssertCodeContains(settingsUpdate, "_requestClose();");

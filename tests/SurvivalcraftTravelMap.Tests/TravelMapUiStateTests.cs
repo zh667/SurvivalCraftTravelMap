@@ -480,7 +480,31 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.True(document.RootElement.GetProperty("ShowCreatureMarkers").GetBoolean());
         Assert.Equal(5f, document.RootElement.GetProperty("CreatureMarkerSize").GetSingle());
+        Assert.Equal(
+            "NorthUp",
+            document.RootElement.GetProperty("MiniMapOrientation").GetString());
         Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("NorthUp", MiniMapOrientation.NorthUp)]
+    [InlineData("HeadingUp", MiniMapOrientation.HeadingUp)]
+    [InlineData("Unknown", MiniMapOrientation.NorthUp)]
+    public async Task Current_schema_loads_known_orientation_and_normalizes_unknown_values(
+        string persisted,
+        MiniMapOrientation expected)
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            $"{{\"schemaVersion\":3,\"MiniMapOrientation\":\"{persisted}\"}}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.Equal(expected, result.Settings.MiniMapOrientation);
     }
 
     [Theory]

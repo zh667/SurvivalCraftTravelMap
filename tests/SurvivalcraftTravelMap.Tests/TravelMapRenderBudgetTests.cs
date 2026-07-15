@@ -10,6 +10,31 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapRenderBudgetTests
 {
+    [Fact]
+    public void Rotated_terrain_cell_preserves_all_four_world_corner_vertices()
+    {
+        var source = new BudgetPixelSource(explored: false)
+        {
+            ExploredCoordinate = (0, 0),
+        };
+        var sink = new CapturingRenderSink();
+        var transform = new MapTransform(
+            new Vector2(0.5f),
+            1f,
+            new Vector2(100f),
+            RotationRadians: MathF.PI / 2f);
+
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, sink);
+
+        var cell = Assert.Single(sink.Terrain);
+        Assert.Equal(new Vector2(50.5f, 49.5f), cell.ScreenTopLeft);
+        Assert.Equal(new Vector2(50.5f, 50.5f), cell.ScreenTopRight);
+        Assert.Equal(new Vector2(49.5f, 50.5f), cell.ScreenBottomRight);
+        Assert.Equal(new Vector2(49.5f, 49.5f), cell.ScreenBottomLeft);
+        Assert.Equal(new Vector2(49.5f), cell.ScreenMinimum);
+        Assert.Equal(new Vector2(50.5f), cell.ScreenMaximum);
+    }
+
     private static MapTile CreateQuarterExploredTile(Rgba32 color)
     {
         var tile = new MapTile(0, 0);

@@ -517,6 +517,9 @@ public sealed class TravelMapSettingsStore
 
         public float CreatureMarkerSize { get; set; } = 5f;
 
+        public string MiniMapOrientation { get; set; } = nameof(
+            global::SurvivalcraftTravelMap.Settings.MiniMapOrientation.NorthUp);
+
         public int MiniMapSize { get; set; } = 160;
 
         public float MiniMapBlocksPerPixel { get; set; } = 1f;
@@ -538,6 +541,7 @@ public sealed class TravelMapSettingsStore
             AcceptTeleportInvitations = AcceptTeleportInvitations,
             ShowCreatureMarkers = ShowCreatureMarkers,
             CreatureMarkerSize = CreatureMarkerSize,
+            MiniMapOrientation = ParseMiniMapOrientation(MiniMapOrientation),
             MiniMapSize = MiniMapSize,
             MiniMapBlocksPerPixel = MiniMapBlocksPerPixel,
             LargeMapBlocksPerPixel = LargeMapBlocksPerPixel,
@@ -556,6 +560,7 @@ public sealed class TravelMapSettingsStore
             AcceptTeleportInvitations = settings.AcceptTeleportInvitations,
             ShowCreatureMarkers = settings.ShowCreatureMarkers,
             CreatureMarkerSize = settings.CreatureMarkerSize,
+            MiniMapOrientation = settings.MiniMapOrientation.ToString(),
             MiniMapSize = settings.MiniMapSize,
             MiniMapBlocksPerPixel = settings.MiniMapBlocksPerPixel,
             LargeMapBlocksPerPixel = settings.LargeMapBlocksPerPixel,
@@ -563,5 +568,15 @@ public sealed class TravelMapSettingsStore
             NightMinimumBrightness = settings.NightMinimumBrightness,
             ExtensionData = extensionData,
         };
+
+        private static global::SurvivalcraftTravelMap.Settings.MiniMapOrientation ParseMiniMapOrientation(
+            string? value) =>
+            Enum.TryParse<global::SurvivalcraftTravelMap.Settings.MiniMapOrientation>(
+                value,
+                ignoreCase: false,
+                out var parsed)
+            && Enum.IsDefined(parsed)
+                ? parsed
+                : global::SurvivalcraftTravelMap.Settings.MiniMapOrientation.NorthUp;
     }
 }

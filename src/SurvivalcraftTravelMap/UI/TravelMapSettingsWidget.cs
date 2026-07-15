@@ -82,6 +82,12 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             settings.ShowCreatureMarkers,
             value => settings.ShowCreatureMarkers = value));
         settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("northUp", "固定北方朝上"),
+            settings.MiniMapOrientation == MiniMapOrientation.NorthUp,
+            value => settings.MiniMapOrientation = value
+                ? MiniMapOrientation.NorthUp
+                : MiniMapOrientation.HeadingUp));
+        settingsStack.Children.Add(CreateToggle(
             "启用日夜地形明暗",
             settings.UseDayNightTint,
             value => settings.UseDayNightTint = value));
@@ -107,7 +113,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             Size = new Vector2(380f, 30f),
         };
         Children.Add(sizeLabel);
-        SetWidgetPosition(sizeLabel, new Vector2(20f, 413f));
+        SetWidgetPosition(sizeLabel, new Vector2(20f, 424f));
 
         var sizeStack = new StackPanelWidget
         {
@@ -115,13 +121,13 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             Margin = new Vector2(2f),
         };
         Children.Add(sizeStack);
-        SetWidgetPosition(sizeStack, new Vector2(20f, 446f));
+        SetWidgetPosition(sizeStack, new Vector2(20f, 453f));
         foreach (var size in TravelMapSettings.SupportedMiniMapSizes)
         {
             var button = new BevelledButtonWidget
             {
                 Text = size.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                Size = new Vector2(72f, 42f),
+                Size = new Vector2(72f, 38f),
                 Color = SnowText,
                 CenterColor = size == settings.MiniMapSize ? Moss : Basalt,
             };
@@ -138,7 +144,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             CenterColor = Moss,
         };
         Children.Add(_doneButton);
-        SetWidgetPosition(_doneButton, new Vector2(150f, 496f));
+        SetWidgetPosition(_doneButton, new Vector2(150f, 501f));
     }
 
     public override void Update()
@@ -203,7 +209,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             Text = text,
             IsChecked = value,
             IsAutoCheckingEnabled = true,
-            Size = new Vector2(360f, 38f),
+            Size = new Vector2(360f, 34f),
             Color = SnowText,
         };
         checkbox.CheckStatusChanged += isChecked =>
@@ -225,7 +231,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         Granularity = granularity,
         Value = value,
         LayoutDirection = LayoutDirection.Horizontal,
-        Size = new Vector2(200f, 36f),
+        Size = new Vector2(200f, 34f),
         IsLabelVisible = true,
         LabelWidth = 60f,
         TextColor = SnowText,
@@ -234,13 +240,13 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
 
     private static CanvasWidget CreateSliderRow(string labelText, SliderWidget slider)
     {
-        var row = new CanvasWidget { Size = new Vector2(360f, 40f) };
+        var row = new CanvasWidget { Size = new Vector2(360f, 36f) };
         var label = new LabelWidget
         {
             Text = labelText,
             Color = SnowText,
             FontScale = TravelMapTypography.SecondaryLabelScale,
-            Size = new Vector2(160f, 36f),
+            Size = new Vector2(160f, 34f),
         };
         row.Children.Add(label);
         row.Children.Add(slider);
