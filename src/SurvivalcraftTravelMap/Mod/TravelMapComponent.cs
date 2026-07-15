@@ -135,6 +135,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     internal SubsystemTimeOfDay TimeOfDay { get; private set; } = null!;
 
+    internal SubsystemCreatureSpawn? CreatureSpawn { get; private set; }
+
     internal ComponentGui? Gui { get; private set; }
 
     internal SafeTeleportService? TeleportService { get; private set; }
@@ -457,6 +459,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         Player = player;
         Terrain = Project.FindSubsystem<SubsystemTerrain>(true);
         TimeOfDay = Project.FindSubsystem<SubsystemTimeOfDay>(true);
+        CreatureSpawn = Project.FindSubsystem<SubsystemCreatureSpawn>(false);
         WorkType = ToTravelMapWorkType(CommonLib.WorkType);
         RuntimeContext = new TravelMapRuntimeContext(
             WorkType,
@@ -658,6 +661,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _settingsStore,
             GetPlayerPose,
             () => _waypoints,
+            GetCreatureMarkers,
             GetTerrainBrightness,
             IsMapInputBlocked,
             OpenLargeMap,
@@ -671,6 +675,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _settingsStore,
             GetPlayerPose,
             () => _waypoints,
+            GetCreatureMarkers,
             GetTerrainBrightness,
             HandleContextActionAsync,
             ShowMessage);
@@ -1172,6 +1177,44 @@ public sealed class TravelMapComponent : Component, IUpdateable
         return new PlayerMapPose(
             new Vector3(position.X, position.Y, position.Z),
             MathF.Atan2(forward.X, -forward.Z));
+    }
+
+    private IReadOnlyList<CreatureMapMarker> GetCreatureMarkers()
+    {
+        if (CreatureSpawn is null)
+        {
+            return [];
+        }
+
+        var markers = new List<CreatureMapMarker>();
+        foreach (var creature in CreatureSpawn.Creatures)
+        {
+            if (ReferenceEquals(creature, Player)
+                || creature.ComponentBody is null
+                || creature.ComponentHealth is { Health: <= 0f })
+            {
+                continue;
+            }
+
+            var position = creature.ComponentBody.Position;
+            markers.Add(new CreatureMapMarker(
+                new Vector3(position.X, position.Y, position.Z),
+                ToCreatureMarkerKind(creature.Category)));
+        }
+
+        return markers;
+    }
+
+    internal static CreatureMapMarkerKind ToCreatureMarkerKind(CreatureCategory category)
+    {
+        if ((category & (CreatureCategory.LandPredator | CreatureCategory.WaterPredator)) != 0)
+        {
+            return CreatureMapMarkerKind.Predator;
+        }
+
+        return (category & CreatureCategory.Bird) != 0
+            ? CreatureMapMarkerKind.Bird
+            : CreatureMapMarkerKind.Other;
     }
 
     private float GetTerrainBrightness() => _settings is { UseDayNightTint: true }

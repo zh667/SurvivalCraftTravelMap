@@ -17,6 +17,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
     private readonly CoalescingSaveQueue _saveQueue;
     private readonly SliderWidget _miniMapZoom;
     private readonly SliderWidget _largeMapZoom;
+    private readonly SliderWidget _creatureMarkerSize;
     private readonly BevelledButtonWidget _doneButton;
     private readonly List<BevelledButtonWidget> _sizeButtons = [];
 
@@ -34,7 +35,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             PersistAsync,
             _ => _notify("地图设置未能保存，本次会话仍保留当前值"),
             TimeSpan.FromMilliseconds(150));
-        Size = new Vector2(420f, 470f);
+        Size = new Vector2(420f, 550f);
         HorizontalAlignment = WidgetAlignment.Center;
         VerticalAlignment = WidgetAlignment.Center;
 
@@ -77,6 +78,10 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             settings.ShowCoordinates,
             value => settings.ShowCoordinates = value));
         settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("showCreatureMarkers", "显示生物标记"),
+            settings.ShowCreatureMarkers,
+            value => settings.ShowCreatureMarkers = value));
+        settingsStack.Children.Add(CreateToggle(
             "启用日夜地形明暗",
             settings.UseDayNightTint,
             value => settings.UseDayNightTint = value));
@@ -87,8 +92,12 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
 
         _miniMapZoom = CreateSlider(0.5f, 8f, settings.MiniMapBlocksPerPixel);
         _largeMapZoom = CreateSlider(0.25f, 32f, settings.LargeMapBlocksPerPixel);
+        _creatureMarkerSize = CreateSlider(3f, 16f, settings.CreatureMarkerSize, granularity: 1f);
         settingsStack.Children.Add(CreateSliderRow("小地图 方块/像素", _miniMapZoom));
         settingsStack.Children.Add(CreateSliderRow("大地图 方块/像素", _largeMapZoom));
+        settingsStack.Children.Add(CreateSliderRow(
+            TravelMapText.Get("creatureMarkerSize", "生物标记大小"),
+            _creatureMarkerSize));
 
         var sizeLabel = new LabelWidget
         {
@@ -98,7 +107,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             Size = new Vector2(380f, 30f),
         };
         Children.Add(sizeLabel);
-        SetWidgetPosition(sizeLabel, new Vector2(20f, 335f));
+        SetWidgetPosition(sizeLabel, new Vector2(20f, 413f));
 
         var sizeStack = new StackPanelWidget
         {
@@ -106,7 +115,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             Margin = new Vector2(2f),
         };
         Children.Add(sizeStack);
-        SetWidgetPosition(sizeStack, new Vector2(20f, 368f));
+        SetWidgetPosition(sizeStack, new Vector2(20f, 446f));
         foreach (var size in TravelMapSettings.SupportedMiniMapSizes)
         {
             var button = new BevelledButtonWidget
@@ -129,7 +138,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             CenterColor = Moss,
         };
         Children.Add(_doneButton);
-        SetWidgetPosition(_doneButton, new Vector2(150f, 418f));
+        SetWidgetPosition(_doneButton, new Vector2(150f, 496f));
     }
 
     public override void Update()
@@ -146,7 +155,17 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             _largeMapZoom.Text = _settings.LargeMapBlocksPerPixel.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        if (_miniMapZoom.SlidingCompleted || _largeMapZoom.SlidingCompleted)
+        if (_creatureMarkerSize.IsSliding)
+        {
+            _settings.CreatureMarkerSize = _creatureMarkerSize.Value;
+            _creatureMarkerSize.Text = _settings.CreatureMarkerSize.ToString(
+                "0",
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (_miniMapZoom.SlidingCompleted
+            || _largeMapZoom.SlidingCompleted
+            || _creatureMarkerSize.SlidingCompleted)
         {
             Persist();
         }
@@ -195,11 +214,15 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         return checkbox;
     }
 
-    private static SliderWidget CreateSlider(float minimum, float maximum, float value) => new()
+    private static SliderWidget CreateSlider(
+        float minimum,
+        float maximum,
+        float value,
+        float granularity = 0f) => new()
     {
         MinValue = minimum,
         MaxValue = maximum,
-        Granularity = 0f,
+        Granularity = granularity,
         Value = value,
         LayoutDirection = LayoutDirection.Horizontal,
         Size = new Vector2(200f, 36f),

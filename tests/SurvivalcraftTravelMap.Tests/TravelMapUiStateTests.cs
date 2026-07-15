@@ -463,7 +463,7 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Fact]
-    public async Task Missing_settings_create_schema_two_defaults()
+    public async Task Missing_settings_create_schema_three_defaults()
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -477,7 +477,9 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(TravelMapSettingsLoadOutcome.Created, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(160, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.True(document.RootElement.GetProperty("ShowCreatureMarkers").GetBoolean());
+        Assert.Equal(5f, document.RootElement.GetProperty("CreatureMarkerSize").GetSingle());
         Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
 
@@ -487,7 +489,7 @@ public sealed class TravelMapSettingsStoreTests
     [InlineData(256, 256)]
     [InlineData(320, 320)]
     [InlineData(384, 192)]
-    public async Task Schema_one_values_are_migrated_once_and_saved_as_schema_two(
+    public async Task Schema_one_values_are_migrated_once_and_saved_as_schema_three(
         int persistedSize,
         int expectedSize)
     {
@@ -506,12 +508,12 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(expectedSize, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(expectedSize, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
 
     [Fact]
-    public async Task Schema_two_size_384_is_loaded_without_migration()
+    public async Task Schema_two_size_384_is_migrated_without_the_schema_one_size_rewrite()
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -525,10 +527,10 @@ public sealed class TravelMapSettingsStoreTests
             store.SettingsPath,
             TestContext.Current.CancellationToken));
 
-        Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
+        Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(384, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(384, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
 
@@ -544,7 +546,7 @@ public sealed class TravelMapSettingsStoreTests
         var store = new TravelMapSettingsStore(directory.Path);
         await File.WriteAllTextAsync(
             store.SettingsPath,
-            $"{{\"schemaVersion\":2,\"MiniMapSize\":{size}}}",
+            $"{{\"schemaVersion\":3,\"MiniMapSize\":{size}}}",
             TestContext.Current.CancellationToken);
 
         var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
@@ -555,7 +557,8 @@ public sealed class TravelMapSettingsStoreTests
 
     [Theory]
     [InlineData(1, TravelMapSettingsLoadOutcome.MigratedPreviousSchema)]
-    [InlineData(2, TravelMapSettingsLoadOutcome.Loaded)]
+    [InlineData(2, TravelMapSettingsLoadOutcome.MigratedPreviousSchema)]
+    [InlineData(3, TravelMapSettingsLoadOutcome.Loaded)]
     public async Task Explicit_schemas_use_the_document_default_when_minimap_size_is_missing(
         int schemaVersion,
         TravelMapSettingsLoadOutcome expectedOutcome)
@@ -575,15 +578,15 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(expectedOutcome, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(160, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("futureHint").GetProperty("x").GetInt32());
     }
 
     [Theory]
-    [InlineData("2.000e0")]
-    [InlineData("2000e-3")]
-    public async Task Mathematically_exact_schema_two_numbers_are_current(string schemaNumber)
+    [InlineData("3.000e0")]
+    [InlineData("3000e-3")]
+    public async Task Mathematically_exact_schema_three_numbers_are_current(string schemaNumber)
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -600,15 +603,15 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(TravelMapSettingsLoadOutcome.Loaded, result.Outcome);
         Assert.False(result.IsReadOnly);
         Assert.Equal(384, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.True(document.RootElement.GetProperty("futureHint").GetBoolean());
     }
 
     [Theory]
-    [InlineData("2.0000000000000000000000000000000000000001")]
-    [InlineData("2e1")]
+    [InlineData("3.0000000000000000000000000000000000000001")]
+    [InlineData("3e1")]
     [InlineData("1e1000000000")]
-    public async Task Any_schema_number_greater_than_two_is_future_and_preserved_byte_for_byte(
+    public async Task Any_schema_number_greater_than_three_is_future_and_preserved_byte_for_byte(
         string schemaNumber)
     {
         using var directory = new UiTemporaryDirectory();
@@ -633,11 +636,11 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Theory]
-    [InlineData("1.9999999999999999999999999999999999999999")]
+    [InlineData("2.9999999999999999999999999999999999999999")]
     [InlineData("1e-1000000000")]
     [InlineData("-3")]
     [InlineData("0")]
-    public async Task Numeric_schema_values_other_than_exact_one_two_or_greater_than_two_are_invalid(
+    public async Task Numeric_schema_values_other_than_exact_one_two_three_or_greater_than_three_are_invalid(
         string schemaNumber)
     {
         using var directory = new UiTemporaryDirectory();
@@ -656,7 +659,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.False(result.IsReadOnly);
         Assert.Equal(160, result.Settings.MiniMapSize);
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -665,7 +668,7 @@ public sealed class TravelMapSettingsStoreTests
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
         Directory.CreateDirectory(directory.Path);
-        const string future = "{\r\n  \"schemaVersion\": 3,\r\n  \"future\": null\r\n}";
+        const string future = "{\r\n  \"schemaVersion\": 4,\r\n  \"future\": null\r\n}";
         await File.WriteAllTextAsync(store.SettingsPath, future, TestContext.Current.CancellationToken);
 
         var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
@@ -700,7 +703,7 @@ public sealed class TravelMapSettingsStoreTests
         using var document = JsonDocument.Parse(await File.ReadAllTextAsync(
             store.SettingsPath,
             TestContext.Current.CancellationToken));
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -738,7 +741,7 @@ public sealed class TravelMapSettingsStoreTests
 
         Assert.Equal(TravelMapSettingsLoadOutcome.MigratedPreviousSchema, result.Outcome);
         Assert.Equal(192, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(1, document.RootElement.GetProperty("futureHint").GetProperty("x").GetInt32());
     }
 
@@ -838,7 +841,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(8f, result.Settings.MiniMapBlocksPerPixel);
         Assert.Equal(0.25f, result.Settings.LargeMapBlocksPerPixel);
         Assert.Equal(384, persisted.RootElement.GetProperty("MiniMapSize").GetInt32());
-        Assert.Equal(2, persisted.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, persisted.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
     [Fact]
@@ -856,7 +859,7 @@ public sealed class TravelMapSettingsStoreTests
 
         Assert.Equal(TravelMapSettingsLoadOutcome.CorruptIsolated, result.Outcome);
         Assert.Equal(160, result.Settings.MiniMapSize);
-        Assert.Equal(2, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
         Assert.True(File.Exists(store.SettingsPath));
     }

@@ -14,6 +14,8 @@ public sealed class TravelMapSettingsTests
         Assert.True(settings.ShowCoordinates);
         Assert.True(settings.UseDayNightTint);
         Assert.True(settings.AcceptTeleportInvitations);
+        Assert.True(settings.ShowCreatureMarkers);
+        Assert.Equal(5f, settings.CreatureMarkerSize);
         Assert.Equal(160, settings.MiniMapSize);
         Assert.Equal(1.0f, settings.MiniMapBlocksPerPixel);
         Assert.Equal(2.0f, settings.LargeMapBlocksPerPixel);
@@ -43,6 +45,7 @@ public sealed class TravelMapSettingsTests
             MiniMapBlocksPerPixel = -1f,
             LargeMapBlocksPerPixel = 100f,
             NightMinimumBrightness = 2f,
+            CreatureMarkerSize = 100f,
         };
 
         settings.Normalize();
@@ -50,6 +53,7 @@ public sealed class TravelMapSettingsTests
         Assert.Equal(0.5f, settings.MiniMapBlocksPerPixel);
         Assert.Equal(32f, settings.LargeMapBlocksPerPixel);
         Assert.Equal(1f, settings.NightMinimumBrightness);
+        Assert.Equal(16f, settings.CreatureMarkerSize);
     }
 
     [Fact]
@@ -60,6 +64,7 @@ public sealed class TravelMapSettingsTests
             MiniMapBlocksPerPixel = float.NaN,
             LargeMapBlocksPerPixel = float.NaN,
             NightMinimumBrightness = float.NaN,
+            CreatureMarkerSize = float.NaN,
         };
 
         settings.Normalize();
@@ -67,5 +72,6 @@ public sealed class TravelMapSettingsTests
         Assert.Equal(1f, settings.MiniMapBlocksPerPixel);
         Assert.Equal(2f, settings.LargeMapBlocksPerPixel);
         Assert.Equal(0.4f, settings.NightMinimumBrightness);
+        Assert.Equal(5f, settings.CreatureMarkerSize);
     }
 }

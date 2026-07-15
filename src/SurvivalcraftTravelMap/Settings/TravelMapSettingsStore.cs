@@ -43,7 +43,7 @@ public sealed class TravelMapSettingsFutureSchemaWarningGate
 
 public sealed class TravelMapSettingsStore
 {
-    private const int CurrentSchemaVersion = 2;
+    private const int CurrentSchemaVersion = 3;
     private const string SettingsFileName = "settings.json";
     private const string PreviousSettingsFileName = "travel-map-settings.json";
     private const string LegacyFileName = "GPSSetting.xml";
@@ -186,7 +186,7 @@ public sealed class TravelMapSettingsStore
             var document = JsonSerializer.Deserialize<SettingsDocument>(json, SerializerOptions)
                 ?? throw new InvalidDataException("The settings document is empty.");
             var settings = document.ToSettings();
-            if (schema == SchemaKind.Previous && settings.MiniMapSize == 384)
+            if (schema == SchemaKind.PreviousOne && settings.MiniMapSize == 384)
             {
                 settings.MiniMapSize = 192;
             }
@@ -200,7 +200,8 @@ public sealed class TravelMapSettingsStore
                 settings,
                 schema switch
                 {
-                    SchemaKind.Previous => TravelMapSettingsLoadOutcome.MigratedPreviousSchema,
+                    SchemaKind.PreviousOne or SchemaKind.PreviousTwo =>
+                        TravelMapSettingsLoadOutcome.MigratedPreviousSchema,
                     SchemaKind.Current => TravelMapSettingsLoadOutcome.Loaded,
                     _ => TravelMapSettingsLoadOutcome.MigratedUnversioned,
                 },
@@ -324,9 +325,10 @@ public sealed class TravelMapSettingsStore
 
         return raw[firstNonZero] switch
         {
-            '1' when !hasNonZeroTail => SchemaKind.Previous,
-            '2' when !hasNonZeroTail => SchemaKind.Current,
-            >= '2' and <= '9' => SchemaKind.Future,
+            '1' when !hasNonZeroTail => SchemaKind.PreviousOne,
+            '2' when !hasNonZeroTail => SchemaKind.PreviousTwo,
+            '3' when !hasNonZeroTail => SchemaKind.Current,
+            '3' or >= '4' and <= '9' => SchemaKind.Future,
             _ => SchemaKind.Invalid,
         };
     }
@@ -491,7 +493,8 @@ public sealed class TravelMapSettingsStore
     private enum SchemaKind
     {
         Invalid,
-        Previous,
+        PreviousOne,
+        PreviousTwo,
         Current,
         Future,
     }
@@ -509,6 +512,10 @@ public sealed class TravelMapSettingsStore
         public bool UseDayNightTint { get; set; } = true;
 
         public bool AcceptTeleportInvitations { get; set; } = true;
+
+        public bool ShowCreatureMarkers { get; set; } = true;
+
+        public float CreatureMarkerSize { get; set; } = 5f;
 
         public int MiniMapSize { get; set; } = 160;
 
@@ -529,6 +536,8 @@ public sealed class TravelMapSettingsStore
             ShowCoordinates = ShowCoordinates,
             UseDayNightTint = UseDayNightTint,
             AcceptTeleportInvitations = AcceptTeleportInvitations,
+            ShowCreatureMarkers = ShowCreatureMarkers,
+            CreatureMarkerSize = CreatureMarkerSize,
             MiniMapSize = MiniMapSize,
             MiniMapBlocksPerPixel = MiniMapBlocksPerPixel,
             LargeMapBlocksPerPixel = LargeMapBlocksPerPixel,
@@ -545,6 +554,8 @@ public sealed class TravelMapSettingsStore
             ShowCoordinates = settings.ShowCoordinates,
             UseDayNightTint = settings.UseDayNightTint,
             AcceptTeleportInvitations = settings.AcceptTeleportInvitations,
+            ShowCreatureMarkers = settings.ShowCreatureMarkers,
+            CreatureMarkerSize = settings.CreatureMarkerSize,
             MiniMapSize = settings.MiniMapSize,
             MiniMapBlocksPerPixel = settings.MiniMapBlocksPerPixel,
             LargeMapBlocksPerPixel = settings.LargeMapBlocksPerPixel,

@@ -215,6 +215,22 @@ public sealed class PackageStructureTests
     }
 
     [Fact]
+    public void Production_component_snapshots_live_non_dead_creatures_for_both_map_surfaces()
+    {
+        var component = File.ReadAllText(TestPaths.Component);
+        var snapshot = ExtractBraceBlock(
+            component,
+            "private IReadOnlyList<CreatureMapMarker> GetCreatureMarkers()");
+        var attach = ExtractBraceBlock(component, "private void AttachUiWidgets(UiInitializationState state)");
+
+        AssertCodeContains(component, "Project.FindSubsystem<SubsystemCreatureSpawn>(false)");
+        AssertCodeContains(snapshot, "ReferenceEquals(creature, Player)");
+        AssertCodeContains(snapshot, "creature.ComponentHealth is { Health: <= 0f }");
+        AssertCodeContains(snapshot, "ToCreatureMarkerKind(creature.Category)");
+        Assert.Equal(2, attach.Split("GetCreatureMarkers", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public void Component_records_all_loaded_surface_readable_chunks_after_terrain_views_every_update()
     {
         var source = File.ReadAllText(TestPaths.Component);
@@ -484,10 +500,12 @@ public sealed class PackageStructureTests
         var closeSettings = ExtractBraceBlock(dialog, "private void CloseSettings()");
 
         AssertCodeContains(settings, "private readonly Action _requestClose;");
-        AssertCodeContains(settingsConstructor, "Size = new Vector2(420f, 470f);");
+        AssertCodeContains(settingsConstructor, "Size = new Vector2(420f, 550f);");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"showCreatureMarkers\"");
+        AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"creatureMarkerSize\"");
         AssertCodeContains(settingsConstructor, "Text = \"完成\"");
         AssertCodeContains(settingsConstructor, "Size = new Vector2(120f, 40f)");
-        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(150f, 418f));");
+        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(150f, 496f));");
         AssertCodeContains(settings, "public void RequestPersist() => _saveQueue.RequestSave();");
         AssertCodeContains(settingsUpdate, "RequestPersist();");
         AssertCodeContains(settingsUpdate, "_requestClose();");

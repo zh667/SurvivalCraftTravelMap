@@ -14,6 +14,10 @@ public sealed class TravelMapSettings
 
     public bool AcceptTeleportInvitations { get; set; } = true;
 
+    public bool ShowCreatureMarkers { get; set; } = true;
+
+    public float CreatureMarkerSize { get; set; } = 5f;
+
     public int MiniMapSize { get; set; } = 160;
 
     public float MiniMapBlocksPerPixel { get; set; } = 1f;
@@ -30,6 +34,7 @@ public sealed class TravelMapSettings
         MiniMapBlocksPerPixel = ClampOrDefault(MiniMapBlocksPerPixel, 0.5f, 8f, 1f);
         LargeMapBlocksPerPixel = ClampOrDefault(LargeMapBlocksPerPixel, 0.25f, 32f, 2f);
         NightMinimumBrightness = ClampOrDefault(NightMinimumBrightness, 0.4f, 1f, 0.4f);
+        CreatureMarkerSize = ClampOrDefault(CreatureMarkerSize, 3f, 16f, 5f);
         LargeMapHotkey = "M";
     }
 

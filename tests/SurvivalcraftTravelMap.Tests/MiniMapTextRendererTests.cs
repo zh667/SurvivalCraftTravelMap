@@ -1,6 +1,8 @@
 using System.Numerics;
 using Engine.Media;
+using Game;
 using SurvivalcraftTravelMap.Map;
+using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
 using Xunit;
@@ -196,6 +198,83 @@ public sealed class MiniMapTextRendererTests
         Assert.True(primitives[0].Tip.Y < primitives[1].Tip.Y);
     }
 
+    [Theory]
+    [InlineData(CreatureMapMarkerKind.Predator, 255, 60, 60)]
+    [InlineData(CreatureMapMarkerKind.Bird, 255, 220, 60)]
+    [InlineData(CreatureMapMarkerKind.Other, 60, 220, 80)]
+    public void Creature_marker_palette_matches_the_reference_categories(
+        CreatureMapMarkerKind kind,
+        byte red,
+        byte green,
+        byte blue)
+    {
+        Assert.Equal(
+            new Rgba32(red, green, blue, byte.MaxValue),
+            CreatureMapMarkerStyle.ColorFor(kind));
+    }
+
+    [Fact]
+    public void Actual_map_draw_queues_outlined_creatures_before_the_player_marker()
+    {
+        using var widget = CreateSurface(
+        [
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Predator),
+        ]);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+        widget.PlayerArrowSize = 18f;
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var creaturePrimitives = queue.Primitives
+            .Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.Creature)
+            .ToArray();
+        Assert.Collection(
+            creaturePrimitives,
+            outline =>
+            {
+                Assert.Equal(CreatureMapMarkerStyle.OutlineColor, outline.Color);
+                Assert.Equal(8f, outline.Size);
+            },
+            fill =>
+            {
+                Assert.Equal(CreatureMapMarkerStyle.PredatorColor, fill.Color);
+                Assert.Equal(5f, fill.Size);
+            });
+        Assert.True(
+            queue.Primitives.IndexOf(creaturePrimitives[1])
+            < queue.Primitives.FindIndex(primitive => primitive.Kind == MapSurfacePrimitiveKind.Player));
+    }
+
+    [Fact]
+    public void Creature_setting_hides_all_creature_primitives()
+    {
+        using var widget = CreateSurface(
+        [
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Other),
+        ],
+        showCreatures: false);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        Assert.DoesNotContain(
+            queue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.Creature);
+    }
+
+    [Theory]
+    [InlineData(CreatureCategory.LandPredator, CreatureMapMarkerKind.Predator)]
+    [InlineData(CreatureCategory.WaterPredator, CreatureMapMarkerKind.Predator)]
+    [InlineData(CreatureCategory.Bird, CreatureMapMarkerKind.Bird)]
+    [InlineData(CreatureCategory.LandOther, CreatureMapMarkerKind.Other)]
+    [InlineData(CreatureCategory.WaterOther, CreatureMapMarkerKind.Other)]
+    public void Game_creature_categories_map_to_stable_marker_kinds(
+        CreatureCategory category,
+        CreatureMapMarkerKind expected)
+    {
+        Assert.Equal(expected, TravelMapComponent.ToCreatureMarkerKind(category));
+    }
+
     [Fact]
     public void Actual_minimap_draw_queues_shadow_then_two_frames_and_dark_outline_then_red_marker()
     {
@@ -298,15 +377,22 @@ public sealed class MiniMapTextRendererTests
         Assert.Equal(MiniMapVisualStyle.FrameShadowAlpha, TravelMapPalette.MiniMapFrameShadow.A);
     }
 
-    private static MapSurfaceWidget CreateSurface()
+    private static MapSurfaceWidget CreateSurface(
+        IReadOnlyList<CreatureMapMarker>? creatures = null,
+        bool showCreatures = true)
     {
         var font = (BitmapFont)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
             typeof(BitmapFont));
         return new MapSurfaceWidget(
             new EmptyPixelSource(),
-            new TravelMapSettings { ShowCoordinates = false },
+            new TravelMapSettings
+            {
+                ShowCoordinates = false,
+                ShowCreatureMarkers = showCreatures,
+            },
             () => new PlayerMapPose(new System.Numerics.Vector3(0f, 64f, 0f), 0f),
             () => [],
+            () => creatures ?? [],
             () => 1f,
             font);
     }
@@ -427,6 +513,19 @@ public sealed class MiniMapTextRendererTests
                 [primitive.Tip, primitive.Left, primitive.Right],
                 primitive.Size,
                 primitive.Color));
+
+        public void QueueDisc(
+            MapSurfacePrimitiveKind kind,
+            Vector2 center,
+            float radius,
+            Rgba32 color,
+            int segments) => Primitives.Add(new RecordedMapSurfacePrimitive(
+                kind,
+                center - new Vector2(radius),
+                center + new Vector2(radius),
+                [center],
+                radius * 2f,
+                color));
 
         public void QueueRectangle(MapFramePrimitive primitive) =>
             Primitives.Add(new RecordedMapSurfacePrimitive(

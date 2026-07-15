@@ -81,6 +81,7 @@ public sealed class TravelMapDialog : Dialog
         TravelMapSettingsStore settingsStore,
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
         Func<float> brightness,
         TravelMapContextActionHandler actionHandler,
         Action<TravelMapNotice> notify)
@@ -104,7 +105,7 @@ public sealed class TravelMapDialog : Dialog
 
         _mapHost = new CanvasWidget { ClampToBounds = true };
         Children.Add(_mapHost);
-        _surface = new MapSurfaceWidget(pixelSource, settings, playerPose, waypoints, brightness)
+        _surface = new MapSurfaceWidget(pixelSource, settings, playerPose, waypoints, creatures, brightness)
         {
             AutoCenterOnPlayer = false,
             ShowWaypointLabels = true,

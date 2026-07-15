@@ -39,7 +39,30 @@
 - entered-chunk Task 5 提交 `e055afe` 的自动门禁证据为：初始 focused 29/29，通过删除 area-only 兼容测试后的 expanded focused 39/39，完整 Release 547/547，以及 `-warnaserror` 构建 0 warnings / 0 errors。
 - 439/439、`PACKAGE_OK`、包 SHA-256 `DE63AFAFB98DA7149E858F4ED69A5ADB55C9FFAED460BB73D38E3B6D320BC0CE` 和包内 DLL SHA-256 `A54CB8576EB6ACB6380CFD452CB0DBE9D28B5CADC8EA136DBC842D42C787BFCB` 均属于 Task 5 之前的前一候选，仅供历史追溯，不是 `e055afe` 或当前 HEAD 的产物证据。当前 package/DLL 证据只使用下一节记录的新哈希。
 
-## 当前 release/package/隔离部署证据
+## 2026-07-15 生物标记候选证据
+
+该候选不是已发布版本；用户已在隔离版确认生物标记阶段可以进入下一项，阶段验收记为 PASS。
+
+| 项目 | 状态 | 当前证据 |
+|---|---|---|
+| 完整 Release 测试 | PASS（自动） | `770/770` 通过，0 failed，0 skipped。 |
+| warnings-as-errors 构建 | PASS（自动） | 0 warnings / 0 errors。 |
+| 可复现 package | PASS（自动） | 连续两次构建及 `PACKAGE_OK`；SHA-256 `64B75540EA0F5B9E1F320CCF53524169DDD51F7CA753E4A58AFDC7E7CD9627FE`，177792 bytes，8 entries。 |
+| 包内 DLL | PASS（自动） | 包内与 Release DLL SHA-256 均为 `0774AC5D49E9E55A89B9C45CF4BB4490CF69D70610E46D63B677B65164FBA423`，402432 bytes。 |
+| 隔离安装 | PASS（自动准备） | artifact 与 isolated `NetMods/SurvivalcraftTravelMap.netmod` 哈希相同；World2 仍为 4 files，现有地图缓存 222 个 `.sctm`；对应 ModsCache 项不存在。 |
+| 主游戏保护 | PASS（自动） | 主游戏 `34GPSFix.netmod` 仍为 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。 |
+
+生物标记阶段实机验收项（全部初始为 `PENDING`）：
+
+1. 小地图显示附近活体生物，玩家自己不显示。
+2. 大地图显示同一批生物，拖拽和缩放后位置仍正确。
+3. 捕食者红色、鸟类黄色、其他生物绿色，均带深色轮廓。
+4. 关闭“显示生物标记”后两张地图立即隐藏，重新开启立即恢复。
+5. 生物标记大小滑块 `3..16` 生效且不改变玩家箭头大小。
+6. 完全退出并重启后开关和大小保持，旧 schema-2 设置升级为 schema 3，地图与坐标点仍存在。
+7. 现有探索、大地图拖拽/缩放、坐标点和传送没有回归。
+
+## 上一版 release/package/隔离部署证据（历史）
 
 - 执行日期：2026-07-14
 - 已测试源码 HEAD：`5c3e38ddf777f4520f740a18fda1ccf7376ee856`

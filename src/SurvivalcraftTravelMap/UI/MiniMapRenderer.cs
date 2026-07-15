@@ -179,6 +179,7 @@ internal enum MapSurfacePrimitiveKind
     ExplorationBoundary,
     Player,
     Waypoint,
+    Creature,
     CoordinateBackdrop,
     SurveyCrosshair,
     FrameShadow,
@@ -208,6 +209,13 @@ internal interface IMapSurfacePrimitiveQueue
         Rgba32 color);
 
     void QueueTriangle(MapSurfacePrimitiveKind kind, MapPlayerPrimitive primitive);
+
+    void QueueDisc(
+        MapSurfacePrimitiveKind kind,
+        NVector2 center,
+        float radius,
+        Rgba32 color,
+        int segments);
 
     void QueueRectangle(MapFramePrimitive primitive);
 }
@@ -248,6 +256,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     private readonly TravelMapSettings _settings;
     private readonly Func<PlayerMapPose> _playerPose;
     private readonly Func<IReadOnlyList<Waypoint>> _waypoints;
+    private readonly Func<IReadOnlyList<CreatureMapMarker>> _creatures;
     private readonly Func<float> _brightness;
     private readonly BitmapFont _font;
     private IMapSurfacePrimitiveQueue? _primitiveQueue;
@@ -265,7 +274,18 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<float> brightness)
-        : this(pixelSource, settings, playerPose, waypoints, brightness, font: null)
+        : this(pixelSource, settings, playerPose, waypoints, () => [], brightness, font: null)
+    {
+    }
+
+    public MapSurfaceWidget(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
+        Func<float> brightness)
+        : this(pixelSource, settings, playerPose, waypoints, creatures, brightness, font: null)
     {
     }
 
@@ -276,11 +296,24 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Func<IReadOnlyList<Waypoint>> waypoints,
         Func<float> brightness,
         BitmapFont? font)
+        : this(pixelSource, settings, playerPose, waypoints, () => [], brightness, font)
+    {
+    }
+
+    internal MapSurfaceWidget(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
+        Func<float> brightness,
+        BitmapFont? font)
     {
         _pixelSource = pixelSource ?? throw new ArgumentNullException(nameof(pixelSource));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _playerPose = playerPose ?? throw new ArgumentNullException(nameof(playerPose));
         _waypoints = waypoints ?? throw new ArgumentNullException(nameof(waypoints));
+        _creatures = creatures ?? throw new ArgumentNullException(nameof(creatures));
         _brightness = brightness ?? throw new ArgumentNullException(nameof(brightness));
         _font = font ?? ContentManager.Get<BitmapFont>("Fonts/Pericles");
         IsDrawRequired = true;
@@ -428,6 +461,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         var terrainBrightness = _settings.UseDayNightTint ? _brightness() : 1f;
         TravelMapRenderModel.RenderTerrain(_pixelSource, Transform, terrainBrightness, this);
         _drawWaypoints = _waypoints();
+        DrawCreatureMarkers();
         TravelMapRenderModel.RenderOverlays(
             new MapOverlayState(
                 pose.Position,
@@ -512,6 +546,40 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 waypoint.Name,
                 center + new NVector2(9f, -9f),
                 TravelMapPalette.SnowText);
+        }
+    }
+
+    private void DrawCreatureMarkers()
+    {
+        if (!_settings.ShowCreatureMarkers)
+        {
+            return;
+        }
+
+        var markerSize = _settings.CreatureMarkerSize;
+        var fillRadius = markerSize * 0.5f;
+        var outlineRadius = fillRadius + MathF.Max(1.5f, markerSize * 0.1f);
+        foreach (var creature in _creatures())
+        {
+            var center = _drawMapTransform.WorldToScreen(
+                new NVector2(creature.Position.X, creature.Position.Z));
+            if (!IsInsideViewport(center, outlineRadius))
+            {
+                continue;
+            }
+
+            _primitiveQueue!.QueueDisc(
+                MapSurfacePrimitiveKind.Creature,
+                center,
+                outlineRadius,
+                CreatureMapMarkerStyle.OutlineColor,
+                segments: 12);
+            _primitiveQueue.QueueDisc(
+                MapSurfacePrimitiveKind.Creature,
+                center,
+                fillRadius,
+                CreatureMapMarkerStyle.ColorFor(creature.Kind),
+                segments: 12);
         }
     }
 
@@ -662,6 +730,25 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 ToEngineColor(primitive.Color));
         }
 
+        public void QueueDisc(
+            MapSurfacePrimitiveKind kind,
+            NVector2 center,
+            float radius,
+            Rgba32 color,
+            int segments)
+        {
+            var count = Math.Max(3, segments);
+            EnsureCapacity(additionalTriangleVertices: checked(count * 3), additionalLineVertices: 0);
+            batch.QueueDisc(
+                ToEngine(center),
+                new Engine.Vector2(radius),
+                0f,
+                ToEngineColor(color),
+                count,
+                0f,
+                MathF.Tau);
+        }
+
         public void QueueRectangle(MapFramePrimitive primitive)
         {
             EnsureCapacity(additionalTriangleVertices: 0, additionalLineVertices: 4);
@@ -751,6 +838,12 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         && point.X <= ActualSize.X + margin
         && point.Y <= ActualSize.Y + margin;
 
+    private bool IsInsideViewport(NVector2 point, float margin) =>
+        point.X >= margin
+        && point.Y >= margin
+        && point.X <= _drawMapTransform.ViewportSize.X - margin
+        && point.Y <= _drawMapTransform.ViewportSize.Y - margin;
+
     private static Engine.Vector2 ToEngine(NVector2 value) => new(value.X, value.Y);
 
     private static Color ToEngineColor(Rgba32 color) => new(color.R, color.G, color.B, color.A);
@@ -770,6 +863,7 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         TravelMapSettingsStore settingsStore,
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
         Func<float> brightness,
         Func<bool> inputBlocked,
         Action<string> notify)
@@ -779,6 +873,7 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
             settingsStore,
             playerPose,
             waypoints,
+            creatures,
             brightness,
             inputBlocked,
             () => { },
@@ -792,11 +887,12 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         TravelMapSettingsStore settingsStore,
         Func<PlayerMapPose> playerPose,
         Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
         Func<float> brightness,
         Func<bool> inputBlocked,
         Action requestOpenLargeMap,
         Action<string> notify)
-        : base(pixelSource, settings, playerPose, waypoints, brightness)
+        : base(pixelSource, settings, playerPose, waypoints, creatures, brightness)
     {
         _settings = settings;
         ArgumentNullException.ThrowIfNull(settingsStore);
