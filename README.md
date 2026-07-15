@@ -5,9 +5,8 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 ## 安装
 
 1. 退出游戏。
-2. 从 `NetMods` 中移除 `34GPSFix.netmod`。SCTM 与它不能同时安装；若检测到冲突，SCTM 会提示并停止初始化。
-3. 将 `SurvivalcraftTravelMap.netmod` 放入游戏目录的 `NetMods` 文件夹。
-4. 启动游戏并进入世界。
+2. 将 `SurvivalcraftTravelMap.netmod` 放入游戏目录的 `NetMods` 文件夹。
+3. 启动游戏并进入世界。
 
 远程联机坐标传送要求服务器也安装相同版本的 SCTM。只在客户端安装时仍可查看地图，但地图右键传送和坐标点传送不会由客户端直接修改玩家位置。联机版的单人世界实际以 `WorkType.Server` 集成主机运行；主玩家仍会创建地图界面，坐标传送则在同一进程内由服务器权威执行。
 
@@ -95,7 +94,7 @@ SCTM 不扫描、统计或上报已安装 Mod 的数量，也不包含旧的 Mod
 - “生物标记”阶段通过 Release 测试 `770/770`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `64B75540EA0F5B9E1F320CCF53524169DDD51F7CA753E4A58AFDC7E7CD9627FE`（177792 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `0774AC5D49E9E55A89B9C45CF4BB4490CF69D70610E46D63B677B65164FBA423`（402432 bytes）。用户已在隔离版确认该阶段可以进入下一项。
 - “地图朝向”阶段通过 Release 测试 `780/780`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `EF8C3570FCE57BCB25E96D651F33EEDCB8DBFA598CEAEE120F8100BF00AF8BEF`（178676 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `5D60E6841EA4FDF5E803F920B9E7DF824C44215665314A6EA1EEBAE2E873812D`（405504 bytes）。用户已在隔离版确认小地图两种朝向和固定北方朝上的大地图正常，可以进入下一项。
 - “罗盘方向 + 小地图位置”阶段通过 Debug 与 Release 测试 `800/800`（0 failed，0 skipped），warnings-as-errors 构建 `0 warnings / 0 errors`。连续两次封包及校验均得到 `PACKAGE_OK`，package SHA-256 均为 `47B7F64F134D88AF8655A019AE5C8486447F3CBDB3B4617DD24090213503718E`（182975 bytes，精确 8 entries）；包内 DLL 与 Release DLL SHA-256 均为 `A7D4A15C547892E20C969BEF2F62548A712E451B5F985C3F8063D5FEDB4AB890`（419328 bytes）。用户已在隔离版确认罗盘选项、鼠标拖动、确认/取消和界面布局正常，可以进入下一项。
-- 当前候选已按 exact paths 安装到 worktree 的隔离 smoke-game，artifact 与 installed SHA-256 相同；主游戏原 `34GPSFix.netmod` 始终保持 `00B49A731CC791014A14A316F25C07A37EAEED23DBC876C9EB50C384042CCD4B`。隔离 World2（4 files）和现有 travel-map cache（244 个 `.sctm`）均保留。
+- 当前候选已按精确路径安装到 worktree 的隔离 smoke-game，artifact 与 installed SHA-256 相同；隔离 World2 和现有 travel-map cache 均保留。
 - 小地图逻辑坐标、entered-chunk 原子探索、全局地图 LOD 与集成主机/联机传送链路均有自动测试覆盖，但不等于游戏内验收。批准的 10 项基础矩阵和 7 项公开分享前扩展矩阵（共 17 项）仍全部 `PENDING`；实际游戏内布局（含 UI 缩放 `0.75 / 1.0 / 1.25`）、World2 旧缓存补全、地表/坐标点/失败回退传送、运行模式/绑定同步和多人邀请均须按 [烟雾测试清单](docs/smoke-test-2026-07-13.md) 由用户确认。
 
 更完整的操作、故障恢复与测试步骤见 [用户指南](docs/user-guide.md)。
