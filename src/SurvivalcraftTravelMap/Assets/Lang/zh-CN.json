@@ -1,5 +1,6 @@
 {
   "TravelMap": {
+    "openMap": "地图",
     "largeMapTitle": "旅行地图",
     "settingsTitle": "旅行地图设置",
     "settings": "设置",
@@ -21,7 +22,11 @@
     "showCompassNorth": "  显示北方",
     "showCompassOtherDirections": "  显示东 / 南 / 西",
     "useDayNightTint": "启用日夜地形明暗",
-    "useHeightShading": "启用地形高度阴影",
+    "heightShading": "地形阴影",
+    "heightShadingOff": "关闭",
+    "heightShadingSoft": "柔和",
+    "heightShadingStandard": "标准",
+    "heightShadingHighContrast": "高对比",
     "acceptTeleportInvitations": "接受玩家传送邀请",
     "miniMapZoom": "小地图 方块/像素",
     "largeMapZoom": "大地图 方块/像素",

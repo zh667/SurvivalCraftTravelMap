@@ -125,6 +125,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private TrackedUiActionRunner? _networkActions;
     private TeleportPanelWidget? _teleportPanel;
     private BitmapButtonWidget? _teleportPanelButton;
+    private BevelledButtonWidget? _openMapButton;
     private Texture2D? _teleportButtonTexture;
     private Texture2D? _teleportButtonPressedTexture;
     private float _flushElapsed;
@@ -211,6 +212,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         UpdateHudPositions();
         UpdateMiniMapPlacement();
         UpdateInvitationUi(hudState);
+        UpdateOpenMapButton();
         UpdateExploration();
         if (_miniMapPlacementSession is null)
         {
@@ -704,6 +706,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
             OpenLargeMapAtLastDeath);
         _miniMap.GameTimeProvider = GetGameTime;
         Player.GuiWidget.Children.Add(_miniMap);
+        _openMapButton = new BevelledButtonWidget
+        {
+            Text = TravelMapText.Get("openMap", "地图"),
+            Size = new Engine.Vector2(
+                TravelMapOverlayLayout.OpenMapButtonSize.X,
+                TravelMapOverlayLayout.OpenMapButtonSize.Y),
+        };
+        Player.GuiWidget.Children.Add(_openMapButton);
         _miniMapPlacementWidget = new MiniMapPlacementWidget(
             ConfirmMiniMapPlacement,
             CancelMiniMapPlacement);
@@ -790,6 +800,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
             SetHudWidgetPosition(_teleportPanelButton, positions.TeleportButton);
         }
 
+        if (_openMapButton is not null)
+        {
+            SetHudWidgetPosition(_openMapButton, positions.OpenMapButton);
+        }
     }
 
     private void SetHudWidgetPosition(Widget widget, Vector2 position)
@@ -859,6 +873,22 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
     }
 
+    private void UpdateOpenMapButton()
+    {
+        // The always-visible open-map button is the touch-friendly counterpart to the
+        // "M" hotkey: phones have no keyboard, so this is their primary way in. It also
+        // covers players who hid the mini map (which otherwise doubles as a tap target).
+        if (_openMapButton is null || !_openMapButton.IsEnabled)
+        {
+            return;
+        }
+
+        if (_openMapButton.IsClicked)
+        {
+            OpenLargeMap();
+        }
+    }
+
     private TravelMapHudSignals GetHudSignals()
     {
         var isLargeMapOpen = _largeMapDialog is not null
@@ -892,6 +922,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _teleportPanelButton.IsEnabled = !isPlacingMiniMap
                 && state.ShowTeleportButton
                 && state.AllowMiniMapInput;
+        }
+
+        if (_openMapButton is not null)
+        {
+            _openMapButton.IsVisible = !isPlacingMiniMap && state.ShowOpenMapButton;
+            _openMapButton.IsEnabled = !isPlacingMiniMap
+                && state.ShowOpenMapButton
+                && state.AllowOpenMapInput;
         }
     }
 
@@ -1737,6 +1775,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _teleportPanelButton = null;
             RunCleanupStep(() => teleportPanelButton.ParentWidget?.Children.Remove(teleportPanelButton));
             RunCleanupStep(teleportPanelButton.Dispose);
+        }
+
+        if (_openMapButton is not null)
+        {
+            var openMapButton = _openMapButton;
+            _openMapButton = null;
+            RunCleanupStep(() => openMapButton.ParentWidget?.Children.Remove(openMapButton));
+            RunCleanupStep(openMapButton.Dispose);
         }
 
         if (_teleportButtonTexture is not null)

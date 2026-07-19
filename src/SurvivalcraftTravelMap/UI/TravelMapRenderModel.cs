@@ -699,7 +699,7 @@ public static class TravelMapRenderModel
         MapTransform transform,
         float brightness,
         ITravelMapRenderSink sink,
-        bool useHeightShading = false)
+        float heightShadingStrength = 0f)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(sink);
@@ -749,7 +749,7 @@ public static class TravelMapRenderModel
                 maximumX,
                 minimumZ,
                 maximumZ,
-                useHeightShading);
+                heightShadingStrength);
         }
 
         var visibleStartX = (long)Math.Ceiling(minimumX);
@@ -815,7 +815,8 @@ public static class TravelMapRenderModel
                     transform.WorldToScreen(new Vector2(x, bottom)),
                     TerrainHeightShading.Apply(
                         pixel.Color,
-                        useHeightShading ? pixel.HeightShade : TerrainHeightShading.Unknown,
+                        pixel.HeightShade,
+                        heightShadingStrength,
                         tint)));
                 primitives++;
             }
@@ -907,7 +908,7 @@ public static class TravelMapRenderModel
         double maximumX,
         double minimumZ,
         double maximumZ,
-        bool useHeightShading)
+        float heightShadingStrength)
     {
         var region = new MapTileRegion(
             TileCoordinate.FromWorld((int)Math.Floor(minimumX), 0).TileX,
@@ -986,7 +987,8 @@ public static class TravelMapRenderModel
                         transform.WorldToScreen(new Vector2(x, bottom)),
                         TerrainHeightShading.Apply(
                             pixel.Color,
-                            useHeightShading ? pixel.HeightShade : TerrainHeightShading.Unknown,
+                            pixel.HeightShade,
+                            heightShadingStrength,
                             tint)));
                     primitives++;
                 }

@@ -78,6 +78,23 @@ public sealed class TravelMapUiStateTests
 
         Assert.Equal(new Vector2(794.5f, 24f), positions.MiniMap);
         Assert.Equal(new Vector2(938.5f, 262f), positions.TeleportButton);
+        Assert.Equal(new Vector2(24f, 24f), positions.OpenMapButton);
+    }
+
+    [Fact]
+    public void Open_map_button_anchors_top_left_independent_of_the_minimap()
+    {
+        var small = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1062.5f, 597.65625f),
+            miniMapSize: 160f);
+        var large = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1062.5f, 597.65625f),
+            miniMapSize: 384f,
+            anchorX: 0.9f,
+            anchorY: 0.9f);
+
+        Assert.Equal(new Vector2(24f, 24f), small.OpenMapButton);
+        Assert.Equal(new Vector2(24f, 24f), large.OpenMapButton);
     }
 
     [Fact]
@@ -561,6 +578,7 @@ public sealed class TravelMapSettingsStoreTests
         Assert.Equal(1f, document.RootElement.GetProperty("CompassFontScale").GetSingle());
         Assert.Equal("RoundedSquare", document.RootElement.GetProperty("MiniMapShape").GetString());
         Assert.True(document.RootElement.GetProperty("ShowGameTime").GetBoolean());
+        Assert.Equal("Standard", document.RootElement.GetProperty("HeightShadingStyle").GetString());
         Assert.True(document.RootElement.GetProperty("UseHeightShading").GetBoolean());
         Assert.Equal(160, document.RootElement.GetProperty("MiniMapSize").GetInt32());
     }
@@ -639,7 +657,7 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Fact]
-    public async Task Current_schema_preserves_disabled_height_shading_setting()
+    public async Task Legacy_disabled_height_shading_bool_migrates_to_the_off_style()
     {
         using var directory = new UiTemporaryDirectory();
         var store = new TravelMapSettingsStore(directory.Path);
@@ -650,7 +668,22 @@ public sealed class TravelMapSettingsStoreTests
 
         var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
 
-        Assert.False(result.Settings.UseHeightShading);
+        Assert.Equal(HeightShadingStyle.Off, result.Settings.HeightShadingStyle);
+    }
+
+    [Fact]
+    public async Task Saved_height_shading_style_round_trips()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"HeightShadingStyle\":\"HighContrast\"}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HeightShadingStyle.HighContrast, result.Settings.HeightShadingStyle);
     }
 
     [Fact]

@@ -18,7 +18,9 @@ public sealed class TravelMapHudPolicyTests
         Assert.Equal(new TravelMapHudState(
             ShowMiniMap: true,
             ShowTeleportButton: false,
-            AllowMiniMapInput: true), state);
+            AllowMiniMapInput: true,
+            ShowOpenMapButton: true,
+            AllowOpenMapInput: true), state);
     }
 
     [Theory]
@@ -42,17 +44,15 @@ public sealed class TravelMapHudPolicyTests
     }
 
     [Theory]
-    [InlineData(false, true, true, true, false, false)]
-    [InlineData(true, false, true, true, false, false)]
-    [InlineData(true, true, false, true, false, false)]
-    [InlineData(true, true, true, false, false, false)]
-    [InlineData(true, true, true, true, true, false)]
-    [InlineData(true, true, true, true, false, true)]
+    [InlineData(false, true, true, false, false)]
+    [InlineData(true, false, true, false, false)]
+    [InlineData(true, true, false, false, false)]
+    [InlineData(true, true, true, true, false)]
+    [InlineData(true, true, true, false, true)]
     public void Base_gate_hides_all_hud_and_disables_input(
         bool hasUi,
         bool isMainPlayer,
         bool isRuntimeActive,
-        bool miniMapSettingEnabled,
         bool hasModalSurface,
         bool isLargeMapOpen)
     {
@@ -61,12 +61,29 @@ public sealed class TravelMapHudPolicyTests
             HasUi = hasUi,
             IsMainPlayer = isMainPlayer,
             IsRuntimeActive = isRuntimeActive,
-            MiniMapSettingEnabled = miniMapSettingEnabled,
             HasModalSurface = hasModalSurface,
             IsLargeMapOpen = isLargeMapOpen,
         });
 
-        Assert.Equal(new TravelMapHudState(false, false, false), state);
+        Assert.Equal(new TravelMapHudState(false, false, false, false, false), state);
+    }
+
+    [Fact]
+    public void Hiding_the_minimap_keeps_the_open_map_button_reachable()
+    {
+        // Touch players have no "M" key, so the open-map button must stay visible and
+        // interactive even when the mini map (its usual tap target) is turned off.
+        var state = TravelMapHudPolicy.Evaluate(VisibleHudSignals() with
+        {
+            MiniMapSettingEnabled = false,
+        });
+
+        Assert.Equal(new TravelMapHudState(
+            ShowMiniMap: false,
+            ShowTeleportButton: false,
+            AllowMiniMapInput: false,
+            ShowOpenMapButton: true,
+            AllowOpenMapInput: true), state);
     }
 
     [Fact]
@@ -80,7 +97,9 @@ public sealed class TravelMapHudPolicyTests
         Assert.Equal(new TravelMapHudState(
             ShowMiniMap: true,
             ShowTeleportButton: true,
-            AllowMiniMapInput: false), state);
+            AllowMiniMapInput: false,
+            ShowOpenMapButton: true,
+            AllowOpenMapInput: false), state);
     }
 
     [Fact]
@@ -108,8 +127,8 @@ public sealed class TravelMapHudPolicyTests
         var whileModal = TravelMapHudPolicy.Evaluate(signals);
         var afterModal = TravelMapHudPolicy.Evaluate(signals with { HasModalSurface = false });
 
-        Assert.Equal(new TravelMapHudState(false, false, false), whileModal);
-        Assert.Equal(new TravelMapHudState(true, true, true), afterModal);
+        Assert.Equal(new TravelMapHudState(false, false, false, false, false), whileModal);
+        Assert.Equal(new TravelMapHudState(true, true, true, true, true), afterModal);
         Assert.Equal(settingsBefore, JsonSerializer.Serialize(settings));
     }
 

@@ -25,6 +25,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
     private readonly BevelledButtonWidget _resetButton;
     private readonly List<BevelledButtonWidget> _sizeButtons = [];
     private readonly List<BevelledButtonWidget> _shapeButtons = [];
+    private readonly List<BevelledButtonWidget> _heightShadingButtons = [];
     private readonly List<(CheckboxWidget Widget, Func<bool> Read)> _toggleBindings = [];
     private bool _refreshingControls;
 
@@ -129,10 +130,28 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             TravelMapText.Get("useDayNightTint", "启用日夜地形明暗"),
             () => settings.UseDayNightTint,
             value => settings.UseDayNightTint = value));
-        settingsStack.Children.Add(CreateToggle(
-            TravelMapText.Get("useHeightShading", "启用地形高度阴影"),
-            () => settings.UseHeightShading,
-            value => settings.UseHeightShading = value));
+        settingsStack.Children.Add(CreateSectionLabel(
+            TravelMapText.Get("heightShading", "地形阴影")));
+        var heightShadingStack = new StackPanelWidget
+        {
+            Direction = LayoutDirection.Horizontal,
+            Margin = new Vector2(2f),
+        };
+        settingsStack.Children.Add(heightShadingStack);
+        foreach (var style in Enum.GetValues<HeightShadingStyle>())
+        {
+            var button = new BevelledButtonWidget
+            {
+                Text = TravelMapText.HeightShading(style),
+                Size = new Vector2(86f, 38f),
+                Color = SnowText,
+                CenterColor = style == settings.HeightShadingStyle ? Moss : Basalt,
+                Tag = style,
+            };
+            _heightShadingButtons.Add(button);
+            heightShadingStack.Children.Add(button);
+        }
+
         settingsStack.Children.Add(CreateToggle(
             TravelMapText.Get("acceptTeleportInvitations", "接受玩家传送邀请"),
             () => settings.AcceptTeleportInvitations,
@@ -290,6 +309,14 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             }
         }
 
+        foreach (var button in _heightShadingButtons)
+        {
+            if (button.IsClicked && button.Tag is HeightShadingStyle style)
+            {
+                SetHeightShadingStyle(style);
+            }
+        }
+
         if (_placementButton.IsClicked)
         {
             RequestPersist();
@@ -404,6 +431,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             _compassFontScale.Text = _settings.CompassFontScale.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
             RefreshSizeButtons();
             RefreshShapeButtons();
+            RefreshHeightShadingButtons();
         }
         finally
         {
@@ -485,6 +513,24 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             if (button.Tag is MapShape buttonShape)
             {
                 button.CenterColor = buttonShape == _settings.MiniMapShape ? Moss : Basalt;
+            }
+        }
+    }
+
+    private void SetHeightShadingStyle(HeightShadingStyle style)
+    {
+        _settings.HeightShadingStyle = style;
+        RefreshHeightShadingButtons();
+        Persist();
+    }
+
+    private void RefreshHeightShadingButtons()
+    {
+        foreach (var button in _heightShadingButtons)
+        {
+            if (button.Tag is HeightShadingStyle buttonStyle)
+            {
+                button.CenterColor = buttonStyle == _settings.HeightShadingStyle ? Moss : Basalt;
             }
         }
     }

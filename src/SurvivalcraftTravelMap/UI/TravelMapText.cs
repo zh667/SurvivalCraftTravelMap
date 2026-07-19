@@ -31,4 +31,13 @@ internal static class TravelMapText
         global::SurvivalcraftTravelMap.Settings.MapShape.RoundedSquare => Get("mapShapeRoundedSquare", "圆角方形"),
         _ => string.Empty,
     };
+
+    public static string HeightShading(HeightShadingStyle style) => style switch
+    {
+        HeightShadingStyle.Off => Get("heightShadingOff", "关闭"),
+        HeightShadingStyle.Soft => Get("heightShadingSoft", "柔和"),
+        HeightShadingStyle.Standard => Get("heightShadingStandard", "标准"),
+        HeightShadingStyle.HighContrast => Get("heightShadingHighContrast", "高对比"),
+        _ => string.Empty,
+    };
 }

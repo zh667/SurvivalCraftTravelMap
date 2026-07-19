@@ -5,19 +5,20 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapLocalizationTests
 {
+    // Only the languages Survivalcraft ships built-in, so our catalogs merge into
+    // the game's full text tables instead of creating orphan languages that leave
+    // the rest of the game UI untranslated.
     private static readonly string[] Languages =
     [
         "zh-CN",
         "en-US",
-        "es-419",
+        "es-MX",
         "pt-BR",
-        "ro-RO",
         "ru-RU",
-        "vi-VN",
     ];
 
     [Fact]
-    public void All_seven_language_catalogs_have_identical_non_empty_keys()
+    public void All_language_catalogs_have_identical_non_empty_keys()
     {
         string[]? baseline = null;
         foreach (var language in Languages)
@@ -34,7 +35,7 @@ public sealed class TravelMapLocalizationTests
             var entries = travelMap.EnumerateObject().ToArray();
             var keys = entries.Select(entry => entry.Name).Order(StringComparer.Ordinal).ToArray();
 
-            Assert.Equal(123, keys.Length);
+            Assert.Equal(128, keys.Length);
             Assert.All(entries, entry =>
             {
                 Assert.Equal(JsonValueKind.String, entry.Value.ValueKind);

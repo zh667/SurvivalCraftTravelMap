@@ -52,9 +52,22 @@ public static class TerrainHeightShading
 
     public static float Decode(byte encoded) => encoded == Unknown ? 1f : encoded / (float)Neutral;
 
-    public static Rgba32 Apply(Rgba32 color, byte encoded, float brightness = 1f)
+    public static Rgba32 Apply(Rgba32 color, byte encoded, float brightness = 1f) =>
+        Apply(color, encoded, strength: 1f, brightness);
+
+    /// <summary>
+    /// Applies the baked shade to <paramref name="color"/>, scaling the relief around
+    /// neutral by <paramref name="strength"/> (0 = flat, 1 = as baked, &gt;1 = exaggerated),
+    /// then multiplying by the day/night <paramref name="brightness"/> tint. This lets the
+    /// UI restyle already-explored terrain without re-baking, since the strength is applied
+    /// at render time on top of the stored byte.
+    /// </summary>
+    public static Rgba32 Apply(Rgba32 color, byte encoded, float strength, float brightness)
     {
-        var factor = Decode(encoded) * Math.Clamp(float.IsFinite(brightness) ? brightness : 1f, 0f, 1f);
+        var shade = Decode(encoded);
+        var clampedStrength = Math.Clamp(float.IsFinite(strength) ? strength : 1f, 0f, 4f);
+        var relief = MathF.Max(0f, 1f + ((shade - 1f) * clampedStrength));
+        var factor = relief * Math.Clamp(float.IsFinite(brightness) ? brightness : 1f, 0f, 1f);
         return new Rgba32(
             Scale(color.R, factor),
             Scale(color.G, factor),
