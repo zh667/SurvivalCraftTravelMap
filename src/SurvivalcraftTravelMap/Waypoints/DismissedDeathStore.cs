@@ -5,10 +5,10 @@ using SurvivalcraftTravelMap.Persistence;
 namespace SurvivalcraftTravelMap.Waypoints;
 
 /// <summary>
-/// Per-player, per-world persistence for the single death record the player chose to dismiss.
+/// Per-player, per-world persistence for the set of death records the player chose to dismiss.
 /// The native game stores its death history in its own save and offers no delete API, so the mod
-/// records the dismissed death's <see cref="DeathMarkerIdentity"/> in a sibling
-/// <c>death-state.json</c> next to <c>waypoints.json</c> and simply stops drawing that death.
+/// records each dismissed death's <see cref="DeathMarkerIdentity"/> in a sibling
+/// <c>death-state.json</c> next to <c>waypoints.json</c> and simply stops drawing those deaths.
 /// A newer death (a later record) is unaffected and re-shows a fresh tracked marker.
 /// </summary>
 public sealed class DismissedDeathStore
@@ -23,7 +23,7 @@ public sealed class DismissedDeathStore
 
     private readonly object _sync = new();
     private readonly string _filePath;
-    private DeathMarkerIdentity? _dismissed;
+    private readonly HashSet<DeathMarkerIdentity> _dismissed = new();
 
     public DismissedDeathStore(string directory)
     {
@@ -31,14 +31,23 @@ public sealed class DismissedDeathStore
         _filePath = Path.GetFullPath(Path.Combine(directory, FileName));
     }
 
-    public DeathMarkerIdentity? Dismissed
+    /// <summary>A snapshot of every death identity the player has dismissed.</summary>
+    public IReadOnlySet<DeathMarkerIdentity> Dismissed
     {
         get
         {
             lock (_sync)
             {
-                return _dismissed;
+                return new HashSet<DeathMarkerIdentity>(_dismissed);
             }
+        }
+    }
+
+    public bool Contains(DeathMarkerIdentity identity)
+    {
+        lock (_sync)
+        {
+            return _dismissed.Contains(identity);
         }
     }
 
@@ -48,46 +57,55 @@ public sealed class DismissedDeathStore
         {
             lock (_sync)
             {
-                _dismissed = null;
+                _dismissed.Clear();
             }
 
             return;
         }
 
-        DeathMarkerIdentity? loaded = null;
+        var loaded = new HashSet<DeathMarkerIdentity>();
         try
         {
             var json = await File.ReadAllBytesAsync(_filePath, cancellationToken).ConfigureAwait(false);
             var document = JsonSerializer.Deserialize<PersistedDeathState>(json);
-            if (document is not null
-                && DeathMarkerIdentity.TryParse(document.DismissedDeath, out var identity))
+            if (document?.DismissedDeaths is { } entries)
             {
-                loaded = identity;
+                foreach (var entry in entries)
+                {
+                    if (DeathMarkerIdentity.TryParse(entry, out var identity))
+                    {
+                        loaded.Add(identity);
+                    }
+                }
             }
         }
         catch (JsonException)
         {
             // A corrupt death-state file simply means nothing is dismissed; keep drawing markers.
-            loaded = null;
+            loaded.Clear();
         }
 
         lock (_sync)
         {
-            _dismissed = loaded;
+            _dismissed.Clear();
+            _dismissed.UnionWith(loaded);
         }
     }
 
-    public async Task SetAsync(DeathMarkerIdentity? identity, CancellationToken cancellationToken = default)
+    /// <summary>Adds a death identity to the dismissed set and persists the whole set.</summary>
+    public async Task AddAsync(DeathMarkerIdentity identity, CancellationToken cancellationToken = default)
     {
+        string[] snapshot;
         lock (_sync)
         {
-            _dismissed = identity;
+            _dismissed.Add(identity);
+            snapshot = _dismissed.Select(entry => entry.Serialize()).ToArray();
         }
 
         var document = new PersistedDeathState
         {
             SchemaVersion = CurrentSchemaVersion,
-            DismissedDeath = identity?.Serialize(),
+            DismissedDeaths = snapshot,
         };
         await AtomicFile.ReplaceAsync(
             _filePath,
@@ -100,7 +118,7 @@ public sealed class DismissedDeathStore
         [JsonPropertyName("schemaVersion")]
         public int SchemaVersion { get; init; }
 
-        [JsonPropertyName("dismissedDeath")]
-        public string? DismissedDeath { get; init; }
+        [JsonPropertyName("dismissedDeaths")]
+        public IReadOnlyList<string>? DismissedDeaths { get; init; }
     }
 }

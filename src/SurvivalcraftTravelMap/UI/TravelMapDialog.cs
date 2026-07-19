@@ -1032,6 +1032,9 @@ public sealed class TravelMapDialog : Dialog
         TravelMapContextAction.TeleportToPreviousDeath => TravelMapText.Get(
             "teleportToPreviousDeath",
             "传送到此前死亡地点"),
+        TravelMapContextAction.DeletePreviousDeath => TravelMapText.Get(
+            "deleteDeathMarker",
+            "删除死亡标记"),
         _ => throw new ArgumentOutOfRangeException(nameof(action)),
     };
 }

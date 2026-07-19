@@ -5,6 +5,7 @@ using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
+using SurvivalcraftTravelMap.Waypoints;
 using Xunit;
 
 namespace SurvivalcraftTravelMap.Tests;
@@ -413,8 +414,8 @@ public sealed class MiniMapTextRendererTests
             Cause = "latest",
         });
 
-        var current = TravelMapComponent.SelectCurrentDeath(stats, dismissedDeath: null);
-        var previous = TravelMapComponent.SelectPreviousDeath(stats);
+        var current = TravelMapComponent.SelectCurrentDeath(stats, dismissedDeaths: null);
+        var previous = TravelMapComponent.SelectPreviousDeath(stats, dismissedDeaths: null);
 
         Assert.NotNull(current);
         Assert.Equal(new Vector3(40f, 50f, 60f), current.Position);
@@ -444,14 +445,74 @@ public sealed class MiniMapTextRendererTests
             Cause = "latest",
         });
 
-        var dismissed = TravelMapComponent.LatestDeathIdentity(stats);
-        Assert.NotNull(dismissed);
+        var dismissedIdentity = TravelMapComponent.LatestDeathIdentity(stats);
+        Assert.NotNull(dismissedIdentity);
+        var dismissed = new HashSet<DeathMarkerIdentity> { dismissedIdentity.Value };
 
         Assert.Null(TravelMapComponent.SelectCurrentDeath(stats, dismissed));
 
-        var previous = TravelMapComponent.SelectPreviousDeath(stats);
+        var previous = TravelMapComponent.SelectPreviousDeath(stats, dismissed);
         Assert.NotNull(previous);
         Assert.Equal(new Vector3(10f, 20f, 30f), previous.Position);
+    }
+
+    [Fact]
+    public void Dismissing_the_previous_death_hides_only_it_and_leaves_the_current_marker()
+    {
+        var stats = new PlayerStats();
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 1.5,
+            Location = new Engine.Vector3(10f, 20f, 30f),
+            Cause = "old",
+        });
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 2.5,
+            Location = new Engine.Vector3(40f, 50f, 60f),
+            Cause = "latest",
+        });
+
+        var previousIdentity = TravelMapComponent.PreviousDeathIdentity(stats);
+        Assert.NotNull(previousIdentity);
+        var dismissed = new HashSet<DeathMarkerIdentity> { previousIdentity.Value };
+
+        Assert.Null(TravelMapComponent.SelectPreviousDeath(stats, dismissed));
+
+        var current = TravelMapComponent.SelectCurrentDeath(stats, dismissed);
+        Assert.NotNull(current);
+        Assert.Equal(new Vector3(40f, 50f, 60f), current.Position);
+    }
+
+    [Fact]
+    public void Both_the_current_and_previous_deaths_can_be_dismissed_individually()
+    {
+        var stats = new PlayerStats();
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 1.5,
+            Location = new Engine.Vector3(10f, 20f, 30f),
+            Cause = "old",
+        });
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 2.5,
+            Location = new Engine.Vector3(40f, 50f, 60f),
+            Cause = "latest",
+        });
+
+        var currentIdentity = TravelMapComponent.LatestDeathIdentity(stats);
+        var previousIdentity = TravelMapComponent.PreviousDeathIdentity(stats);
+        Assert.NotNull(currentIdentity);
+        Assert.NotNull(previousIdentity);
+        var dismissed = new HashSet<DeathMarkerIdentity>
+        {
+            currentIdentity.Value,
+            previousIdentity.Value,
+        };
+
+        Assert.Null(TravelMapComponent.SelectCurrentDeath(stats, dismissed));
+        Assert.Null(TravelMapComponent.SelectPreviousDeath(stats, dismissed));
     }
 
     [Fact]
@@ -465,7 +526,9 @@ public sealed class MiniMapTextRendererTests
             Cause = "old",
         });
 
-        var dismissed = TravelMapComponent.LatestDeathIdentity(stats);
+        var dismissedIdentity = TravelMapComponent.LatestDeathIdentity(stats);
+        Assert.NotNull(dismissedIdentity);
+        var dismissed = new HashSet<DeathMarkerIdentity> { dismissedIdentity.Value };
         Assert.Null(TravelMapComponent.SelectCurrentDeath(stats, dismissed));
 
         stats.AddDeathRecord(new PlayerStats.DeathRecord

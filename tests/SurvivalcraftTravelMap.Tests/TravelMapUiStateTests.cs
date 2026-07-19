@@ -484,7 +484,7 @@ public sealed class TravelMapUiStateTests
     }
 
     [Fact]
-    public void Right_click_on_the_previous_death_marker_only_offers_teleport_or_cancel()
+    public void Right_click_on_the_previous_death_marker_offers_teleport_delete_or_cancel()
     {
         var command = _controller.HandleRightClick(
             new Vector2(10f, 20f),
@@ -496,7 +496,8 @@ public sealed class TravelMapUiStateTests
         Assert.Equal(TravelMapUiCommandKind.ShowDeathMarkerMenu, command.Kind);
         Assert.Null(command.ContextMenu!.WaypointId);
         Assert.Equal(
-            [TravelMapContextAction.TeleportToPreviousDeath, TravelMapContextAction.Cancel],
+            [TravelMapContextAction.TeleportToPreviousDeath,
+                TravelMapContextAction.DeletePreviousDeath, TravelMapContextAction.Cancel],
             command.ContextMenu.Actions);
     }
 

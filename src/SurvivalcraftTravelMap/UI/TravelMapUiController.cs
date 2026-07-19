@@ -56,6 +56,7 @@ public enum TravelMapContextAction
     TeleportToLastDeath,
     DeleteLastDeath,
     TeleportToPreviousDeath,
+    DeletePreviousDeath,
     RenameWaypoint,
     DeleteWaypoint,
     Cancel,
@@ -104,6 +105,7 @@ public sealed class TravelMapUiController
     private static readonly TravelMapContextAction[] PreviousDeathMarkerActions =
     [
         TravelMapContextAction.TeleportToPreviousDeath,
+        TravelMapContextAction.DeletePreviousDeath,
         TravelMapContextAction.Cancel,
     ];
 

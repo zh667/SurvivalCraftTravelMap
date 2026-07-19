@@ -109,7 +109,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private MapViewState? _mapViewState;
     private WaypointRepository? _waypointRepository;
     private DismissedDeathStore? _dismissedDeathStore;
-    private DeathMarkerIdentity? _dismissedDeath;
+    private readonly HashSet<DeathMarkerIdentity> _dismissedDeaths = new();
     private CurrentPositionWaypointHandler? _currentPositionWaypointHandler;
     private IReadOnlyList<Waypoint> _waypoints = Array.Empty<Waypoint>();
     private MiniMapRenderer? _miniMap;
@@ -645,7 +645,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _dismissedDeathStore.LoadAsync(_lifetimeCancellation.Token)
                 .GetAwaiter()
                 .GetResult();
-            _dismissedDeath = _dismissedDeathStore.Dismissed;
+            _dismissedDeaths.Clear();
+            _dismissedDeaths.UnionWith(_dismissedDeathStore.Dismissed);
             _currentPositionWaypointHandler = new CurrentPositionWaypointHandler(
                 _waypointRepository,
                 () =>
@@ -666,7 +667,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _mapViewState = null;
             _waypointRepository = null;
             _dismissedDeathStore = null;
-            _dismissedDeath = null;
+            _dismissedDeaths.Clear();
             _currentPositionWaypointHandler = null;
             WarnPersistenceOnce(TravelMapText.Format(
                 "persistenceUnavailableFormat",
@@ -1400,8 +1401,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     return TravelMapActionStatus.FailedWithFeedback;
                 }
 
-                _dismissedDeath = identity;
-                await SaveDismissedDeathAsync(cancellationToken).ConfigureAwait(false);
+                _dismissedDeaths.Add(identity.Value);
+                await SaveDismissedDeathAsync(identity.Value, cancellationToken).ConfigureAwait(false);
                 return TravelMapActionStatus.Completed;
             }
             case TravelMapContextAction.TeleportToPreviousDeath:
@@ -1417,6 +1418,21 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
                 return await RequestWaypointTravelAsync(previousDeath.Position, cancellationToken)
                     .ConfigureAwait(false);
+            }
+            case TravelMapContextAction.DeletePreviousDeath:
+            {
+                var identity = PreviousDeathIdentity(Player.PlayerStats);
+                if (identity is null || GetPreviousDeathMarker() is null)
+                {
+                    ShowMessage(
+                        TravelMapText.Get("lastDeathUnavailable", "还没有可返回的死亡地点"),
+                        TravelMapNoticeKind.Information);
+                    return TravelMapActionStatus.FailedWithFeedback;
+                }
+
+                _dismissedDeaths.Add(identity.Value);
+                await SaveDismissedDeathAsync(identity.Value, cancellationToken).ConfigureAwait(false);
+                return TravelMapActionStatus.Completed;
             }
             case TravelMapContextAction.AddWaypoint:
             {
@@ -1564,14 +1580,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
     }
 
-    private async Task SaveDismissedDeathAsync(CancellationToken cancellationToken)
+    private async Task SaveDismissedDeathAsync(
+        DeathMarkerIdentity identity,
+        CancellationToken cancellationToken)
     {
         if (_dismissedDeathStore is null)
         {
             return;
         }
 
-        await _dismissedDeathStore.SetAsync(_dismissedDeath, cancellationToken).ConfigureAwait(false);
+        await _dismissedDeathStore.AddAsync(identity, cancellationToken).ConfigureAwait(false);
     }
 
     private PlayerMapPose GetPlayerPose()
@@ -1584,17 +1602,18 @@ public sealed class TravelMapComponent : Component, IUpdateable
     }
 
     private DeathMapMarker? GetLastDeathMarker() =>
-        SelectCurrentDeath(Player.PlayerStats, _dismissedDeath);
+        SelectCurrentDeath(Player.PlayerStats, _dismissedDeaths);
 
-    private DeathMapMarker? GetPreviousDeathMarker() => SelectPreviousDeath(Player.PlayerStats);
+    private DeathMapMarker? GetPreviousDeathMarker() =>
+        SelectPreviousDeath(Player.PlayerStats, _dismissedDeaths);
 
     /// <summary>
     /// The tracked "current" death: the newest record unless the player dismissed exactly that
-    /// record. A later death (a newer record) replaces the dismissed identity and re-shows a marker.
+    /// record. A later death (a newer record) is a distinct identity and re-shows a marker.
     /// </summary>
     internal static DeathMapMarker? SelectCurrentDeath(
         PlayerStats? stats,
-        DeathMarkerIdentity? dismissedDeath)
+        IReadOnlySet<DeathMarkerIdentity>? dismissedDeaths)
     {
         if (stats is null)
         {
@@ -1608,7 +1627,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         var record = records[records.Count - 1];
-        if (dismissedDeath is { } dismissed && IdentityOf(record) == dismissed)
+        if (dismissedDeaths is not null && dismissedDeaths.Contains(IdentityOf(record)))
         {
             return null;
         }
@@ -1617,10 +1636,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
     }
 
     /// <summary>
-    /// The untracked "previous" death: the second-to-last record, shown regardless of whether the
-    /// current death was dismissed.
+    /// The "previous" death: the second-to-last record, shown regardless of whether the current
+    /// death was dismissed, unless the player individually dismissed this previous record too.
     /// </summary>
-    internal static DeathMapMarker? SelectPreviousDeath(PlayerStats? stats)
+    internal static DeathMapMarker? SelectPreviousDeath(
+        PlayerStats? stats,
+        IReadOnlySet<DeathMarkerIdentity>? dismissedDeaths)
     {
         if (stats is null)
         {
@@ -1628,7 +1649,18 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
 
         var records = stats.DeathRecords;
-        return records.Count >= 2 ? ToMarker(records[records.Count - 2]) : null;
+        if (records.Count < 2)
+        {
+            return null;
+        }
+
+        var record = records[records.Count - 2];
+        if (dismissedDeaths is not null && dismissedDeaths.Contains(IdentityOf(record)))
+        {
+            return null;
+        }
+
+        return ToMarker(record);
     }
 
     /// <summary>Identity of the newest death record, used when dismissing the current death.</summary>
@@ -1641,6 +1673,18 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         var records = stats.DeathRecords;
         return records.Count == 0 ? null : IdentityOf(records[records.Count - 1]);
+    }
+
+    /// <summary>Identity of the second-to-last death record, used when dismissing the previous death.</summary>
+    internal static DeathMarkerIdentity? PreviousDeathIdentity(PlayerStats? stats)
+    {
+        if (stats is null)
+        {
+            return null;
+        }
+
+        var records = stats.DeathRecords;
+        return records.Count < 2 ? null : IdentityOf(records[records.Count - 2]);
     }
 
     private static DeathMarkerIdentity IdentityOf(PlayerStats.DeathRecord record) =>
