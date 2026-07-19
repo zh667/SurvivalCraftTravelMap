@@ -1,0 +1,24 @@
+# Crowdin config: use the mod's English catalog as the only source file and
+# write every translated catalog back beside it using the game's locale names.
+files:
+  - source: /src/SurvivalcraftTravelMap/Assets/Lang/en-US.json
+    translation: /src/SurvivalcraftTravelMap/Assets/Lang/%locale%.json
+    languages_mapping:
+      locale:
+        es-MX: es-MX
+        pt-BR: pt-BR
+        ru: ru-RU
+        zh-CN: zh-CN
+        vi: vi-VN
+        id: id-ID
+        tr: tr-TR
+        ja: ja-JP
+        ko: ko-KR
+        fr: fr-FR
+        de: de-DE
+        it: it-IT
+        pl: pl-PL
+        hi: hi-IN
+        th: th-TH
+        uk: uk-UA
+        ar: ar-SA
