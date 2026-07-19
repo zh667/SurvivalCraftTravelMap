@@ -618,7 +618,7 @@ public sealed class PackageStructureTests
 
         Assert.Equal(new TravelMapHudState(false, false, false, false, false), TravelMapHudPolicy.Evaluate(signals));
         Assert.Equal(
-            new TravelMapHudState(true, true, true, true, true),
+            new TravelMapHudState(true, true, true, false, false),
             TravelMapHudPolicy.Evaluate(signals with { HasModalSurface = false }));
         Assert.Same(sameSettings, settings);
         Assert.Equal(before, JsonSerializer.SerializeToUtf8Bytes(settings));
@@ -634,7 +634,7 @@ public sealed class PackageStructureTests
 
         Assert.Equal(new TravelMapHudState(false, false, false, false, false), TravelMapHudPolicy.Evaluate(signals));
         Assert.Equal(
-            new TravelMapHudState(true, true, true, true, true),
+            new TravelMapHudState(true, true, true, false, false),
             TravelMapHudPolicy.Evaluate(signals with { IsLargeMapOpen = false }));
         Assert.Same(sameSettings, settings);
         Assert.Equal(before, JsonSerializer.SerializeToUtf8Bytes(settings));
@@ -649,7 +649,7 @@ public sealed class PackageStructureTests
             IsLargeMapOpen = false,
         });
 
-        Assert.Equal(new TravelMapHudState(true, true, true, true, true), state);
+        Assert.Equal(new TravelMapHudState(true, true, true, false, false), state);
     }
 
     [Fact]

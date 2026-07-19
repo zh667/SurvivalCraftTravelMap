@@ -49,6 +49,7 @@ public sealed class TravelMapDialog : Dialog
     private readonly TravelMapSettingsStore _settingsStore;
     private readonly Func<PlayerMapPose> _playerPose;
     private readonly Func<DeathMapMarker?> _lastDeath;
+    private readonly Func<DeathMapMarker?> _previousDeath;
     private readonly Func<float> _gameTime;
     private readonly MapViewState _mapViewState;
     private readonly Action<TravelMapNotice> _notify;
@@ -113,12 +114,14 @@ public sealed class TravelMapDialog : Dialog
         Action<TravelMapNotice> notify,
         Action requestMiniMapPlacement,
         Func<DeathMapMarker?>? lastDeath = null,
-        MapViewState? mapViewState = null)
+        MapViewState? mapViewState = null,
+        Func<DeathMapMarker?>? previousDeath = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
         _playerPose = playerPose ?? throw new ArgumentNullException(nameof(playerPose));
         _lastDeath = lastDeath ?? (() => null);
+        _previousDeath = previousDeath ?? (() => null);
         _mapViewState = mapViewState ?? new MapViewState();
         _gameTime = gameTime ?? throw new ArgumentNullException(nameof(gameTime));
         _actionHandler = actionHandler ?? throw new ArgumentNullException(nameof(actionHandler));
@@ -165,6 +168,7 @@ public sealed class TravelMapDialog : Dialog
                 settings.LargeMapBlocksPerPixel,
                 NVector2.One),
         };
+        _surface.PreviousDeathProvider = _previousDeath;
         _mapHost.Children.Add(_surface);
 
         _mapInformationHost = new CanvasWidget
@@ -568,13 +572,15 @@ public sealed class TravelMapDialog : Dialog
         var hovered = _surface.ContainsLocalPoint(local);
         _surface.LabelPointer = hovered ? local : null;
 
-        if (hovered
-            && Input.IsMouseButtonDownOnce(MouseButton.Left)
-            && _surface.HitLastDeath(local) is { } clickedDeath)
+        if (hovered && Input.IsMouseButtonDownOnce(MouseButton.Left))
         {
-            ResetToWorld(new NVector2(clickedDeath.Position.X, clickedDeath.Position.Z));
-            Input.Clear();
-            return;
+            var clickedDeath = _surface.HitLastDeath(local) ?? _surface.HitPreviousDeath(local);
+            if (clickedDeath is not null)
+            {
+                ResetToWorld(new NVector2(clickedDeath.Position.X, clickedDeath.Position.Z));
+                Input.Clear();
+                return;
+            }
         }
 
         var wheelSteps = Input.MouseWheelMovement / 120f;
@@ -695,9 +701,10 @@ public sealed class TravelMapDialog : Dialog
                 touch.Id,
                 local,
                 phase,
-                _surface.HitLastDeath(local) is not null,
+                _surface.HitLastDeath(local) is not null || _surface.HitPreviousDeath(local) is not null,
                 dragThreshold: 12f * MathF.Max(1f, GlobalScale));
-            if (deathTap.Activate && _surface.HitLastDeath(local) is { } death)
+            if (deathTap.Activate
+                && (_surface.HitLastDeath(local) ?? _surface.HitPreviousDeath(local)) is { } death)
             {
                 _touchGesture.Reset();
                 ResetToWorld(new NVector2(death.Position.X, death.Position.Z));
@@ -797,7 +804,8 @@ public sealed class TravelMapDialog : Dialog
             world,
             _surface.IsExplored(world),
             _surface.HitWaypoint(local),
-            _surface.HitLastDeath(local) is not null);
+            _surface.HitLastDeath(local) is not null,
+            _surface.HitPreviousDeath(local) is not null);
         if (_mapViewState.Mode == MapViewMode.Cave && command.ContextMenu is { } caveMenu)
         {
             command = command with
@@ -1018,6 +1026,15 @@ public sealed class TravelMapDialog : Dialog
         TravelMapContextAction.TeleportToLastDeath => TravelMapText.Get(
             "teleportToLastDeath",
             "传送至上次死亡地点"),
+        TravelMapContextAction.DeleteLastDeath => TravelMapText.Get(
+            "deleteDeathMarker",
+            "删除死亡标记"),
+        TravelMapContextAction.TeleportToPreviousDeath => TravelMapText.Get(
+            "teleportToPreviousDeath",
+            "传送到此前死亡地点"),
+        TravelMapContextAction.DeletePreviousDeath => TravelMapText.Get(
+            "deleteDeathMarker",
+            "删除死亡标记"),
         _ => throw new ArgumentOutOfRangeException(nameof(action)),
     };
 }

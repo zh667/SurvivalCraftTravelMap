@@ -178,6 +178,32 @@ public sealed class CaveModeTests
         Assert.Equal(transform.WorldToScreen(new Vector2(20f, -30f)), projection.Position);
     }
 
+    [Fact]
+    public void Previous_death_marker_relies_on_the_on_screen_flag_and_is_never_edge_clamped()
+    {
+        var transform = new MapTransform(Vector2.Zero, 1f, new Vector2(200f));
+
+        // Off-screen: the shared projection reports IsOffscreen, which the untracked previous marker
+        // uses to skip drawing entirely rather than clamp to the edge like the tracked marker.
+        var offscreen = DeathMarkerTracking.Project(
+            transform,
+            new Vector2(200f),
+            MapShape.Square,
+            new Vector2(500f, 0f),
+            inset: 16f);
+        Assert.True(offscreen.IsOffscreen);
+
+        // On-screen: the previous marker draws at its true position, never clamped.
+        var onscreen = DeathMarkerTracking.Project(
+            transform,
+            new Vector2(200f),
+            MapShape.Square,
+            new Vector2(20f, -30f),
+            inset: 16f);
+        Assert.False(onscreen.IsOffscreen);
+        Assert.Equal(transform.WorldToScreen(new Vector2(20f, -30f)), onscreen.Position);
+    }
+
     private static void CarveWalkableFloor(
         FakeTerrainMapSource terrain,
         int feetY,
