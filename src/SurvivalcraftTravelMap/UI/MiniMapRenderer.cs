@@ -583,7 +583,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             Transform,
             terrainBrightness,
             this,
-            _settings.UseHeightShading);
+            _settings.HeightShadingStyle.ToStrength());
         _drawWaypoints = _waypoints();
         DrawCreatureMarkers();
         TravelMapRenderModel.RenderOverlays(

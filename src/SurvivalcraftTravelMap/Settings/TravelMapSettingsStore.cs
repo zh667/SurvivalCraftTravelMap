@@ -515,6 +515,9 @@ public sealed class TravelMapSettingsStore
 
         public bool UseHeightShading { get; set; } = true;
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? HeightShadingStyle { get; set; }
+
         public bool AcceptTeleportInvitations { get; set; } = true;
 
         public bool ShowCreatureMarkers { get; set; } = true;
@@ -569,7 +572,7 @@ public sealed class TravelMapSettingsStore
                 IsMiniMapVisible = IsMiniMapVisible,
                 ShowCoordinates = ShowCoordinates,
                 UseDayNightTint = UseDayNightTint,
-                UseHeightShading = UseHeightShading,
+                HeightShadingStyle = ParseHeightShadingStyle(HeightShadingStyle, UseHeightShading),
                 AcceptTeleportInvitations = AcceptTeleportInvitations,
                 ShowCreatureMarkers = ShowCreatureMarkers,
                 ShowLastDeathMarker = ShowLastDeathMarker,
@@ -599,7 +602,9 @@ public sealed class TravelMapSettingsStore
             IsMiniMapVisible = settings.IsMiniMapVisible,
             ShowCoordinates = settings.ShowCoordinates,
             UseDayNightTint = settings.UseDayNightTint,
-            UseHeightShading = settings.UseHeightShading,
+            HeightShadingStyle = settings.HeightShadingStyle.ToString(),
+            UseHeightShading = settings.HeightShadingStyle
+                != global::SurvivalcraftTravelMap.Settings.HeightShadingStyle.Off,
             AcceptTeleportInvitations = settings.AcceptTeleportInvitations,
             ShowCreatureMarkers = settings.ShowCreatureMarkers,
             ShowLastDeathMarker = settings.ShowLastDeathMarker,
@@ -638,5 +643,24 @@ public sealed class TravelMapSettingsStore
             && Enum.IsDefined(parsed)
                 ? parsed
                 : global::SurvivalcraftTravelMap.Settings.MapShape.RoundedSquare;
+
+        private static global::SurvivalcraftTravelMap.Settings.HeightShadingStyle ParseHeightShadingStyle(
+            string? value,
+            bool legacyEnabled)
+        {
+            if (Enum.TryParse<global::SurvivalcraftTravelMap.Settings.HeightShadingStyle>(
+                    value,
+                    ignoreCase: false,
+                    out var parsed)
+                && Enum.IsDefined(parsed))
+            {
+                return parsed;
+            }
+
+            // Files written before the style enum only carried the on/off bool.
+            return legacyEnabled
+                ? global::SurvivalcraftTravelMap.Settings.HeightShadingStyle.Standard
+                : global::SurvivalcraftTravelMap.Settings.HeightShadingStyle.Off;
+        }
     }
 }

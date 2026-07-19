@@ -13,6 +13,32 @@ public enum MapShape
     RoundedSquare,
 }
 
+public enum HeightShadingStyle
+{
+    Off,
+    Soft,
+    Standard,
+    HighContrast,
+}
+
+public static class HeightShadingStyleExtensions
+{
+    /// <summary>
+    /// Render-time contrast multiplier applied to each pixel's baked shade factor
+    /// around neutral (1.0). 0 flattens the relief, 1 keeps the baked look, and
+    /// larger values exaggerate it. Applied on top of the stored byte, so switching
+    /// styles restyles already-explored terrain immediately.
+    /// </summary>
+    public static float ToStrength(this HeightShadingStyle style) => style switch
+    {
+        HeightShadingStyle.Off => 0f,
+        HeightShadingStyle.Soft => 0.6f,
+        HeightShadingStyle.Standard => 1f,
+        HeightShadingStyle.HighContrast => 1.7f,
+        _ => 1f,
+    };
+}
+
 public sealed class TravelMapSettings
 {
     private static readonly int[] MiniMapSizes = [160, 192, 256, 320, 384];
@@ -25,7 +51,7 @@ public sealed class TravelMapSettings
 
     public bool UseDayNightTint { get; set; } = true;
 
-    public bool UseHeightShading { get; set; } = true;
+    public HeightShadingStyle HeightShadingStyle { get; set; } = HeightShadingStyle.Standard;
 
     public bool AcceptTeleportInvitations { get; set; } = true;
 
@@ -74,7 +100,7 @@ public sealed class TravelMapSettings
         IsMiniMapVisible = defaults.IsMiniMapVisible;
         ShowCoordinates = defaults.ShowCoordinates;
         UseDayNightTint = defaults.UseDayNightTint;
-        UseHeightShading = defaults.UseHeightShading;
+        HeightShadingStyle = defaults.HeightShadingStyle;
         ShowCreatureMarkers = defaults.ShowCreatureMarkers;
         ShowLastDeathMarker = defaults.ShowLastDeathMarker;
         CreatureMarkerSize = defaults.CreatureMarkerSize;
@@ -110,6 +136,11 @@ public sealed class TravelMapSettings
         if (!Enum.IsDefined(MiniMapShape))
         {
             MiniMapShape = MapShape.RoundedSquare;
+        }
+
+        if (!Enum.IsDefined(HeightShadingStyle))
+        {
+            HeightShadingStyle = HeightShadingStyle.Standard;
         }
 
         LargeMapHotkey = "M";

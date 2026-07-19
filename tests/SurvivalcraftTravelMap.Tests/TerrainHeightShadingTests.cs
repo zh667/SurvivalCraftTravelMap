@@ -1,5 +1,6 @@
 using System.Numerics;
 using SurvivalcraftTravelMap.Map;
+using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
 using Xunit;
 
@@ -35,20 +36,35 @@ public sealed class TerrainHeightShadingTests
         Assert.True(peak > TerrainHeightShading.Neutral);
     }
 
-    [Fact]
-    public void Renderer_applies_saved_height_shading_only_when_the_setting_is_enabled()
+    [Theory]
+    [InlineData(0f, 120, 80, 40)] // Off: relief flattened, colour untouched.
+    [InlineData(0.6f, 84, 56, 28)] // Soft: 0.7x of the baked deviation.
+    [InlineData(1f, 60, 40, 20)] // Standard: the baked shade as-is (0.5x).
+    [InlineData(1.7f, 18, 12, 6)] // High contrast: relief exaggerated (0.15x).
+    public void Renderer_scales_saved_height_shading_by_the_selected_strength(
+        float strength,
+        byte red,
+        byte green,
+        byte blue)
     {
         var source = new HeightShadePixelSource(
             new MapTerrainPixel(new Rgba32(120, 80, 40, 255), HeightShade: 64));
-        var unshaded = new RecordingRenderSink();
-        var shaded = new RecordingRenderSink();
+        var sink = new RecordingRenderSink();
         var transform = new MapTransform(Vector2.Zero, 1f, Vector2.One);
 
-        TravelMapRenderModel.RenderTerrain(source, transform, 1f, unshaded, useHeightShading: false);
-        TravelMapRenderModel.RenderTerrain(source, transform, 1f, shaded, useHeightShading: true);
+        TravelMapRenderModel.RenderTerrain(source, transform, 1f, sink, heightShadingStrength: strength);
 
-        Assert.Equal(new Rgba32(120, 80, 40, 255), Assert.Single(unshaded.Terrain).Color);
-        Assert.Equal(new Rgba32(60, 40, 20, 255), Assert.Single(shaded.Terrain).Color);
+        Assert.Equal(new Rgba32(red, green, blue, 255), Assert.Single(sink.Terrain).Color);
+    }
+
+    [Theory]
+    [InlineData(HeightShadingStyle.Off, 0f)]
+    [InlineData(HeightShadingStyle.Soft, 0.6f)]
+    [InlineData(HeightShadingStyle.Standard, 1f)]
+    [InlineData(HeightShadingStyle.HighContrast, 1.7f)]
+    public void Height_shading_styles_map_to_render_strengths(HeightShadingStyle style, float expected)
+    {
+        Assert.Equal(expected, style.ToStrength());
     }
 
     [Fact]

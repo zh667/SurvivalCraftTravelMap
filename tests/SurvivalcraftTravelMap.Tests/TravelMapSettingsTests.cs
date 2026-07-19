@@ -13,7 +13,7 @@ public sealed class TravelMapSettingsTests
         Assert.True(settings.IsMiniMapVisible);
         Assert.True(settings.ShowCoordinates);
         Assert.True(settings.UseDayNightTint);
-        Assert.True(settings.UseHeightShading);
+        Assert.Equal(HeightShadingStyle.Standard, settings.HeightShadingStyle);
         Assert.True(settings.AcceptTeleportInvitations);
         Assert.True(settings.ShowCreatureMarkers);
         Assert.True(settings.ShowLastDeathMarker);
@@ -39,7 +39,7 @@ public sealed class TravelMapSettingsTests
             IsMiniMapVisible = false,
             ShowCoordinates = false,
             UseDayNightTint = false,
-            UseHeightShading = false,
+            HeightShadingStyle = HeightShadingStyle.Off,
             AcceptTeleportInvitations = false,
             ShowCreatureMarkers = false,
             ShowLastDeathMarker = false,
@@ -65,7 +65,7 @@ public sealed class TravelMapSettingsTests
         Assert.Equal(defaults.IsMiniMapVisible, settings.IsMiniMapVisible);
         Assert.Equal(defaults.ShowCoordinates, settings.ShowCoordinates);
         Assert.Equal(defaults.UseDayNightTint, settings.UseDayNightTint);
-        Assert.Equal(defaults.UseHeightShading, settings.UseHeightShading);
+        Assert.Equal(defaults.HeightShadingStyle, settings.HeightShadingStyle);
         Assert.Equal(defaults.ShowCreatureMarkers, settings.ShowCreatureMarkers);
         Assert.Equal(defaults.ShowLastDeathMarker, settings.ShowLastDeathMarker);
         Assert.Equal(defaults.CreatureMarkerSize, settings.CreatureMarkerSize);
