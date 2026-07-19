@@ -74,7 +74,7 @@
     "settingsUnavailableFormat": "地图设置不可写，本次使用内存默认值：{0}",
     "persistenceIdentityMissing": "缺少可靠的世界或玩家身份，旅行地图持久化已禁用",
     "persistenceUnavailableFormat": "地图与坐标点持久化不可用：{0}",
-    "mapStoragePaused": "地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存",
+    "mapStoragePaused": "地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存。",
     "miniMapPositionSaved": "小地图位置已保存",
     "miniMapPositionCancelled": "已取消调整小地图位置",
     "miniMapPositionSaveFailed": "小地图位置未能保存，本次会话仍保留当前位置",
