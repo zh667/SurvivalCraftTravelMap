@@ -24,8 +24,8 @@ internal static class TravelMapHudPolicy
     {
         // The map surface is available whenever the runtime owns the local player's
         // HUD and nothing modal is covering it. The mini map adds its own visibility
-        // toggle on top of that; the open-map button must stay reachable even when the
-        // mini map is turned off, because touch devices have no "M" key fallback.
+        // toggle on top of that; the open-map button is only a fallback for players who
+        // hid the mini map, since tapping a visible mini map already opens the large map.
         var showBase = signals.HasUi
             && signals.IsMainPlayer
             && signals.IsRuntimeActive
@@ -39,7 +39,7 @@ internal static class TravelMapHudPolicy
                 && signals.InvitationFeatureAvailable
                 && signals.HasOtherPlayers,
             AllowMiniMapInput: showHud && !signals.HasTextEntryFocus,
-            ShowOpenMapButton: showBase,
-            AllowOpenMapInput: showBase && !signals.HasTextEntryFocus);
+            ShowOpenMapButton: showBase && !signals.MiniMapSettingEnabled,
+            AllowOpenMapInput: showBase && !signals.MiniMapSettingEnabled && !signals.HasTextEntryFocus);
     }
 }

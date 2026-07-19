@@ -19,8 +19,8 @@ public sealed class TravelMapHudPolicyTests
             ShowMiniMap: true,
             ShowTeleportButton: false,
             AllowMiniMapInput: true,
-            ShowOpenMapButton: true,
-            AllowOpenMapInput: true), state);
+            ShowOpenMapButton: false,
+            AllowOpenMapInput: false), state);
     }
 
     [Theory]
@@ -69,11 +69,20 @@ public sealed class TravelMapHudPolicyTests
     }
 
     [Fact]
-    public void Hiding_the_minimap_keeps_the_open_map_button_reachable()
+    public void Open_map_button_appears_only_when_the_minimap_is_disabled()
     {
-        // Touch players have no "M" key, so the open-map button must stay visible and
-        // interactive even when the mini map (its usual tap target) is turned off.
-        var state = TravelMapHudPolicy.Evaluate(VisibleHudSignals() with
+        // A visible mini map is itself a tap target for the large map, so the standalone
+        // open-map button is only needed as the touch entry point when the mini map is
+        // turned off in settings.
+        var withMiniMap = TravelMapHudPolicy.Evaluate(VisibleHudSignals() with
+        {
+            MiniMapSettingEnabled = true,
+        });
+
+        Assert.False(withMiniMap.ShowOpenMapButton);
+        Assert.False(withMiniMap.AllowOpenMapInput);
+
+        var withoutMiniMap = TravelMapHudPolicy.Evaluate(VisibleHudSignals() with
         {
             MiniMapSettingEnabled = false,
         });
@@ -83,7 +92,7 @@ public sealed class TravelMapHudPolicyTests
             ShowTeleportButton: false,
             AllowMiniMapInput: false,
             ShowOpenMapButton: true,
-            AllowOpenMapInput: true), state);
+            AllowOpenMapInput: true), withoutMiniMap);
     }
 
     [Fact]
@@ -98,7 +107,7 @@ public sealed class TravelMapHudPolicyTests
             ShowMiniMap: true,
             ShowTeleportButton: true,
             AllowMiniMapInput: false,
-            ShowOpenMapButton: true,
+            ShowOpenMapButton: false,
             AllowOpenMapInput: false), state);
     }
 
@@ -128,7 +137,7 @@ public sealed class TravelMapHudPolicyTests
         var afterModal = TravelMapHudPolicy.Evaluate(signals with { HasModalSurface = false });
 
         Assert.Equal(new TravelMapHudState(false, false, false, false, false), whileModal);
-        Assert.Equal(new TravelMapHudState(true, true, true, true, true), afterModal);
+        Assert.Equal(new TravelMapHudState(true, true, true, false, false), afterModal);
         Assert.Equal(settingsBefore, JsonSerializer.Serialize(settings));
     }
 
