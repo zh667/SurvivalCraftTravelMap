@@ -1,5 +1,6 @@
 {
   "TravelMap": {
+    "openMap": "Bản đồ",
     "largeMapTitle":"Bản đồ hành trình","settingsTitle":"Cài đặt bản đồ hành trình","settings":"Cài đặt","close":"Đóng","done":"Xong","confirm":"Xác nhận","cancel":"Hủy","accept":"Chấp nhận","decline":"Từ chối","previousPage":"Trang trước","nextPage":"Trang sau",
     "showMiniMap":"Hiện bản đồ nhỏ","showCoordinates":"Hiện tọa độ X / Y / Z","showGameTime":"Hiện giờ trong game","showCreatureMarkers":"Hiện sinh vật","showLastDeathMarker":"Hiện vị trí tử vong gần nhất","northUp":"Luôn để hướng bắc ở trên","compassDirections":"Hướng la bàn","showCompassNorth":"  Hiện hướng bắc","showCompassOtherDirections":"  Hiện đông / nam / tây","useDayNightTint":"Dùng màu địa hình ngày/đêm","useHeightShading":"Dùng bóng độ cao địa hình","acceptTeleportInvitations":"Nhận lời mời dịch chuyển",
     "miniMapZoom":"Khối/pixel bản đồ nhỏ","largeMapZoom":"Khối/pixel bản đồ lớn","creatureMarkerSize":"Cỡ dấu sinh vật","compassFontScale":"Cỡ chữ la bàn","miniMapSize":"Kích thước bản đồ nhỏ","mapShape":"Hình dạng bản đồ","mapShapeCircle":"Tròn","mapShapeSquare":"Vuông","mapShapeRoundedSquare":"Bo góc","adjustMiniMapPosition":"Di chuyển bản đồ nhỏ","miniMapPlacementHint":"Kéo bản đồ nhỏ",

@@ -1,5 +1,6 @@
 {
   "TravelMap": {
+    "openMap": "地图",
     "largeMapTitle": "旅行地图",
     "settingsTitle": "旅行地图设置",
     "settings": "设置",

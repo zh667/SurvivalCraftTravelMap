@@ -4,14 +4,21 @@ namespace SurvivalcraftTravelMap.UI;
 
 internal readonly record struct TravelMapHudPositions(
     Vector2 MiniMap,
-    Vector2 TeleportButton);
+    Vector2 TeleportButton,
+    Vector2 OpenMapButton);
 
 internal static class TravelMapOverlayLayout
 {
     private const float RightMargin = 76f;
     private const float TopMargin = 24f;
     private const float TeleportGap = 4f;
+    private const float OpenMapLeftMargin = 24f;
+    private const float OpenMapTopMargin = 24f;
     private static readonly Vector2 TeleportButtonSize = new(48f, 46f);
+
+    // The open-map button anchors to the top-left, independent of the mini map (which
+    // defaults to the top-right), so it stays reachable even when the mini map is hidden.
+    internal static readonly Vector2 OpenMapButtonSize = new(64f, 40f);
 
     internal static Vector2 PlaceTopRight(
         Vector2 guiLogicalSize,
@@ -58,8 +65,12 @@ internal static class TravelMapOverlayLayout
                 miniMap.Y + overlaySize.Y + TeleportGap),
             TeleportButtonSize,
             guiLogicalSize);
+        var openMapButton = ClampToGui(
+            new Vector2(OpenMapLeftMargin, OpenMapTopMargin),
+            OpenMapButtonSize,
+            guiLogicalSize);
 
-        return new TravelMapHudPositions(miniMap, teleportButton);
+        return new TravelMapHudPositions(miniMap, teleportButton, openMapButton);
     }
 
     internal static Vector2 MiniMapFootprint(float miniMapSize)

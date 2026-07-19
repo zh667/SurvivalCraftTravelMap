@@ -1,5 +1,6 @@
 {
   "TravelMap": {
+    "openMap": "Mapa",
     "largeMapTitle":"Mapa de viagem","settingsTitle":"Configurações do mapa de viagem","settings":"Configurações","close":"Fechar","done":"Concluir","confirm":"Confirmar","cancel":"Cancelar","accept":"Aceitar","decline":"Recusar","previousPage":"Anterior","nextPage":"Próxima",
     "showMiniMap":"Mostrar minimapa","showCoordinates":"Mostrar coordenadas X / Y / Z","showGameTime":"Mostrar hora do jogo","showCreatureMarkers":"Mostrar criaturas","showLastDeathMarker":"Mostrar último local de morte","northUp":"Manter norte para cima","compassDirections":"Direções da bússola","showCompassNorth":"  Mostrar norte","showCompassOtherDirections":"  Mostrar leste / sul / oeste","useDayNightTint":"Usar tonalidade dia/noite","useHeightShading":"Usar sombreamento de altura do terreno","acceptTeleportInvitations":"Aceitar convites de teletransporte",
     "miniMapZoom":"Blocos/pixel do minimapa","largeMapZoom":"Blocos/pixel do mapa grande","creatureMarkerSize":"Tamanho das marcas de criaturas","compassFontScale":"Tamanho do texto da bússola","miniMapSize":"Tamanho do minimapa","mapShape":"Formato do mapa","mapShapeCircle":"Círculo","mapShapeSquare":"Quadrado","mapShapeRoundedSquare":"Arredondado","adjustMiniMapPosition":"Mover minimapa","miniMapPlacementHint":"Arraste o minimapa",

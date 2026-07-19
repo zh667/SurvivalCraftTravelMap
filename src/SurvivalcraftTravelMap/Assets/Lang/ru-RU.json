@@ -1,5 +1,6 @@
 {
   "TravelMap": {
+    "openMap": "Карта",
     "largeMapTitle":"Карта путешествий","settingsTitle":"Настройки карты путешествий","settings":"Настройки","close":"Закрыть","done":"Готово","confirm":"Подтвердить","cancel":"Отмена","accept":"Принять","decline":"Отклонить","previousPage":"Назад","nextPage":"Далее",
     "showMiniMap":"Показывать мини-карту","showCoordinates":"Показывать координаты X / Y / Z","showGameTime":"Показывать игровое время","showCreatureMarkers":"Показывать существ","showLastDeathMarker":"Показывать место последней смерти","northUp":"Север всегда сверху","compassDirections":"Направления компаса","showCompassNorth":"  Показывать север","showCompassOtherDirections":"  Показывать восток / юг / запад","useDayNightTint":"Дневное/ночное затемнение","useHeightShading":"Затенение по высоте рельефа","acceptTeleportInvitations":"Принимать приглашения телепортации",
     "miniMapZoom":"Блоков/пиксель мини-карты","largeMapZoom":"Блоков/пиксель большой карты","creatureMarkerSize":"Размер меток существ","compassFontScale":"Размер текста компаса","miniMapSize":"Размер мини-карты","mapShape":"Форма карты","mapShapeCircle":"Круг","mapShapeSquare":"Квадрат","mapShapeRoundedSquare":"Скруглённая","adjustMiniMapPosition":"Переместить мини-карту","miniMapPlacementHint":"Перетащите мини-карту",

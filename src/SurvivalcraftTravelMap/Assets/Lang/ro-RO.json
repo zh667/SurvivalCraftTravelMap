@@ -1,5 +1,6 @@
 {
   "TravelMap": {
+    "openMap": "Hartă",
     "largeMapTitle":"Hartă de călătorie","settingsTitle":"Setări hartă de călătorie","settings":"Setări","close":"Închide","done":"Gata","confirm":"Confirmă","cancel":"Anulează","accept":"Acceptă","decline":"Refuză","previousPage":"Înapoi","nextPage":"Înainte",
     "showMiniMap":"Arată minimapa","showCoordinates":"Arată coordonatele X / Y / Z","showGameTime":"Arată ora jocului","showCreatureMarkers":"Arată creaturile","showLastDeathMarker":"Arată ultimul loc al morții","northUp":"Păstrează nordul sus","compassDirections":"Direcțiile busolei","showCompassNorth":"  Arată nordul","showCompassOtherDirections":"  Arată est / sud / vest","useDayNightTint":"Folosește nuanța zi/noapte","useHeightShading":"Folosește umbrirea înălțimii terenului","acceptTeleportInvitations":"Acceptă invitații de teleportare",
     "miniMapZoom":"Blocuri/pixel minimapă","largeMapZoom":"Blocuri/pixel hartă mare","creatureMarkerSize":"Mărimea marcajelor","compassFontScale":"Mărimea textului busolei","miniMapSize":"Mărimea minimapei","mapShape":"Forma hărții","mapShapeCircle":"Cerc","mapShapeSquare":"Pătrat","mapShapeRoundedSquare":"Rotunjit","adjustMiniMapPosition":"Mută minimapa","miniMapPlacementHint":"Trage minimapa",

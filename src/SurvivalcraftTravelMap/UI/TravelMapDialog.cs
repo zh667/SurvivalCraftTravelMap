@@ -83,6 +83,7 @@ public sealed class TravelMapDialog : Dialog
     private readonly LargeMapFollowState _followState = new();
     private readonly TouchMapGestureState _touchGesture = new();
     private readonly MiniMapTouchTapState _deathTouchTap = new();
+    private readonly TouchMapLongPressState _touchLongPress = new();
     private readonly CanvasWidget _noticeHost;
     private readonly RectangleWidget _noticeBackground;
     private readonly LabelWidget _noticeLabel;
@@ -605,20 +606,7 @@ public sealed class TravelMapDialog : Dialog
 
         if (hovered && Input.IsMouseButtonDownOnce(MouseButton.Right))
         {
-            var world = _surface.Transform.ScreenToWorld(local);
-            var command = _controller.HandleRightClick(
-                world,
-                _surface.IsExplored(world),
-                _surface.HitWaypoint(local),
-                _surface.HitLastDeath(local) is not null);
-            if (_mapViewState.Mode == MapViewMode.Cave && command.ContextMenu is { } caveMenu)
-            {
-                command = command with
-                {
-                    ContextMenu = caveMenu with { TargetY = _mapViewState.CaveY },
-                };
-            }
-            HandleContextCommand(command, pointer.Value);
+            OpenTeleportMenuAt(local, pointer.Value);
         }
 
         foreach (var item in _contextButtons)
@@ -682,6 +670,15 @@ public sealed class TravelMapDialog : Dialog
 
     private bool HandleTouchGesture()
     {
+        // A press-and-hold with a single finger stands in for a right-click, opening the
+        // teleport menu. It is only meaningful while exactly one finger is down and no menu
+        // is already showing; a second finger (pinch) or an open menu cancels the tracker.
+        var singleTouch = Input.TouchLocations.Count == 1;
+        if (!singleTouch || _activeMenu is not null)
+        {
+            _touchLongPress.Reset();
+        }
+
         var touches = new List<TouchMapPoint>(2);
         for (var index = 0; index < Input.TouchLocations.Count; index++)
         {
@@ -706,6 +703,24 @@ public sealed class TravelMapDialog : Dialog
                 ResetToWorld(new NVector2(death.Position.X, death.Position.Z));
                 Input.Clear();
                 return true;
+            }
+
+            if (singleTouch && _activeMenu is null && _surface.ContainsLocalPoint(local))
+            {
+                var longPress = _touchLongPress.Update(
+                    touch.Id,
+                    local,
+                    phase,
+                    Time.FrameStartTime,
+                    holdDuration: 0.5d,
+                    dragThreshold: 12f * MathF.Max(1f, GlobalScale));
+                if (longPress.Activate)
+                {
+                    _touchGesture.Reset();
+                    OpenTeleportMenuAt(local, touch.Position);
+                    Input.Clear();
+                    return true;
+                }
             }
 
             if (touch.State == TouchLocationState.Released)
@@ -773,6 +788,25 @@ public sealed class TravelMapDialog : Dialog
         _coordinateLabel.IsVisible = _coordinateLabel.Text.Length > 0;
         _timeLabel.IsVisible = _timeLabel.Text.Length > 0;
         _mapInformationHost.IsVisible = _coordinateLabel.IsVisible || _timeLabel.IsVisible;
+    }
+
+    private void OpenTeleportMenuAt(NVector2 local, Vector2 screenPointer)
+    {
+        var world = _surface.Transform.ScreenToWorld(local);
+        var command = _controller.HandleRightClick(
+            world,
+            _surface.IsExplored(world),
+            _surface.HitWaypoint(local),
+            _surface.HitLastDeath(local) is not null);
+        if (_mapViewState.Mode == MapViewMode.Cave && command.ContextMenu is { } caveMenu)
+        {
+            command = command with
+            {
+                ContextMenu = caveMenu with { TargetY = _mapViewState.CaveY },
+            };
+        }
+
+        HandleContextCommand(command, screenPointer);
     }
 
     private void HandleContextCommand(TravelMapUiCommand command, Vector2 screenPointer)

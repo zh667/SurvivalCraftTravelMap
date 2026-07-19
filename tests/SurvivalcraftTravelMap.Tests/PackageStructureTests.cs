@@ -432,7 +432,10 @@ public sealed class PackageStructureTests
         Assert.Contains("TeleportButton.png", invitation, StringComparison.Ordinal);
         Assert.Contains("TeleportButton_Pressed.png", invitation, StringComparison.Ordinal);
         Assert.DoesNotContain("Text = \"玩家传送\"", component, StringComparison.Ordinal);
-        AssertCodeDoesNotContain(component, "BevelledButtonWidget");
+        // The invitation/teleport entry must stay a bitmap icon, never a text button.
+        // (The open-map button elsewhere is intentionally a labelled BevelledButtonWidget.)
+        AssertCodeDoesNotContain(invitation, "BevelledButtonWidget");
+        AssertCodeDoesNotContain(updateInvitation, "BevelledButtonWidget");
         AssertCodeDoesNotContain(measure, "IsVisible");
 
         AssertCodeContains(updateInvitation, "if (!hudState.ShowTeleportButton");
@@ -613,9 +616,9 @@ public sealed class PackageStructureTests
         var before = JsonSerializer.SerializeToUtf8Bytes(settings);
         var signals = VisibleHudSignals(settings) with { HasModalSurface = true };
 
-        Assert.Equal(new TravelMapHudState(false, false, false), TravelMapHudPolicy.Evaluate(signals));
+        Assert.Equal(new TravelMapHudState(false, false, false, false, false), TravelMapHudPolicy.Evaluate(signals));
         Assert.Equal(
-            new TravelMapHudState(true, true, true),
+            new TravelMapHudState(true, true, true, true, true),
             TravelMapHudPolicy.Evaluate(signals with { HasModalSurface = false }));
         Assert.Same(sameSettings, settings);
         Assert.Equal(before, JsonSerializer.SerializeToUtf8Bytes(settings));
@@ -629,9 +632,9 @@ public sealed class PackageStructureTests
         var before = JsonSerializer.SerializeToUtf8Bytes(settings);
         var signals = VisibleHudSignals(settings) with { IsLargeMapOpen = true };
 
-        Assert.Equal(new TravelMapHudState(false, false, false), TravelMapHudPolicy.Evaluate(signals));
+        Assert.Equal(new TravelMapHudState(false, false, false, false, false), TravelMapHudPolicy.Evaluate(signals));
         Assert.Equal(
-            new TravelMapHudState(true, true, true),
+            new TravelMapHudState(true, true, true, true, true),
             TravelMapHudPolicy.Evaluate(signals with { IsLargeMapOpen = false }));
         Assert.Same(sameSettings, settings);
         Assert.Equal(before, JsonSerializer.SerializeToUtf8Bytes(settings));
@@ -646,7 +649,7 @@ public sealed class PackageStructureTests
             IsLargeMapOpen = false,
         });
 
-        Assert.Equal(new TravelMapHudState(true, true, true), state);
+        Assert.Equal(new TravelMapHudState(true, true, true, true, true), state);
     }
 
     [Fact]

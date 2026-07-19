@@ -1,5 +1,6 @@
 {
   "TravelMap": {
+    "openMap": "Map",
     "largeMapTitle": "Travel Map",
     "settingsTitle": "Travel Map Settings",
     "settings": "Settings",

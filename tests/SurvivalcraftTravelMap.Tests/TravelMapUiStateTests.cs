@@ -78,6 +78,23 @@ public sealed class TravelMapUiStateTests
 
         Assert.Equal(new Vector2(794.5f, 24f), positions.MiniMap);
         Assert.Equal(new Vector2(938.5f, 262f), positions.TeleportButton);
+        Assert.Equal(new Vector2(24f, 24f), positions.OpenMapButton);
+    }
+
+    [Fact]
+    public void Open_map_button_anchors_top_left_independent_of_the_minimap()
+    {
+        var small = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1062.5f, 597.65625f),
+            miniMapSize: 160f);
+        var large = TravelMapOverlayLayout.PlaceHud(
+            new Vector2(1062.5f, 597.65625f),
+            miniMapSize: 384f,
+            anchorX: 0.9f,
+            anchorY: 0.9f);
+
+        Assert.Equal(new Vector2(24f, 24f), small.OpenMapButton);
+        Assert.Equal(new Vector2(24f, 24f), large.OpenMapButton);
     }
 
     [Fact]
