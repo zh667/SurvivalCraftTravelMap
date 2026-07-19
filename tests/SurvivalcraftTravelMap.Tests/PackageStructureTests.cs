@@ -1732,11 +1732,9 @@ internal static class PackageFixtures
                  {
                      "zh-CN",
                      "en-US",
-                     "es-419",
+                     "es-MX",
                      "pt-BR",
-                     "ro-RO",
                      "ru-RU",
-                     "vi-VN",
                  })
         {
             AddEntry(
