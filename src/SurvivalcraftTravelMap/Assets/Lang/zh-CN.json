@@ -56,6 +56,8 @@
     "lastDeathLocation": "上次死亡地点",
     "returnToLastDeath": "返回死亡点",
     "teleportToLastDeath": "传送至上次死亡地点",
+    "deleteDeathMarker": "删除死亡标记",
+    "teleportToPreviousDeath": "传送到此前死亡地点",
     "lastDeathUnavailable": "还没有可返回的死亡地点",
     "rename": "重命名",
     "delete": "删除",

@@ -54,6 +54,8 @@ public enum TravelMapContextAction
     AddWaypoint,
     TeleportToWaypoint,
     TeleportToLastDeath,
+    DeleteLastDeath,
+    TeleportToPreviousDeath,
     RenameWaypoint,
     DeleteWaypoint,
     Cancel,
@@ -95,6 +97,13 @@ public sealed class TravelMapUiController
     private static readonly TravelMapContextAction[] DeathMarkerActions =
     [
         TravelMapContextAction.TeleportToLastDeath,
+        TravelMapContextAction.DeleteLastDeath,
+        TravelMapContextAction.Cancel,
+    ];
+
+    private static readonly TravelMapContextAction[] PreviousDeathMarkerActions =
+    [
+        TravelMapContextAction.TeleportToPreviousDeath,
         TravelMapContextAction.Cancel,
     ];
 
@@ -170,8 +179,10 @@ public sealed class TravelMapUiController
         Vector2 worldPosition,
         bool isExplored,
         Waypoint? waypointHit,
-        bool deathMarkerHit = false)
+        bool deathMarkerHit = false,
+        bool previousDeathMarkerHit = false)
     {
+        // The tracked last-death marker wins over the untracked previous one when both overlap.
         if (deathMarkerHit)
         {
             return new TravelMapUiCommand(
@@ -180,6 +191,16 @@ public sealed class TravelMapUiController
                     worldPosition,
                     null,
                     DeathMarkerActions));
+        }
+
+        if (previousDeathMarkerHit)
+        {
+            return new TravelMapUiCommand(
+                TravelMapUiCommandKind.ShowDeathMarkerMenu,
+                ContextMenu: new TravelMapContextMenu(
+                    worldPosition,
+                    null,
+                    PreviousDeathMarkerActions));
         }
 
         if (waypointHit is not null)

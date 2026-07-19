@@ -461,7 +461,7 @@ public sealed class TravelMapUiStateTests
     }
 
     [Fact]
-    public void Right_click_prefers_the_last_death_marker_and_only_offers_return_or_cancel()
+    public void Right_click_prefers_the_last_death_marker_and_offers_return_delete_or_cancel()
     {
         var waypoint = new Waypoint(
             Guid.NewGuid(),
@@ -478,8 +478,42 @@ public sealed class TravelMapUiStateTests
         Assert.Equal(TravelMapUiCommandKind.ShowDeathMarkerMenu, command.Kind);
         Assert.Null(command.ContextMenu!.WaypointId);
         Assert.Equal(
-            [TravelMapContextAction.TeleportToLastDeath, TravelMapContextAction.Cancel],
+            [TravelMapContextAction.TeleportToLastDeath, TravelMapContextAction.DeleteLastDeath,
+                TravelMapContextAction.Cancel],
             command.ContextMenu.Actions);
+    }
+
+    [Fact]
+    public void Right_click_on_the_previous_death_marker_only_offers_teleport_or_cancel()
+    {
+        var command = _controller.HandleRightClick(
+            new Vector2(10f, 20f),
+            isExplored: true,
+            waypointHit: null,
+            deathMarkerHit: false,
+            previousDeathMarkerHit: true);
+
+        Assert.Equal(TravelMapUiCommandKind.ShowDeathMarkerMenu, command.Kind);
+        Assert.Null(command.ContextMenu!.WaypointId);
+        Assert.Equal(
+            [TravelMapContextAction.TeleportToPreviousDeath, TravelMapContextAction.Cancel],
+            command.ContextMenu.Actions);
+    }
+
+    [Fact]
+    public void Right_click_prefers_the_tracked_last_death_over_the_previous_death()
+    {
+        var command = _controller.HandleRightClick(
+            new Vector2(10f, 20f),
+            isExplored: false,
+            waypointHit: null,
+            deathMarkerHit: true,
+            previousDeathMarkerHit: true);
+
+        Assert.Equal(
+            [TravelMapContextAction.TeleportToLastDeath, TravelMapContextAction.DeleteLastDeath,
+                TravelMapContextAction.Cancel],
+            command.ContextMenu!.Actions);
     }
 
     [Fact]
@@ -1246,13 +1280,17 @@ public sealed class TravelMapRenderModelTests
     }
 
     [Fact]
-    public void Overlay_emits_only_the_single_last_death_marker_supplied_by_the_player_record_provider()
+    public void Overlay_emits_the_tracked_last_death_and_the_dimmed_previous_death_markers()
     {
         var sink = new RecordingRenderSink();
         var latest = new DeathMapMarker(
             new Vector3(48f, 17f, -96f),
             Day: 12.5,
             Cause: "fall");
+        var previous = new DeathMapMarker(
+            new Vector3(-32f, 40f, 12f),
+            Day: 9.0,
+            Cause: "drown");
 
         TravelMapRenderModel.RenderOverlays(
             new MapOverlayState(
@@ -1263,11 +1301,14 @@ public sealed class TravelMapRenderModelTests
                 ShowCoordinates: false)
             {
                 LastDeath = latest,
+                PreviousDeath = previous,
             },
             sink);
 
         Assert.Same(latest, sink.LastDeathMarker);
         Assert.Equal(TravelMapPalette.DeathMarkerBone, sink.LastDeathColor);
+        Assert.Same(previous, sink.PreviousDeathMarker);
+        Assert.Equal(TravelMapPalette.PreviousDeathMarker, sink.PreviousDeathColor);
     }
 
     [Theory]
@@ -1416,6 +1457,10 @@ internal sealed class RecordingRenderSink : ITravelMapRenderSink
 
     public Rgba32 LastDeathColor { get; private set; }
 
+    public DeathMapMarker? PreviousDeathMarker { get; private set; }
+
+    public Rgba32 PreviousDeathColor { get; private set; }
+
     public Rgba32 LabelColor { get; private set; }
 
     public void TerrainCell(MapTerrainCell cell) => Terrain.Add(cell);
@@ -1434,6 +1479,12 @@ internal sealed class RecordingRenderSink : ITravelMapRenderSink
     {
         LastDeathMarker = marker;
         LastDeathColor = color;
+    }
+
+    public void PreviousDeath(DeathMapMarker marker, Rgba32 color)
+    {
+        PreviousDeathMarker = marker;
+        PreviousDeathColor = color;
     }
 
     public void Label(string text, Vector3 worldPosition, Rgba32 color) => LabelColor = color;

@@ -36,6 +36,8 @@ public static class TravelMapPalette
 
     public static Rgba32 DeathMarkerBone { get; } = new(0xEE, 0xEA, 0xD8, 0xFF);
 
+    public static Rgba32 PreviousDeathMarker { get; } = new(0x9A, 0x96, 0x88, 0xFF);
+
     public static Rgba32 DeathMarkerOutline { get; } = new(0x35, 0x20, 0x20, 0xFF);
 
     public static Rgba32 MiniMapCoordinateBackdrop { get; } = new(0x12, 0x12, 0x12, 0xA0);
@@ -94,6 +96,10 @@ public interface ITravelMapRenderSink
     {
     }
 
+    void PreviousDeath(DeathMapMarker marker, Rgba32 color)
+    {
+    }
+
     void Label(string text, Vector3 worldPosition, Rgba32 color);
 }
 
@@ -126,6 +132,8 @@ public readonly record struct MapOverlayState(
     Rgba32? PlayerMarkerColor)
 {
     public DeathMapMarker? LastDeath { get; init; }
+
+    public DeathMapMarker? PreviousDeath { get; init; }
 
     public MapOverlayState(
         Vector3 PlayerPosition,
@@ -838,6 +846,11 @@ public static class TravelMapRenderModel
         foreach (var waypoint in state.Waypoints)
         {
             sink.Waypoint(waypoint, TravelMapPalette.HazardAmber);
+        }
+
+        if (state.PreviousDeath is { } previousDeath)
+        {
+            sink.PreviousDeath(previousDeath, TravelMapPalette.PreviousDeathMarker);
         }
 
         if (state.LastDeath is { } lastDeath)

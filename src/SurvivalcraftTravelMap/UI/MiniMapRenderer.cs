@@ -284,6 +284,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     private readonly Func<IReadOnlyList<Waypoint>> _waypoints;
     private readonly Func<IReadOnlyList<CreatureMapMarker>> _creatures;
     private readonly Func<DeathMapMarker?> _lastDeath;
+    private Func<DeathMapMarker?> _previousDeath = static () => null;
     private readonly Func<float> _brightness;
     private readonly BitmapFont _font;
     private IMapSurfacePrimitiveQueue? _primitiveQueue;
@@ -423,6 +424,16 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     public float DeathMarkerSize { get; set; } = 16f;
 
+    /// <summary>
+    /// Supplies the second-to-last death. Drawn as a distinct, dimmed, untracked marker: it is only
+    /// rendered and hit-testable while its true position is on-screen (never edge-clamped).
+    /// </summary>
+    public Func<DeathMapMarker?> PreviousDeathProvider
+    {
+        get => _previousDeath;
+        set => _previousDeath = value ?? (static () => null);
+    }
+
     public NVector2? LabelPointer
     {
         get => _labelPointer;
@@ -488,6 +499,33 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         }
 
         var projection = ProjectLastDeath(marker, hitRadius);
+        return NVector2.DistanceSquared(localPosition, projection.Position) <= hitRadius * hitRadius
+            ? marker
+            : null;
+    }
+
+    public DeathMapMarker? HitPreviousDeath(NVector2 localPosition, float hitRadius = 16f)
+    {
+        if (!_settings.ShowLastDeathMarker || !ContainsLocalPoint(localPosition))
+        {
+            return null;
+        }
+
+        var marker = _previousDeath();
+        if (marker is null)
+        {
+            return null;
+        }
+
+        var projection = ProjectLastDeath(marker, hitRadius);
+
+        // The previous-death marker is untracked: it is never edge-clamped, so it can only be
+        // interacted with while its true position is on-screen.
+        if (projection.IsOffscreen)
+        {
+            return null;
+        }
+
         return NVector2.DistanceSquared(localPosition, projection.Position) <= hitRadius * hitRadius
             ? marker
             : null;
@@ -596,6 +634,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 PlayerMarkerColor)
             {
                 LastDeath = _settings.ShowLastDeathMarker ? _lastDeath() : null,
+                PreviousDeath = _settings.ShowLastDeathMarker ? _previousDeath() : null,
             },
             this);
         DrawBottomOverlayBackdrop();
@@ -675,7 +714,13 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         }
     }
 
-    public void LastDeath(DeathMapMarker marker, Rgba32 color)
+    public void LastDeath(DeathMapMarker marker, Rgba32 color) =>
+        DrawDeathSkull(marker, color, tracked: true);
+
+    public void PreviousDeath(DeathMapMarker marker, Rgba32 color) =>
+        DrawDeathSkull(marker, color, tracked: false);
+
+    private void DrawDeathSkull(DeathMapMarker marker, Rgba32 color, bool tracked)
     {
         var radius = Math.Clamp(DeathMarkerSize * 0.38f, 4.5f, 7f);
         var projection = DeathMarkerTracking.Project(
@@ -684,13 +729,20 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             EffectiveMapShape,
             new NVector2(marker.Position.X, marker.Position.Z),
             radius + 6f);
+
+        // The previous-death marker is untracked: never edge-clamped and only drawn on-screen.
+        if (!tracked && projection.IsOffscreen)
+        {
+            return;
+        }
+
         var center = projection.Position;
 
         var queue = _primitiveQueue!;
         var outline = TravelMapPalette.DeathMarkerOutline;
         var bone = color;
 
-        if (projection.IsOffscreen)
+        if (tracked && projection.IsOffscreen)
         {
             var side = new NVector2(-projection.Direction.Y, projection.Direction.X);
             var tip = center + (projection.Direction * (radius + 5f));
@@ -754,7 +806,7 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             center + new NVector2(0f, radius + 1.5f),
             outline);
 
-        if (ShowWaypointLabels && _mapFontQueue is not null)
+        if (tracked && ShowWaypointLabels && _mapFontQueue is not null)
         {
             MiniMapTextRenderer.QueueWaypointLabel(
                 _mapFontQueue,

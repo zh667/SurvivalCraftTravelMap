@@ -56,6 +56,8 @@
     "lastDeathLocation": "Last death location",
     "returnToLastDeath": "Return to death",
     "teleportToLastDeath": "Teleport to last death",
+    "deleteDeathMarker": "Delete death marker",
+    "teleportToPreviousDeath": "Teleport to previous death",
     "lastDeathUnavailable": "There is no death location to return to",
     "rename": "Rename",
     "delete": "Delete",

@@ -397,7 +397,7 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Fact]
-    public void Native_player_death_history_selects_only_the_latest_record_for_the_map()
+    public void Native_player_death_history_selects_current_and_previous_records_for_the_map()
     {
         var stats = new PlayerStats();
         stats.AddDeathRecord(new PlayerStats.DeathRecord
@@ -413,12 +413,133 @@ public sealed class MiniMapTextRendererTests
             Cause = "latest",
         });
 
-        var marker = TravelMapComponent.SelectLastDeath(stats);
+        var current = TravelMapComponent.SelectCurrentDeath(stats, dismissedDeath: null);
+        var previous = TravelMapComponent.SelectPreviousDeath(stats);
 
-        Assert.NotNull(marker);
-        Assert.Equal(new Vector3(40f, 50f, 60f), marker.Position);
-        Assert.Equal(2.5, marker.Day);
-        Assert.Equal("latest", marker.Cause);
+        Assert.NotNull(current);
+        Assert.Equal(new Vector3(40f, 50f, 60f), current.Position);
+        Assert.Equal(2.5, current.Day);
+        Assert.Equal("latest", current.Cause);
+
+        Assert.NotNull(previous);
+        Assert.Equal(new Vector3(10f, 20f, 30f), previous.Position);
+        Assert.Equal(1.5, previous.Day);
+        Assert.Equal("old", previous.Cause);
+    }
+
+    [Fact]
+    public void Dismissing_the_current_death_hides_only_it_and_leaves_the_previous_marker()
+    {
+        var stats = new PlayerStats();
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 1.5,
+            Location = new Engine.Vector3(10f, 20f, 30f),
+            Cause = "old",
+        });
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 2.5,
+            Location = new Engine.Vector3(40f, 50f, 60f),
+            Cause = "latest",
+        });
+
+        var dismissed = TravelMapComponent.LatestDeathIdentity(stats);
+        Assert.NotNull(dismissed);
+
+        Assert.Null(TravelMapComponent.SelectCurrentDeath(stats, dismissed));
+
+        var previous = TravelMapComponent.SelectPreviousDeath(stats);
+        Assert.NotNull(previous);
+        Assert.Equal(new Vector3(10f, 20f, 30f), previous.Position);
+    }
+
+    [Fact]
+    public void A_newer_death_reshows_a_current_marker_after_a_dismiss()
+    {
+        var stats = new PlayerStats();
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 1.5,
+            Location = new Engine.Vector3(10f, 20f, 30f),
+            Cause = "old",
+        });
+
+        var dismissed = TravelMapComponent.LatestDeathIdentity(stats);
+        Assert.Null(TravelMapComponent.SelectCurrentDeath(stats, dismissed));
+
+        stats.AddDeathRecord(new PlayerStats.DeathRecord
+        {
+            Day = 3.5,
+            Location = new Engine.Vector3(70f, 80f, 90f),
+            Cause = "fresh",
+        });
+
+        var current = TravelMapComponent.SelectCurrentDeath(stats, dismissed);
+        Assert.NotNull(current);
+        Assert.Equal(new Vector3(70f, 80f, 90f), current.Position);
+        Assert.Equal("fresh", current.Cause);
+    }
+
+    [Fact]
+    public void Previous_death_is_drawn_dimmed_only_when_on_screen_and_never_edge_clamped()
+    {
+        var onScreen = new DeathMapMarker(new Vector3(8f, 22f, 0f), 3.25, "fall");
+        using var visible = CreateSurface(previousDeath: onScreen);
+        visible.m_actualSize = new Engine.Vector2(192f, 192f);
+        var visibleQueue = new RecordingMapSurfacePrimitiveQueue();
+
+        visible.Draw(new MapSurfaceDrawContext(new Vector2(192f), visibleQueue));
+
+        var skull = visibleQueue.Primitives
+            .Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.DeathMarker)
+            .ToArray();
+        Assert.True(skull.Length >= 8);
+        Assert.Contains(skull, primitive => primitive.Color == TravelMapPalette.PreviousDeathMarker);
+        Assert.DoesNotContain(skull, primitive => primitive.Color == TravelMapPalette.DeathMarkerBone);
+        Assert.NotNull(visible.HitPreviousDeath(new Vector2(96f, 96f)));
+
+        var offScreen = new DeathMapMarker(new Vector3(800f, 22f, 0f), 3.25, "fall");
+        using var hidden = CreateSurface(previousDeath: offScreen);
+        hidden.m_actualSize = new Engine.Vector2(192f, 192f);
+        var hiddenQueue = new RecordingMapSurfacePrimitiveQueue();
+
+        hidden.Draw(new MapSurfaceDrawContext(new Vector2(192f), hiddenQueue));
+
+        Assert.DoesNotContain(
+            hiddenQueue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.DeathMarker);
+        Assert.Null(hidden.HitPreviousDeath(hidden.ProjectLastDeath(offScreen).Position));
+
+        // Contrast: the tracked last-death marker at the same off-screen position IS clamped and drawn.
+        using var trackedOffScreen = CreateSurface(lastDeath: offScreen);
+        trackedOffScreen.m_actualSize = new Engine.Vector2(192f, 192f);
+        var trackedQueue = new RecordingMapSurfacePrimitiveQueue();
+        trackedOffScreen.Draw(new MapSurfaceDrawContext(new Vector2(192f), trackedQueue));
+        Assert.True(trackedOffScreen.ProjectLastDeath(offScreen).IsOffscreen);
+        Assert.Contains(
+            trackedQueue.Primitives,
+            primitive => primitive.Kind == MapSurfacePrimitiveKind.DeathMarker);
+        Assert.NotNull(
+            trackedOffScreen.HitLastDeath(trackedOffScreen.ProjectLastDeath(offScreen).Position));
+    }
+
+    [Fact]
+    public void Current_and_previous_death_markers_are_both_drawn_when_on_screen()
+    {
+        var current = new DeathMapMarker(new Vector3(8f, 22f, 0f), 3.25, "fall");
+        var previous = new DeathMapMarker(new Vector3(-8f, 22f, 12f), 2.0, "drown");
+        using var widget = CreateSurface(lastDeath: current, previousDeath: previous);
+        widget.m_actualSize = new Engine.Vector2(192f, 192f);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var skull = queue.Primitives
+            .Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.DeathMarker)
+            .ToArray();
+        Assert.Contains(skull, primitive => primitive.Color == TravelMapPalette.DeathMarkerBone);
+        Assert.Contains(skull, primitive => primitive.Color == TravelMapPalette.PreviousDeathMarker);
     }
 
     [Fact]
@@ -584,11 +705,12 @@ public sealed class MiniMapTextRendererTests
         MapShape mapShape = MapShape.Square,
         bool showCoordinates = false,
         DeathMapMarker? lastDeath = null,
-        bool showLastDeath = true)
+        bool showLastDeath = true,
+        DeathMapMarker? previousDeath = null)
     {
         var font = (BitmapFont)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
             typeof(BitmapFont));
-        return new MapSurfaceWidget(
+        var widget = new MapSurfaceWidget(
             new EmptyPixelSource(),
             new TravelMapSettings
             {
@@ -605,6 +727,8 @@ public sealed class MiniMapTextRendererTests
             () => lastDeath,
             () => 1f,
             font);
+        widget.PreviousDeathProvider = () => previousDeath;
+        return widget;
     }
 
     private static void AssertQueuedRectangle(
