@@ -1,0 +1,13 @@
+{
+  "$schema": "https://gitee.com/SC-SPM/SurvivalcraftApi/raw/SCAPI1.9/Survivalcraft/Content/modinfo-scheme.json",
+  "Name": "Survivalcraft Travel Map",
+  "Version": "1.0.0",
+  "ApiVersion": "1.9.2.1",
+  "Description": "Single-player travel map: minimap, full-screen map with explored terrain and caves, waypoints, death markers, and safe local teleport.",
+  "ScVersion": "2.4.0.0",
+  "GameplayImpactLevel": "Godmode",
+  "Link": "",
+  "Author": "SCTM",
+  "PackageName": "SurvivalcraftTravelMap",
+  "Dependencies": {}
+}
