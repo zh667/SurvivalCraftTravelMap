@@ -1443,6 +1443,29 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
             return;
         }
 
+        // Open the large map on a tap/click that lands on the mini map. Use the game's computed
+        // Tap/Click gestures together with HitTestGlobal — the same path ClickableWidget/buttons
+        // use — so a tap registers reliably on mobile, where raw TouchLocations are not delivered
+        // here as a clean tap.
+        if ((Input.Tap ?? Input.Click?.Start) is { } activationPoint
+            && HitTestGlobal(activationPoint) == this)
+        {
+            var tapLocalEngine = ScreenToWidget(activationPoint);
+            var tapLocal = new NVector2(tapLocalEngine.X, tapLocalEngine.Y);
+            var tappedDeath = HitLastDeath(tapLocal);
+            if (tappedDeath is not null)
+            {
+                _requestLocateLastDeath(tappedDeath);
+            }
+            else
+            {
+                _requestOpenLargeMap();
+            }
+
+            Input.Clear();
+            return;
+        }
+
         if (HandleTouchActivation())
         {
             return;
