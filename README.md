@@ -1,14 +1,40 @@
 # 旅行地图（Survivalcraft Travel Map）
 
-Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / NetMod API 1.44 的旅行地图 Mod。它在单人、主机和联机客户端显示持久化探索地图，并提供安全坐标传送、完整 XYZ 坐标点和玩家邀请传送。
+Survivalcraft Travel Map（SCTM）是一个功能完整的旅行地图 Mod，提供两个版本：
+
+- **联机版（`.netmod`）**：面向 Survivalcraft 联机版（NetMod），支持单人、主机与联机客户端，并额外提供多人邀请传送和服务器权威的远程坐标传送。
+- **插件版（`.scmod`）**：面向 Survivalcraft 插件版（SurvivalcraftApi），单人游玩。
+
+两个版本共享同一套地图核心，均提供：持久化探索地图（含洞穴分层投影）、小地图与全屏大地图、完整 XYZ 坐标点、死亡地点标记、安全本地传送、日夜明暗、地形明暗分级、多种小地图朝向/形状/独立罗盘方向，以及手机/触屏操作支持。联机版在此之上还有多人邀请与服务器权威的远程坐标传送；插件版不含任何联网功能（无邀请、无远程传送、无服务器设置），其余功能均可用。
 
 ## 安装
 
+请根据你玩的游戏版本选择对应的 Mod 文件，两者不通用。
+
+### 联机版（`.netmod`）
+
 1. 退出游戏。
-2. 将 `SurvivalcraftTravelMap.netmod` 放入游戏目录的 `NetMods` 文件夹。
+2. 将 `SurvivalcraftTravelMap.netmod` 作为独立文件放入游戏目录的 `NetMods` 文件夹（不要覆盖其他 Mod 文件）。
 3. 启动游戏并进入世界。
 
 远程联机坐标传送要求服务器也安装相同版本的 SCTM。只在客户端安装时仍可查看地图，但地图右键传送和坐标点传送不会由客户端直接修改玩家位置。联机版的单人世界实际以 `WorkType.Server` 集成主机运行；主玩家仍会创建地图界面，坐标传送则在同一进程内由服务器权威执行。
+
+### 插件版（`.scmod`）
+
+1. 退出游戏。
+2. 将 `SurvivalcraftTravelMap.scmod` 放入插件版游戏目录的 `Mods` 文件夹。
+3. 启动游戏并进入世界。
+
+插件版为**单人版本**，不含多人邀请、远程坐标传送和服务器设置；地图、本地安全传送、坐标点、死亡标记、洞穴投影等其余功能均可用。当前随包提供 `zh-CN / en-US / pt-BR / ru-RU` 语言，其余语言会随翻译进度补充。
+
+## 版本兼容
+
+| 版本 | 目标 | 兼容范围 |
+|---|---|---|
+| 联机版（`.netmod`） | Survivalcraft 联机版，引擎 `2.4.0.0`（modinfo `ScVersion 2.4.40.6`），NetMod API `1.44` | 联机版按引擎程序集兼容，不用版本号严格卡。近期的 `2.4.0.0` 引擎日期构建（如 `26.05`–`26.07`）基本通用；只有当某个构建改动了引擎程序集时才需重新构建。 |
+| 插件版（`.scmod`） | Survivalcraft 插件版（SurvivalcraftApi），modinfo `ApiVersion 1.9.2.1` | 插件版按声明的 API 版本判定：`1.9.2.1` 表示**该版本及以上**（含 `1.9.3`）。低于 `1.9.2.1` 会提示不兼容。 |
+
+> 联机版客户端在启动器里显示的是**日期式发布号**（如 `26.07.01.01`），那不是 API 版本；API 版本只在游戏日志的 `Api Version:` 行显示。两个版本各是独立构建，`1.44` 与 `1.9.x` 是不同的版本体系，不能互换。
 
 ## 操作
 
@@ -80,16 +106,16 @@ Survivalcraft Travel Map（SCTM）是面向 Survivalcraft 联机版 2.4.40.6 / N
 ## 卸载
 
 1. 退出游戏并备份 `app:/SurvivalcraftTravelMap`。
-2. 从 `NetMods` 删除 `SurvivalcraftTravelMap.netmod`。
+2. 联机版：从 `NetMods` 删除 `SurvivalcraftTravelMap.netmod`；插件版：从 `Mods` 删除 `SurvivalcraftTravelMap.scmod`。
 3. 若不再需要探索记录和坐标点，可手动删除 `app:/SurvivalcraftTravelMap`；卸载 Mod 本身不会删除这些数据。
 
 ## 隐私与兼容性
 
-SCTM 不扫描、统计或上报已安装 Mod 的数量，也不包含旧的 Mod 数量校验/上报协议。它只注册玩家邀请 ID 41 和服务器权威坐标传送 ID 61。
+SCTM 不扫描、统计或上报已安装 Mod 的数量，也不包含旧的 Mod 数量校验/上报协议。联机版只注册玩家邀请 ID 41 和服务器权威坐标传送 ID 61；插件版为单人版本，不涉及任何网络协议。
 
 已知限制：
 
-- 当前仅针对 Windows PC、Survivalcraft 2.4.40.6 与 NetMod API 1.44 构建。
+- 联机版针对 Survivalcraft 引擎 `2.4.0.0` / NetMod API `1.44` 构建，插件版针对 SurvivalcraftApi `1.9.2.1` 及以上构建；两版均以 Windows PC 为主要运行平台，具体兼容范围见上文“版本兼容”。
 - 联机坐标传送要求服务器安装 SCTM；旧服务器只能使用其已有的邀请传送能力。
 - 全细节地图在 64 格瓦片接缝处，探索边界青线可能出现一小段不连续；探索数据本身不受影响。
 - 当前 `feature/travel-map` 候选已通过 Debug 与 Release 全量测试 `870/870`（0 failed，0 skipped）、warnings-as-errors 构建（0 warnings / 0 errors）及 `PACKAGE_OK` 封包校验。最新隔离包 SHA-256 为 `91C79C880ADC6000B1A45CB63F810F24208BCE6766435C4B16DF02E7557B26BC`。
