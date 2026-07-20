@@ -70,8 +70,14 @@ Survivalcraft Travel Map（SCTM）是一个功能完整的旅行地图 Mod，提
 
 界面语言随游戏语言自动加载，并合并进游戏的完整文本表。
 
-- **联机版**：随包提供 18 种语言的地图文本——`zh-CN`、`en-US`、`es-MX`、`pt-BR`、`ru-RU`（Survivalcraft 联机版内置的 5 种）以及 `ar-SA`、`de-DE`、`fr-FR`、`hi-IN`、`id-ID`、`it-IT`、`ja-JP`、`ko-KR`、`pl-PL`、`th-TH`、`tr-TR`、`uk-UA`、`vi-VN`。其中非游戏内置的 13 种语言，需要额外安装配套的全量语言包 [SurvivalcraftLangPack](https://github.com/zh667/SurvivalcraftLangPack)（它为游戏本体补齐这些语言的翻译）才能在游戏语言列表中正常显示；仅安装地图 Mod 时可直接使用内置的 5 种。
-- **插件版**：当前提供 `zh-CN`、`en-US`、`pt-BR`、`ru-RU`，其余语言会随翻译进度陆续补充。
+**联机版**
+
+- **直接可用**（Survivalcraft 联机版内置的 5 种）：`zh-CN`、`en-US`、`es-MX`、`pt-BR`、`ru-RU`。
+- **安装配套语言包后额外可用的 13 种**：`ar-SA`、`de-DE`、`fr-FR`、`hi-IN`、`id-ID`、`it-IT`、`ja-JP`、`ko-KR`、`pl-PL`、`th-TH`、`tr-TR`、`uk-UA`、`vi-VN`。这些不是游戏本体内置的语言，需要额外安装配套的全量语言包 [SurvivalcraftLangPack](https://github.com/zh667/SurvivalcraftLangPack) 为游戏本体补齐对应翻译，否则它们在游戏语言列表中会是残缺的“孤儿语言”（整屏显示 key 名的坏条目）。把语言包和本 Mod 一起放进 `NetMods/` 后，上述 13 种即可正常显示。
+
+**插件版**
+
+- 当前提供 `zh-CN`、`en-US`、`pt-BR`、`ru-RU`，均为插件版基础游戏内置语言，无需额外语言包；其余语言会随翻译进度陆续补充。
 
 翻译通过社区协作平台维护，可持续新增和校对更多语言；个别缺失的条目会显示其原始键名，不影响其他界面正常使用。
 
