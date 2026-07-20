@@ -1,7 +1,12 @@
-# Crowdin config: the English catalog is the source; translated catalogs are written
-# back beside it using each edition's base-game locale names. Two source files (NetMod
-# and plugin) share identical strings, so enable duplicate-string sharing in the Crowdin
-# project so they are translated only once.
+# Crowdin config: the NetMod English catalog is the source; translated catalogs are
+# written back beside it using the game's base-game locale names.
+#
+# Only the NetMod edition is wired to Crowdin. The plugin (.scmod) edition ships a small
+# fixed set of languages its base game supports (en-US/pt-BR/ru-RU/vi-VN/zh-CN) and is NOT
+# managed here: Crowdin exports every project target language per source file (the
+# per-file languages_mapping only renames, it does not filter), which would fill the plugin
+# folder with orphan languages its base game cannot display. Update the plugin catalogs
+# manually from the NetMod ones when they change.
 files:
   # NetMod (.netmod) edition — 联机版
   - source: /src/SurvivalcraftTravelMap/Assets/Lang/en-US.json
@@ -25,16 +30,3 @@ files:
         th: th-TH
         uk: uk-UA
         ar: ar-SA
-
-  # Plugin (.scmod) edition — 插件版. Ships only locales the plugin edition's base game
-  # provides, so no orphan language entries appear in the in-game language list. Spanish
-  # (es-419) is intentionally omitted for now. Romanian (ro-RO) is supported by the base
-  # game and can be added here once Crowdin has Romanian translations.
-  - source: /plugin/SurvivalcraftTravelMap/Assets/Lang/en-US.json
-    translation: /plugin/SurvivalcraftTravelMap/Assets/Lang/%locale%.json
-    languages_mapping:
-      locale:
-        pt-BR: pt-BR
-        ru: ru-RU
-        vi: vi-VN
-        zh-CN: zh-CN
