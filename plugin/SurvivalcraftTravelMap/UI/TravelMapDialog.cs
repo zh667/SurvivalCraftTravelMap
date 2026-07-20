@@ -553,6 +553,34 @@ public sealed class TravelMapDialog : Dialog
             RefreshScaleText();
         }
 
+        // Process context-menu buttons before the map touch gesture. On touch devices the gesture
+        // handler consumes the touch and returns early, so leaving this after it meant a tap on a
+        // long-press menu option never reached the buttons.
+        foreach (var item in _contextButtons)
+        {
+            if (!item.Button.IsClicked)
+            {
+                continue;
+            }
+
+            if (item.Action == TravelMapContextAction.Cancel)
+            {
+                HideContextMenu();
+            }
+            else if (_activeMenu is not null)
+            {
+                var menu = _activeMenu;
+                if (!_actionRunner.TryRun(token => ExecuteActionAsync(item.Action, menu, token)))
+                {
+                    Notify(
+                        TravelMapText.Get("mapActionBusy", "另一项地图操作仍在执行"),
+                        TravelMapNoticeKind.Information);
+                }
+            }
+
+            return;
+        }
+
         if (HandleTouchGesture())
         {
             _lastDragPosition = null;
@@ -613,29 +641,6 @@ public sealed class TravelMapDialog : Dialog
         if (hovered && Input.IsMouseButtonDownOnce(MouseButton.Right))
         {
             OpenTeleportMenuAt(local, pointer.Value);
-        }
-
-        foreach (var item in _contextButtons)
-        {
-            if (item.Button.IsClicked)
-            {
-                if (item.Action == TravelMapContextAction.Cancel)
-                {
-                    HideContextMenu();
-                }
-                else if (_activeMenu is not null)
-                {
-                    var menu = _activeMenu;
-                    if (!_actionRunner.TryRun(token => ExecuteActionAsync(item.Action, menu, token)))
-                    {
-                        Notify(
-                            TravelMapText.Get("mapActionBusy", "另一项地图操作仍在执行"),
-                            TravelMapNoticeKind.Information);
-                    }
-                }
-
-                break;
-            }
         }
     }
 

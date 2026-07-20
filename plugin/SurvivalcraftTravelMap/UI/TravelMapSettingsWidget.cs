@@ -48,7 +48,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
                 TravelMapText.Get("settingsSaveFailedSession", "地图设置未能保存，本次会话仍保留当前值"),
                 TravelMapNoticeKind.Failure),
             TimeSpan.FromMilliseconds(150));
-        Size = new Vector2(420f, 550f);
+        Size = new Vector2(420f, 460f);
         HorizontalAlignment = WidgetAlignment.Center;
         VerticalAlignment = WidgetAlignment.Center;
 
@@ -84,7 +84,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             Direction = LayoutDirection.Vertical,
             ScrollPosition = 0f,
             ScrollSpeed = 0f,
-            DesiredSize = new Vector2(380f, 425f),
+            DesiredSize = new Vector2(380f, 335f),
         };
         settingsScroll.Children.Add(settingsStack);
         Children.Add(settingsScroll);
@@ -242,7 +242,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             CenterColor = Moss,
         };
         Children.Add(_doneButton);
-        SetWidgetPosition(_doneButton, new Vector2(280f, 501f));
+        SetWidgetPosition(_doneButton, new Vector2(280f, 411f));
 
         _resetButton = new BevelledButtonWidget
         {
@@ -252,7 +252,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             CenterColor = Basalt,
         };
         Children.Add(_resetButton);
-        SetWidgetPosition(_resetButton, new Vector2(20f, 501f));
+        SetWidgetPosition(_resetButton, new Vector2(20f, 411f));
     }
 
     public override void Update()
