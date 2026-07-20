@@ -171,12 +171,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
             return false;
         }
 
-        // PlayerIndex stays 0 until SubsystemPlayers.AddPlayerData runs, which happens after Load.
-        if (player.PlayerData.PlayerIndex <= 0)
-        {
-            return false;
-        }
-
+        // Readiness is confirmed by the player's GameWidget existing (below), NOT by PlayerIndex:
+        // on some runtimes (e.g. the Android plugin build) PlayerData.PlayerIndex stays 0 forever
+        // even after the player is fully built, which would otherwise wedge activation permanently.
+        //
         // PlayerData.GameWidget throws until SubsystemGameWidgets has built this player's widget,
         // so probe the subsystem directly instead of touching the throwing property.
         var gameWidgets = Project.FindSubsystem<SubsystemGameWidgets>(false);
