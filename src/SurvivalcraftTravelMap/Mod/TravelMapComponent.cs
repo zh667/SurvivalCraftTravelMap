@@ -490,7 +490,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             try
             {
                 var optionsPath = Engine.Storage.GetSystemPath(
-                    "app:/SurvivalcraftTravelMap/server-settings.json");
+                    "data:/SurvivalcraftTravelMap/server-settings.json");
                 var loadResult = new CoordinateTeleportServerOptionsStore(optionsPath).LoadWithOutcome();
                 _coordinateServerOptions = loadResult.Options;
                 ServerSettingsWarningGate.NotifyIfNeeded(loadResult, static message => Engine.Log.Warning(message));
@@ -565,6 +565,45 @@ public sealed class TravelMapComponent : Component, IUpdateable
             $"[TravelMap] Coordinate teleport route={route}, request={request.RequestId}, kind={request.Kind}, result={result?.ToString() ?? "Missing"}.");
     }
 
+    private static string ResolveWritableDataRoot()
+    {
+        // Store writable data under data:/ (a per-user writable location on every platform)
+        // instead of app:/ (the game's install directory), which is READ-ONLY on Android and
+        // raised "Access denied" — failing activation so no HUD appeared. Best-effort migrate an
+        // existing app:/ tree from older desktop installs; copy (not move) so originals survive.
+        var dataRoot = Engine.Storage.GetSystemPath("data:/SurvivalcraftTravelMap");
+        try
+        {
+            var legacyRoot = Engine.Storage.GetSystemPath("app:/SurvivalcraftTravelMap");
+            if (!string.Equals(legacyRoot, dataRoot, StringComparison.Ordinal)
+                && Directory.Exists(legacyRoot)
+                && !Directory.Exists(dataRoot))
+            {
+                CopyDirectoryContents(legacyRoot, dataRoot);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Migration is best-effort; a fresh data:/ tree is fine if it cannot be copied.
+        }
+
+        return dataRoot;
+    }
+
+    private static void CopyDirectoryContents(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source))
+        {
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: false);
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(source))
+        {
+            CopyDirectoryContents(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        }
+    }
+
     private void InitializeUiSettings(UiInitializationState state)
     {
         if (!TravelMapRuntimePolicy.CreatesUi(RuntimeContext))
@@ -576,7 +615,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _ => ShowMessage(
                 TravelMapText.Get("mapActionFailed", "地图操作未能完成"),
                 TravelMapNoticeKind.Failure));
-        state.AppRoot = Engine.Storage.GetSystemPath("app:/SurvivalcraftTravelMap");
+        state.AppRoot = ResolveWritableDataRoot();
         var legacySettingsPath = Engine.Storage.GetSystemPath("app:/GPSSetting.xml");
         _settingsStore = new TravelMapSettingsStore(state.AppRoot, legacySettingsPath);
         try
