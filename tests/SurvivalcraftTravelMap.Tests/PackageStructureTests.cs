@@ -527,7 +527,7 @@ public sealed class PackageStructureTests
         var closeSettings = ExtractBraceBlock(dialog, "private void CloseSettings()");
 
         AssertCodeContains(settings, "private readonly Action _requestClose;");
-        AssertCodeContains(settingsConstructor, "Size = new Vector2(420f, 550f);");
+        AssertCodeContains(settingsConstructor, "Size = new Vector2(420f, 460f);");
         AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"showCreatureMarkers\"");
         AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"creatureMarkerSize\"");
         AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"showCompassNorth\"");
@@ -538,7 +538,7 @@ public sealed class PackageStructureTests
         AssertCodeContains(settingsConstructor, "ScrollSpeed = 0f");
         AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"done\"");
         AssertCodeContains(settingsConstructor, "Size = new Vector2(120f, 40f)");
-        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(280f, 501f));");
+        AssertCodeContains(settingsConstructor, "SetWidgetPosition(_doneButton, new Vector2(280f, 411f));");
         AssertCodeContains(settingsConstructor, "TravelMapText.Get(\"resetSettings\"");
         AssertCodeContains(settingsUpdate, "RequestResetConfirmation();");
         AssertCodeContains(settings, "public void RequestPersist() => _saveQueue.RequestSave();");
