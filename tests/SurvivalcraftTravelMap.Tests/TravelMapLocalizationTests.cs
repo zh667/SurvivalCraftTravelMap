@@ -5,9 +5,10 @@ namespace SurvivalcraftTravelMap.Tests;
 
 public sealed class TravelMapLocalizationTests
 {
-    // Only the languages Survivalcraft ships built-in, so our catalogs merge into
-    // the game's full text tables instead of creating orphan languages that leave
-    // the rest of the game UI untranslated.
+    // The five languages Survivalcraft ships built-in plus the additional catalogs
+    // maintained through Crowdin. The extra languages rely on the companion
+    // SurvivalcraftLangPack for their base-game strings; without it they appear as
+    // orphan languages in-game, but the mod's own catalogs must still stay complete.
     private static readonly string[] Languages =
     [
         "zh-CN",
@@ -15,6 +16,19 @@ public sealed class TravelMapLocalizationTests
         "es-MX",
         "pt-BR",
         "ru-RU",
+        "ar-SA",
+        "de-DE",
+        "fr-FR",
+        "hi-IN",
+        "id-ID",
+        "it-IT",
+        "ja-JP",
+        "ko-KR",
+        "pl-PL",
+        "th-TH",
+        "tr-TR",
+        "uk-UA",
+        "vi-VN",
     ];
 
     [Fact]

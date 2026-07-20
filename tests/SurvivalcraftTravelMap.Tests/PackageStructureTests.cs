@@ -1735,6 +1735,19 @@ internal static class PackageFixtures
                      "es-MX",
                      "pt-BR",
                      "ru-RU",
+                     "ar-SA",
+                     "de-DE",
+                     "fr-FR",
+                     "hi-IN",
+                     "id-ID",
+                     "it-IT",
+                     "ja-JP",
+                     "ko-KR",
+                     "pl-PL",
+                     "th-TH",
+                     "tr-TR",
+                     "uk-UA",
+                     "vi-VN",
                  })
         {
             AddEntry(
