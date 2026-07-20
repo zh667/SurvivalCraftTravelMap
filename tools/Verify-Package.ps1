@@ -26,7 +26,20 @@ $requiredEntries = @(
     "Assets/Lang/en-US.json",
     "Assets/Lang/es-MX.json",
     "Assets/Lang/pt-BR.json",
-    "Assets/Lang/ru-RU.json"
+    "Assets/Lang/ru-RU.json",
+    "Assets/Lang/ar-SA.json",
+    "Assets/Lang/de-DE.json",
+    "Assets/Lang/fr-FR.json",
+    "Assets/Lang/hi-IN.json",
+    "Assets/Lang/id-ID.json",
+    "Assets/Lang/it-IT.json",
+    "Assets/Lang/ja-JP.json",
+    "Assets/Lang/ko-KR.json",
+    "Assets/Lang/pl-PL.json",
+    "Assets/Lang/th-TH.json",
+    "Assets/Lang/tr-TR.json",
+    "Assets/Lang/uk-UA.json",
+    "Assets/Lang/vi-VN.json"
 )
 $gameDlls = @(
     "Survivalcraft.dll",
