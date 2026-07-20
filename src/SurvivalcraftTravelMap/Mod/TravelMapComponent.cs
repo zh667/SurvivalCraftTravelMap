@@ -582,9 +582,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 CopyDirectoryContents(legacyRoot, dataRoot);
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception)
         {
-            // Migration is best-effort; a fresh data:/ tree is fine if it cannot be copied.
+            // Migration is best-effort. Some runtimes (e.g. Android) throw even when merely
+            // resolving an app:/ path, so swallow everything and fall back to a fresh data:/ tree.
         }
 
         return dataRoot;
@@ -616,7 +617,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 TravelMapText.Get("mapActionFailed", "地图操作未能完成"),
                 TravelMapNoticeKind.Failure));
         state.AppRoot = ResolveWritableDataRoot();
-        var legacySettingsPath = Engine.Storage.GetSystemPath("app:/GPSSetting.xml");
+        string? legacySettingsPath = null;
+        try
+        {
+            legacySettingsPath = Engine.Storage.GetSystemPath("app:/GPSSetting.xml");
+        }
+        catch
+        {
+            // app:/ can be inaccessible (e.g. Android); skip the legacy GPSSetting.xml migration.
+        }
+
         _settingsStore = new TravelMapSettingsStore(state.AppRoot, legacySettingsPath);
         try
         {
