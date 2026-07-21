@@ -52,6 +52,8 @@
     "mapPointActions": "Hành động điểm bản đồ",
     "teleportHere": "Dịch chuyển tức thời tại đây",
     "saveCurrentPosition": "Lưu vị trí hiện tại",
+    "saveMapPoint": "Save this location",
+    "mapPointWaypointFormat": "Waypoint {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "Dịch chuyển tức thời đến điểm tham chiếu",
     "lastDeathLocation": "Địa điểm chết cuối cùng",
     "returnToLastDeath": "Trở lại với cái chết",
