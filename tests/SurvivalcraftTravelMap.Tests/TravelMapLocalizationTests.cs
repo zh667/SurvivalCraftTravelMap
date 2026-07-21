@@ -49,7 +49,7 @@ public sealed class TravelMapLocalizationTests
             var entries = travelMap.EnumerateObject().ToArray();
             var keys = entries.Select(entry => entry.Name).Order(StringComparer.Ordinal).ToArray();
 
-            Assert.Equal(130, keys.Length);
+            Assert.Equal(132, keys.Length);
             Assert.All(entries, entry =>
             {
                 Assert.Equal(JsonValueKind.String, entry.Value.ValueKind);
@@ -69,6 +69,7 @@ public sealed class TravelMapLocalizationTests
             ["settingsUnavailableFormat"] = ["{0}"],
             ["persistenceUnavailableFormat"] = ["{0}"],
             ["currentPositionWaypointFormat"] = ["{0:0.##}", "{1:0.##}", "{2:0.##}"],
+            ["mapPointWaypointFormat"] = ["{0:0.##}", "{1:0.##}", "{2:0.##}"],
             ["invitePlayerFormat"] = ["{0}"],
             ["invitationPromptFormat"] = ["{0}"],
         };

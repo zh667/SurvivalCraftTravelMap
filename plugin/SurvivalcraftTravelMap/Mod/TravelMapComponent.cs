@@ -98,6 +98,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private TravelMapSettingsStore? _settingsStore;
     private TravelMapSettings? _settings;
     private ExplorationTileStore? _tileStore;
+    private SurvivalcraftTerrainMapSource? _terrainMapSource;
     private CaveExplorationStore? _caveStore;
     private ExplorationRecorder? _explorationRecorder;
     private CaveMapSampler? _caveSampler;
@@ -474,6 +475,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         try
         {
+            // The game recycles world folder names after a deletion, so a new world can inherit a
+            // deleted world's cache directory. Discard it when the stamped seed no longer matches so
+            // the previous save's terrain doesn't bleed into this one.
+            if (WorldCacheSeedGuard.Ensure(storage!.Directory, gameInfo.WorldSeed)
+                == WorldCacheSeedGuard.GuardOutcome.Reset)
+            {
+                Engine.Log.Information(
+                    "[TravelMap] Reused world directory detected; cleared stale map cache for a new world.");
+            }
+
             _tileStore = new ExplorationTileStore(Path.Combine(storage!.Directory, "tiles"));
             _caveStore = new CaveExplorationStore(Path.Combine(storage.Directory, "caves"));
             _mapViewState = new MapViewState();
@@ -596,6 +607,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             modEntity.GetAssetsFile("BlockPixelColor.json", stream =>
             {
                 var terrainSource = new SurvivalcraftTerrainMapSource(Terrain);
+                _terrainMapSource = terrainSource;
                 var sampler = new TerrainMapSampler(terrainSource, stream);
                 _explorationRecorder = new ExplorationRecorder(sampler, _tileStore);
                 _caveSampler = new CaveMapSampler(terrainSource, sampler);
@@ -1189,6 +1201,37 @@ public sealed class TravelMapComponent : Component, IUpdateable
             }
             case TravelMapContextAction.AddWaypoint:
             {
+                // Save the point the player tapped on the map (X/Z), not the player's own position.
+                // A top-down tap has no height, so derive Y from the surface at that column; the
+                // cave view supplies its own Y through TargetY.
+                var wx = menu.WorldPosition.X;
+                var wz = menu.WorldPosition.Y;
+                var y = menu.TargetY.HasValue
+                    ? (int)MathF.Round(menu.TargetY.Value)
+                    : TryGetSurfaceHeight((int)MathF.Floor(wx), (int)MathF.Floor(wz), out var surface)
+                        ? surface
+                        // Column not loaded (tapped far from the player): keep the marker on the
+                        // tapped spot with the player's height; teleport surface-searches from there.
+                        : (int)MathF.Round(Player.ComponentBody.Position.Y);
+                var position = new Vector3(wx, y, wz);
+                _waypointRepository.Add(
+                    TravelMapText.Format(
+                        "mapPointWaypointFormat",
+                        "坐标点 {0:0.##}, {1:0.##}, {2:0.##}",
+                        position.X,
+                        position.Y,
+                        position.Z),
+                    position);
+                _waypoints = await WaypointPersistence.SaveOrReloadAsync(
+                    _waypointRepository,
+                    cancellationToken).ConfigureAwait(false);
+                ShowMessage(
+                    TravelMapText.Get("waypointSaved", "坐标点已保存"),
+                    TravelMapNoticeKind.Success);
+                return TravelMapActionStatus.Completed;
+            }
+            case TravelMapContextAction.AddPlayerWaypoint:
+            {
                 if (_currentPositionWaypointHandler is null)
                 {
                     return TravelMapActionStatus.Failed;
@@ -1284,6 +1327,20 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private Waypoint? FindWaypoint(Guid? id) => id.HasValue
         ? _waypoints.FirstOrDefault(waypoint => waypoint.Id == id.Value)
         : null;
+
+    // Reads the topmost solid height at a column via the map source, which only succeeds when the
+    // chunk is loaded and its surface is ready; far-away tapped columns aren't loaded, so the caller
+    // falls back.
+    private bool TryGetSurfaceHeight(int x, int z, out int height)
+    {
+        if (_terrainMapSource is not null && _terrainMapSource.TryGetSolidHeight(x, z, out height))
+        {
+            return true;
+        }
+
+        height = 0;
+        return false;
+    }
 
     private async Task RenameWaypointAsync(Guid id, string name)
     {

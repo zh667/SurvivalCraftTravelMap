@@ -52,6 +52,8 @@
     "mapPointActions": "Tindakan titik petakan",
     "teleportHere": "Teleportasi ke sini",
     "saveCurrentPosition": "Simpan posisi saat ini",
+    "saveMapPoint": "Simpan lokasi ini",
+    "mapPointWaypointFormat": "Titik {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "Teleportasi ke titik jalan",
     "lastDeathLocation": "Lokasi kematian terakhir",
     "returnToLastDeath": "Kembali ke kematian",

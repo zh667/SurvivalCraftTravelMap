@@ -38,12 +38,13 @@ internal static class MiniMapTextRenderer
         IMapFontQueue queue,
         string text,
         NVector2 position,
-        Rgba32 color) => queue.QueueText(
+        Rgba32 color,
+        float scale = TravelMapTypography.SecondaryLabelScale) => queue.QueueText(
             text,
             position,
             color,
             MapTextAlignment.Default,
-            TravelMapTypography.SecondaryLabelScale);
+            scale);
 
     public static void QueueCoordinates(
         IMapFontQueue queue,
@@ -674,6 +675,17 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             edge.Color);
     }
 
+    // Marker labels are anchored to world positions, so a fixed screen font looks oversized once
+    // the large map is zoomed far out (many blocks per pixel). Scale the text with the zoom so it
+    // tracks the map: shrink as BlocksPerPixel grows, with a floor that keeps it readable and a cap
+    // so it never grows past the normal (minimap) size.
+    private float ZoomAwareLabelScale()
+    {
+        const float referenceBlocksPerPixel = 2f;
+        var zoomFactor = Math.Clamp(referenceBlocksPerPixel / _drawMapTransform.BlocksPerPixel, 0.4f, 1f);
+        return TravelMapTypography.SecondaryLabelScale * zoomFactor;
+    }
+
     public void Player(NVector3 position, float heading, float size, Rgba32 color)
     {
         var center = _drawMapTransform.WorldToScreen(new NVector2(position.X, position.Z));
@@ -710,7 +722,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 _mapFontQueue!,
                 waypoint.Name,
                 center + new NVector2(9f, -9f),
-                TravelMapPalette.SnowText);
+                TravelMapPalette.SnowText,
+                ZoomAwareLabelScale());
         }
     }
 
@@ -812,7 +825,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
                 _mapFontQueue,
                 TravelMapText.Get("lastDeathLocation", "上次死亡地点"),
                 center + new NVector2(radius + 6f, -radius - 3f),
-                TravelMapPalette.SnowText);
+                TravelMapPalette.SnowText,
+                ZoomAwareLabelScale());
         }
     }
 

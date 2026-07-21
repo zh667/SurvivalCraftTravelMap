@@ -52,6 +52,7 @@ public enum TravelMapContextAction
 {
     TeleportNearby,
     AddWaypoint,
+    AddPlayerWaypoint,
     TeleportToWaypoint,
     TeleportToLastDeath,
     DeleteLastDeath,
