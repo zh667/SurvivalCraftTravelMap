@@ -52,6 +52,8 @@
     "mapPointActions": "Действия с точкой",
     "teleportHere": "Телепортироваться сюда",
     "saveCurrentPosition": "Сохранить текущую позицию",
+    "saveMapPoint": "Save this location",
+    "mapPointWaypointFormat": "Waypoint {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "К точке",
     "lastDeathLocation": "Место последней смерти",
     "returnToLastDeath": "Вернуться к смерти",
