@@ -66,6 +66,7 @@ public sealed class TravelMapDialog : Dialog
     private readonly LabelWidget _coordinateLabel;
     private readonly LabelWidget _timeLabel;
     private readonly BevelledButtonWidget _locateButton;
+    private readonly BevelledButtonWidget _savePlayerButton;
     private readonly BevelledButtonWidget _settingsButton;
     private readonly BevelledButtonWidget _closeButton;
     private readonly BevelledButtonWidget _returnToDeathButton;
@@ -228,8 +229,10 @@ public sealed class TravelMapDialog : Dialog
         _topBar.SetWidgetPosition(_scaleLabel, new Vector2(350f, 0f));
 
         _locateButton = CreateButton(TravelMapText.Get("followPlayer", "跟随玩家"), 112f);
+        _savePlayerButton = CreateButton(TravelMapText.Get("saveCurrentPosition", "保存当前位置"), 132f);
         _settingsButton = CreateButton(TravelMapText.Get("settings", "设置"), 92f);
         _closeButton = CreateButton(TravelMapText.Get("close", "关闭"), 92f);
+        _topBar.Children.Add(_savePlayerButton);
         _topBar.Children.Add(_locateButton);
         _topBar.Children.Add(_settingsButton);
         _topBar.Children.Add(_closeButton);
@@ -350,6 +353,7 @@ public sealed class TravelMapDialog : Dialog
         SetWidgetPosition(_mapInformationHost, new Vector2(20f, 62f));
         _topBar.Size = new Vector2(ActualSize.X, 48f);
         var controlsStart = MathF.Max(0f, ActualSize.X - 324f);
+        _topBar.SetWidgetPosition(_savePlayerButton, new Vector2(MathF.Max(0f, controlsStart - 138f), 3f));
         _topBar.SetWidgetPosition(_locateButton, new Vector2(controlsStart, 3f));
         _topBar.SetWidgetPosition(_settingsButton, new Vector2(MathF.Max(0f, ActualSize.X - 204f), 3f));
         _topBar.SetWidgetPosition(_closeButton, new Vector2(MathF.Max(0f, ActualSize.X - 104f), 3f));
@@ -466,6 +470,26 @@ public sealed class TravelMapDialog : Dialog
         if (_locateButton.IsClicked)
         {
             LocatePlayer();
+            return;
+        }
+
+        if (_savePlayerButton.IsClicked)
+        {
+            var pose = _playerPose();
+            var menu = new TravelMapContextMenu(
+                new NVector2(pose.Position.X, pose.Position.Z),
+                null,
+                [TravelMapContextAction.AddPlayerWaypoint]);
+            if (!_actionRunner.TryRun(token => ExecuteActionAsync(
+                    TravelMapContextAction.AddPlayerWaypoint,
+                    menu,
+                    token)))
+            {
+                Notify(
+                    TravelMapText.Get("mapActionBusy", "另一项地图操作仍在执行"),
+                    TravelMapNoticeKind.Information);
+            }
+
             return;
         }
 
@@ -729,6 +753,10 @@ public sealed class TravelMapDialog : Dialog
                 if (longPress.Activate)
                 {
                     _touchGesture.Reset();
+                    // The same finger is also being tracked as a death-marker tap; clear it so the
+                    // upcoming release doesn't fire a "locate death" that dismisses the menu we just
+                    // opened by long-pressing that marker.
+                    _deathTouchTap.Reset();
                     OpenTeleportMenuAt(local, touch.Position);
                     Input.Clear();
                     return true;
@@ -1023,7 +1051,10 @@ public sealed class TravelMapDialog : Dialog
     private static string ActionText(TravelMapContextAction action) => action switch
     {
         TravelMapContextAction.TeleportNearby => TravelMapText.Get("teleportHere", "传送到这里"),
-        TravelMapContextAction.AddWaypoint => TravelMapText.Get("saveCurrentPosition", "保存当前位置"),
+        TravelMapContextAction.AddWaypoint => TravelMapText.Get("saveMapPoint", "保存该位置"),
+        TravelMapContextAction.AddPlayerWaypoint => TravelMapText.Get(
+            "saveCurrentPosition",
+            "保存当前位置"),
         TravelMapContextAction.TeleportToWaypoint => TravelMapText.Get("teleportToWaypoint", "传送到此坐标点"),
         TravelMapContextAction.RenameWaypoint => TravelMapText.Get("rename", "重命名"),
         TravelMapContextAction.DeleteWaypoint => TravelMapText.Get("delete", "删除"),

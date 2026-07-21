@@ -311,7 +311,7 @@ public sealed class SafeTeleportService
             trace.Stage = TeleportExecutionStage.CandidateSearch;
             var rejectionCounts = new Dictionary<TeleportCandidateRejectionReason, int>();
             TeleportCandidate? best = null;
-            (int Safety, int VerticalCloseness) bestScore = (int.MinValue, int.MinValue);
+            (int VerticalCloseness, int Safety) bestScore = (int.MinValue, int.MinValue);
             long currentDistance = -1;
             foreach (var candidate in TeleportCandidate.GenerateWaypoint(x, y, z))
             {
@@ -335,9 +335,13 @@ public sealed class SafeTeleportService
                 var assessment = AssessCandidate(candidate, cancellationToken);
                 if (assessment.IsSafe)
                 {
+                    // A saved waypoint is a place the player actually stood, so prefer the safe
+                    // candidate closest to the saved Y over the "most open" one — otherwise a
+                    // waypoint indoors teleports onto the roof (which scores higher on surrounding
+                    // safety) instead of back to the floor a few blocks below.
                     var score = (
-                        GetSurroundingSafetyScore(candidate, cancellationToken),
-                        -Math.Abs(candidate.Y!.Value - y));
+                        -Math.Abs(candidate.Y!.Value - y),
+                        GetSurroundingSafetyScore(candidate, cancellationToken));
                     if (!best.HasValue || score.CompareTo(bestScore) > 0)
                     {
                         best = candidate;

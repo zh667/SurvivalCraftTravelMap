@@ -52,6 +52,8 @@
     "mapPointActions": "测量点操作",
     "teleportHere": "传送到这里",
     "saveCurrentPosition": "保存当前位置",
+    "saveMapPoint": "保存该位置",
+    "mapPointWaypointFormat": "坐标点 {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "传送到此坐标点",
     "lastDeathLocation": "上次死亡地点",
     "returnToLastDeath": "返回死亡点",

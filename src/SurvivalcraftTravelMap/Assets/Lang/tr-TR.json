@@ -52,6 +52,8 @@
     "mapPointActions": "Harita noktası eylemleri",
     "teleportHere": "Buraya ışınlanmak",
     "saveCurrentPosition": "Mevcut pozisyonu kaydet",
+    "saveMapPoint": "Bu konumu kaydet",
+    "mapPointWaypointFormat": "Nokta {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "Waypoint'e ışınlanmak",
     "lastDeathLocation": "Son ölüm yeri",
     "returnToLastDeath": "Ölüme dönüş",

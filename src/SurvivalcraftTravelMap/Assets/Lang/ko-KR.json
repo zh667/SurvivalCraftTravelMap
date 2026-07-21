@@ -52,6 +52,8 @@
     "mapPointActions": "지도 점 행동",
     "teleportHere": "여기로 순간이동",
     "saveCurrentPosition": "현재 위치 저장",
+    "saveMapPoint": "이 위치 저장",
+    "mapPointWaypointFormat": "지점 {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "웨이포인트로 텔레포트를",
     "lastDeathLocation": "마지막 사망 장소",
     "returnToLastDeath": "죽음으로 돌아가다",

@@ -52,6 +52,8 @@
     "mapPointActions": "मानचित्र बिंदु क्रियाएँ",
     "teleportHere": "यहां टेलीपोर्ट करें",
     "saveCurrentPosition": "वर्तमान स्थिति सहेजें",
+    "saveMapPoint": "यह स्थान सहेजें",
+    "mapPointWaypointFormat": "बिंदु {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "वेपॉइंट पर टेलीपोर्ट करें",
     "lastDeathLocation": "अंतिम मृत्यु स्थान",
     "returnToLastDeath": "मौत की ओर लौटें",
