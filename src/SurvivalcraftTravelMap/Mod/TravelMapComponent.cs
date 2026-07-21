@@ -132,6 +132,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private Texture2D? _teleportButtonPressedTexture;
     private float _flushElapsed;
     private bool _explorationPressureWarningShown;
+    private const int ExplorationObserveIntervalFrames = 30;
+    private TerrainChunkCoordinate? _lastObservedCenter;
+    private int _framesSinceExplorationObserve;
+    private TerrainChunkCoordinate[] _cachedLoadedChunks = Array.Empty<TerrainChunkCoordinate>();
     private bool _isActive;
     private bool _persistenceWarningShown;
 
@@ -1186,16 +1190,26 @@ public sealed class TravelMapComponent : Component, IUpdateable
         var center = TerrainChunkCoordinate.FromWorld(
             checked((int)MathF.Floor(position.X)),
             checked((int)MathF.Floor(position.Z)));
-        var loadedChunks = Terrain.Terrain.AllocatedChunks
-            .Where(chunk => chunk is not null
-                && SurvivalcraftTerrainMapSource.IsSurfaceReadable(chunk.State))
-            .Select(chunk => new TerrainChunkCoordinate(chunk.Coords.X, chunk.Coords.Y))
-            .Distinct()
-            .OrderBy(chunk => DistanceSquared(chunk, center))
-            .ThenBy(chunk => chunk.X)
-            .ThenBy(chunk => chunk.Z)
-            .ToArray();
-        _explorationScheduler.ObserveChunks(center, loadedChunks);
+        // Rescanning every loaded chunk (Distinct + sort + allocation) each frame is a heavy
+        // per-frame cost on mobile, yet the set only changes when the player crosses a chunk
+        // boundary or chunks stream in. Recompute + cache it on a chunk change or a short interval;
+        // pending recordings still drain every frame so exploration is revealed just as promptly.
+        if (_lastObservedCenter != center
+            || _framesSinceExplorationObserve++ >= ExplorationObserveIntervalFrames)
+        {
+            _framesSinceExplorationObserve = 0;
+            _lastObservedCenter = center;
+            _cachedLoadedChunks = Terrain.Terrain.AllocatedChunks
+                .Where(chunk => chunk is not null
+                    && SurvivalcraftTerrainMapSource.IsSurfaceReadable(chunk.State))
+                .Select(chunk => new TerrainChunkCoordinate(chunk.Coords.X, chunk.Coords.Y))
+                .Distinct()
+                .OrderBy(chunk => DistanceSquared(chunk, center))
+                .ThenBy(chunk => chunk.X)
+                .ThenBy(chunk => chunk.Z)
+                .ToArray();
+            _explorationScheduler.ObserveChunks(center, _cachedLoadedChunks);
+        }
 
         _explorationScheduler.ReconcileCoverage(
             _explorationCoverageProbe.IsFullyExplored,
@@ -1229,7 +1243,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             }
         }
 
-        UpdateCaveExploration(loadedChunks);
+        UpdateCaveExploration(_cachedLoadedChunks);
     }
 
     private void UpdateCaveExploration(IReadOnlyList<TerrainChunkCoordinate> loadedChunks)

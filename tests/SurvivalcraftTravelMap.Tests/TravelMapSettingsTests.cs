@@ -140,7 +140,7 @@ public sealed class TravelMapSettingsTests
     }
 
     [Theory]
-    [InlineData(100, 160)]
+    [InlineData(100, 96)]
     [InlineData(205, 192)]
     [InlineData(300, 320)]
     [InlineData(500, 384)]

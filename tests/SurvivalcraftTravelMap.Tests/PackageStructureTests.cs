@@ -254,7 +254,7 @@ public sealed class PackageStructureTests
         AssertCodeContains(exploration, "Terrain.Terrain.AllocatedChunks");
         AssertCodeContains(exploration, "SurvivalcraftTerrainMapSource.IsSurfaceReadable(chunk.State)");
         AssertCodeContains(exploration, ".OrderBy(chunk => DistanceSquared(chunk, center))");
-        AssertCodeContains(exploration, "_explorationScheduler.ObserveChunks(center, loadedChunks);");
+        AssertCodeContains(exploration, "_explorationScheduler.ObserveChunks(center, _cachedLoadedChunks);");
         AssertCodeDoesNotContain(exploration, "_settings.MiniMapSize");
         AssertCodeDoesNotContain(exploration, "_settings.MiniMapBlocksPerPixel");
         AssertCodeContains(exploration, "_explorationScheduler.ReconcileCoverage(");
@@ -268,7 +268,7 @@ public sealed class PackageStructureTests
             "_explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame)",
             "bounded pending snapshot");
         Assert.True(
-            IndexOfCode(exploration, "_explorationScheduler.ObserveChunks(center, loadedChunks);")
+            IndexOfCode(exploration, "_explorationScheduler.ObserveChunks(center, _cachedLoadedChunks);")
             < IndexOfCode(
                 exploration,
                 "foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))"));

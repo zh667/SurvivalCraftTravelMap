@@ -370,7 +370,7 @@ public sealed class TravelMapRenderBudgetTests
     [Fact]
     public void Catalog_larger_than_the_one_command_per_tile_limit_terminates_without_materialization()
     {
-        const int tileCount = TravelMapRenderModel.MaximumTerrainSamplesPerFrame + 1;
+        var tileCount = TravelMapRenderModel.MaximumTerrainSamplesPerFrame + 1;
         var provider = new KnownTileProvider(CreateFullyExploredTile(new Rgba32(20, 40, 60, 255)), tileCount);
         var source = new TileStoreMapPixelSource(provider);
 

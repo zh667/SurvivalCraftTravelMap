@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using Game;
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Persistence;
 using SurvivalcraftTravelMap.Waypoints;
@@ -699,8 +700,15 @@ public sealed class TileStoreMapPixelSource :
 
 public static class TravelMapRenderModel
 {
-    public const int MaximumTerrainSamplesPerFrame = 262_144;
-    public const int MaximumIndexedTileDescriptorsPerFrame = MaximumTerrainSamplesPerFrame;
+    // On mobile the map is GPU (fill-rate) bound: cost grows with the number of terrain quads, i.e.
+    // with the square of the mini-map size and with how far the large map is zoomed out. Cap the
+    // per-frame budget on Android so the existing LOD/downsampling path bounds that cost — larger
+    // mini maps and zoomed-out large maps become coarser instead of laggier. Small sizes (≤64) stay
+    // full resolution. Desktop is unbounded (it isn't fill-rate limited).
+    public static int MaximumTerrainSamplesPerFrame =>
+        VersionsManager.CurrentPlatform == VersionsManager.Platform.Android ? 8_192 : 262_144;
+
+    public static int MaximumIndexedTileDescriptorsPerFrame => MaximumTerrainSamplesPerFrame;
 
     public static MapRenderStatistics RenderTerrain(
         IExploredMapPixelSource source,
@@ -837,11 +845,6 @@ public static class TravelMapRenderModel
     {
         ArgumentNullException.ThrowIfNull(sink);
         ArgumentNullException.ThrowIfNull(state.Waypoints);
-        sink.Player(
-            state.PlayerPosition,
-            state.PlayerHeading,
-            Math.Clamp(state.PlayerArrowSize, 14f, 40f),
-            state.PlayerMarkerColor ?? TravelMapPalette.SurveyCyan);
 
         foreach (var waypoint in state.Waypoints)
         {
@@ -857,6 +860,14 @@ public static class TravelMapRenderModel
         {
             sink.LastDeath(lastDeath, TravelMapPalette.DeathMarkerBone);
         }
+
+        // Draw the player marker last so waypoint/creature/death markers can never cover the
+        // player's own position (the player sits at the mini map's center, where markers cluster).
+        sink.Player(
+            state.PlayerPosition,
+            state.PlayerHeading,
+            Math.Clamp(state.PlayerArrowSize, 14f, 40f),
+            state.PlayerMarkerColor ?? TravelMapPalette.SurveyCyan);
 
         if (state.ShowCoordinates)
         {
