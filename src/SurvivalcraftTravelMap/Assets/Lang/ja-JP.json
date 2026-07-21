@@ -52,6 +52,8 @@
     "mapPointActions": "マップポイントアクション",
     "teleportHere": "ここからテレポート",
     "saveCurrentPosition": "現在の位置を保存する",
+    "saveMapPoint": "Save this location",
+    "mapPointWaypointFormat": "Waypoint {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "ウェイポイントへのテレポート",
     "lastDeathLocation": "最期の死亡場所",
     "returnToLastDeath": "死への帰還",
