@@ -41,7 +41,7 @@ public static class HeightShadingStyleExtensions
 
 public sealed class TravelMapSettings
 {
-    private static readonly int[] MiniMapSizes = [160, 192, 256, 320, 384];
+    private static readonly int[] MiniMapSizes = [64, 96, 128, 160, 192, 256, 320, 384];
 
     public static IReadOnlyList<int> SupportedMiniMapSizes { get; } = Array.AsReadOnly(MiniMapSizes);
 

@@ -194,7 +194,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             var button = new BevelledButtonWidget
             {
                 Text = size.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                Size = new Vector2(72f, 38f),
+                Size = new Vector2(44f, 38f),
                 Color = SnowText,
                 CenterColor = size == settings.MiniMapSize ? Moss : Basalt,
             };

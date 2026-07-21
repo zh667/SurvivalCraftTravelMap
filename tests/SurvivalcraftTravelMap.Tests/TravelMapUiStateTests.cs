@@ -540,7 +540,7 @@ public sealed class TravelMapUiStateTests
     [Fact]
     public void Accepted_minimap_sizes_are_exactly_the_design_values()
     {
-        Assert.Equal([160, 192, 256, 320, 384], TravelMapSettings.SupportedMiniMapSizes);
+        Assert.Equal([64, 96, 128, 160, 192, 256, 320, 384], TravelMapSettings.SupportedMiniMapSizes);
         Assert.All(TravelMapSettings.SupportedMiniMapSizes, size => Assert.True(TravelMapSettings.IsSupportedMiniMapSize(size)));
         Assert.False(TravelMapSettings.IsSupportedMiniMapSize(224));
         Assert.False(TravelMapSettings.IsSupportedMiniMapSize(512));
