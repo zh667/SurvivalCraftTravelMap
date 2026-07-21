@@ -52,6 +52,8 @@
     "mapPointActions": "Ações do ponto",
     "teleportHere": "Teletransportar aqui",
     "saveCurrentPosition": "Salvar posição atual",
+    "saveMapPoint": "Save this location",
+    "mapPointWaypointFormat": "Waypoint {0:0.##}, {1:0.##}, {2:0.##}",
     "teleportToWaypoint": "Ir para o ponto",
     "lastDeathLocation": "Último local de morte",
     "returnToLastDeath": "Voltar à morte",
