@@ -171,9 +171,15 @@ public sealed class TravelMapUiController
             return TravelMapUiCommand.None;
         }
 
+        // Pan through ScreenToWorld so the grabbed point stays under the cursor regardless of the
+        // map plane's orientation. The plane is rotated 180 degrees vs raw world (so the minimap
+        // matches the sun); a hardcoded Center - screenDelta*bpp assumed the old orientation and
+        // dragged the map the wrong way. This mirrors the touch-drag path in TouchMapGestureState.
         var panned = transform with
         {
-            Center = transform.Center - (screenDelta * transform.BlocksPerPixel),
+            Center = transform.Center
+                + transform.ScreenToWorld(Vector2.Zero)
+                - transform.ScreenToWorld(screenDelta),
         };
         return new TravelMapUiCommand(TravelMapUiCommandKind.Pan, panned);
     }

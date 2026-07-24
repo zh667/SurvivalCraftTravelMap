@@ -390,14 +390,22 @@ public sealed class TravelMapUiStateTests
     }
 
     [Fact]
-    public void Left_drag_pans_in_the_opposite_world_direction()
+    public void Mouse_drag_keeps_the_grabbed_point_under_the_cursor()
     {
         var transform = new MapTransform(new Vector2(10f, 20f), 2f, new Vector2(800f, 600f));
+        var pointer = new Vector2(500f, 280f);
+        var screenDelta = new Vector2(12f, -3f);
+        var worldUnderPointer = transform.ScreenToWorld(pointer);
 
-        var command = _controller.HandlePan(transform, new Vector2(12f, -3f), isDragging: true);
+        var command = _controller.HandlePan(transform, screenDelta, isDragging: true);
 
         Assert.Equal(TravelMapUiCommandKind.Pan, command.Kind);
-        Assert.Equal(new Vector2(-14f, 26f), Assert.IsType<MapTransform>(command.Transform).Center);
+        var panned = Assert.IsType<MapTransform>(command.Transform);
+        // Grab-drag: the world point under the cursor stays under the cursor's new position,
+        // regardless of the map plane's orientation (matches the touch-drag behaviour).
+        var moved = panned.ScreenToWorld(pointer + screenDelta);
+        Assert.InRange(moved.X, worldUnderPointer.X - 0.001f, worldUnderPointer.X + 0.001f);
+        Assert.InRange(moved.Y, worldUnderPointer.Y - 0.001f, worldUnderPointer.Y + 0.001f);
     }
 
     [Fact]
