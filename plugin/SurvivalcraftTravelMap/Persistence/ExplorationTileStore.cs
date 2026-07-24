@@ -10,6 +10,13 @@ public sealed class ExplorationTileStore
     private readonly Dictionary<TileKey, CacheEntry> _cache = [];
     private readonly LinkedList<TileKey> _lru = [];
     private readonly HashSet<TileKey> _knownTiles = [];
+
+    // Known tiles are also bucketed into coarse super-cells (SuperCellSize x SuperCellSize tiles)
+    // so a viewport query only visits tiles near the view. The always-on minimap draws every frame
+    // and used to scan the entire _knownTiles set each time; that set only grows (one entry per
+    // 64x64 explored area, reloaded on open), so the scan degraded over long/cave sessions.
+    private const int KnownTileSuperCellSize = 16;
+    private readonly Dictionary<SuperCellKey, HashSet<TileKey>> _knownTileGrid = [];
     private readonly Dictionary<TileKey, long> _tileMutationVersions = [];
     private readonly Func<string, MapTile, CancellationToken, Task> _writeTile;
     private long _tileMaterializations;
@@ -106,8 +113,7 @@ public sealed class ExplorationTileStore
     {
         lock (_sync)
         {
-            return _knownTiles
-                .Where(key => region.Contains(key.X, key.Z))
+            return EnumerateKnownTilesInRegion(region)
                 .OrderBy(key => key.Z)
                 .ThenBy(key => key.X)
                 .Select(key => new MapTileCoordinate(key.X, key.Z))
@@ -124,36 +130,123 @@ public sealed class ExplorationTileStore
 
         lock (_sync)
         {
-            var candidates = new List<TileKey>(Math.Min(maximumCount, _knownTiles.Count));
-            foreach (var key in _knownTiles)
+            var candidates = new List<TileKey>();
+            foreach (var key in EnumerateKnownTilesInRegion(region))
             {
-                if (!region.Contains(key.X, key.Z))
-                {
-                    continue;
-                }
-
                 if (candidates.Count == maximumCount)
                 {
-                    return new MapTileCatalog(
-                        candidates
-                            .OrderBy(candidate => candidate.Z)
-                            .ThenBy(candidate => candidate.X)
-                            .Select(candidate => new MapTileCoordinate(candidate.X, candidate.Z))
-                            .ToArray(),
-                        IsTruncated: true);
+                    return new MapTileCatalog(SortRegionTiles(candidates), IsTruncated: true);
                 }
 
                 candidates.Add(key);
             }
 
-            return new MapTileCatalog(
-                candidates
-                    .OrderBy(candidate => candidate.Z)
-                    .ThenBy(candidate => candidate.X)
-                    .Select(candidate => new MapTileCoordinate(candidate.X, candidate.Z))
-                    .ToArray(),
-                IsTruncated: false);
+            return new MapTileCatalog(SortRegionTiles(candidates), IsTruncated: false);
         }
+    }
+
+    private static MapTileCoordinate[] SortRegionTiles(List<TileKey> tiles) =>
+        tiles
+            .OrderBy(candidate => candidate.Z)
+            .ThenBy(candidate => candidate.X)
+            .Select(candidate => new MapTileCoordinate(candidate.X, candidate.Z))
+            .ToArray();
+
+    // Visits only the tiles in super-cells overlapping the region, so the cost scales with the
+    // viewport size rather than with the total number of tiles ever explored. Falls back to
+    // walking existing buckets when the region spans more super-cells than exist (e.g. the large
+    // map zoomed far out over a sparse world), which is never worse than the old full scan.
+    // Callers fully enumerate this within the _sync lock.
+    private IEnumerable<TileKey> EnumerateKnownTilesInRegion(MapTileRegion region)
+    {
+        if (_knownTileGrid.Count == 0)
+        {
+            yield break;
+        }
+
+        var superMinX = FloorDivide(region.MinimumX, KnownTileSuperCellSize);
+        var superMaxX = FloorDivide(region.MaximumX, KnownTileSuperCellSize);
+        var superMinZ = FloorDivide(region.MinimumZ, KnownTileSuperCellSize);
+        var superMaxZ = FloorDivide(region.MaximumZ, KnownTileSuperCellSize);
+        var superSpanX = (long)superMaxX - superMinX + 1L;
+        var superSpanZ = (long)superMaxZ - superMinZ + 1L;
+        if (superSpanX * superSpanZ > _knownTileGrid.Count)
+        {
+            foreach (var bucket in _knownTileGrid.Values)
+            {
+                foreach (var key in bucket)
+                {
+                    if (region.Contains(key.X, key.Z))
+                    {
+                        yield return key;
+                    }
+                }
+            }
+
+            yield break;
+        }
+
+        for (var superZ = superMinZ; superZ <= superMaxZ; superZ++)
+        {
+            for (var superX = superMinX; superX <= superMaxX; superX++)
+            {
+                if (!_knownTileGrid.TryGetValue(new SuperCellKey(superX, superZ), out var bucket))
+                {
+                    continue;
+                }
+
+                foreach (var key in bucket)
+                {
+                    if (region.Contains(key.X, key.Z))
+                    {
+                        yield return key;
+                    }
+                }
+            }
+        }
+    }
+
+    private void AddKnownTile(TileKey key)
+    {
+        if (!_knownTiles.Add(key))
+        {
+            return;
+        }
+
+        var cell = ToSuperCell(key);
+        if (!_knownTileGrid.TryGetValue(cell, out var bucket))
+        {
+            bucket = [];
+            _knownTileGrid.Add(cell, bucket);
+        }
+
+        bucket.Add(key);
+    }
+
+    private void RemoveKnownTile(TileKey key)
+    {
+        if (!_knownTiles.Remove(key))
+        {
+            return;
+        }
+
+        var cell = ToSuperCell(key);
+        if (_knownTileGrid.TryGetValue(cell, out var bucket)
+            && bucket.Remove(key)
+            && bucket.Count == 0)
+        {
+            _knownTileGrid.Remove(cell);
+        }
+    }
+
+    private static SuperCellKey ToSuperCell(TileKey key) => new(
+        FloorDivide(key.X, KnownTileSuperCellSize),
+        FloorDivide(key.Z, KnownTileSuperCellSize));
+
+    private static int FloorDivide(int value, int divisor)
+    {
+        var quotient = value / divisor;
+        return value < 0 && value % divisor != 0 ? quotient - 1 : quotient;
     }
 
     public bool ContainsKnownTile(int tileX, int tileZ)
@@ -325,7 +418,7 @@ public sealed class ExplorationTileStore
             }
 
             SetDirty(entry);
-            _knownTiles.Add(key);
+            AddKnownTile(key);
             _mutationVersion++;
             _tileMutationVersions[key] = _mutationVersion;
         }
@@ -400,7 +493,7 @@ public sealed class ExplorationTileStore
         catch (InvalidDataException)
         {
             File.Move(path, path + ".corrupt", overwrite: true);
-            _knownTiles.Remove(key);
+            RemoveKnownTile(key);
             return new MapTile(key.X, key.Z);
         }
     }
@@ -419,7 +512,7 @@ public sealed class ExplorationTileStore
             if (int.TryParse(name.AsSpan(0, separator), out var tileX)
                 && int.TryParse(name.AsSpan(separator + 1), out var tileZ))
             {
-                _knownTiles.Add(new TileKey(tileX, tileZ));
+                AddKnownTile(new TileKey(tileX, tileZ));
             }
         }
     }
@@ -444,7 +537,7 @@ public sealed class ExplorationTileStore
         lock (_sync)
         {
             SetDirty(entry);
-            _knownTiles.Add(key);
+            AddKnownTile(key);
             _mutationVersion++;
             _tileMutationVersions[key] = _mutationVersion;
             entry.PinCount--;
@@ -516,6 +609,8 @@ public sealed class ExplorationTileStore
             cancellationToken);
 
     private readonly record struct TileKey(int X, int Z);
+
+    private readonly record struct SuperCellKey(int X, int Z);
 
     public sealed class MutationLease : IDisposable
     {

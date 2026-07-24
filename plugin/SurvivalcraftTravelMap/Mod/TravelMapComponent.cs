@@ -1393,9 +1393,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
     {
         var position = Player.ComponentBody.Position;
         var forward = Player.ComponentBody.Matrix.Forward;
+        // The map plane is rotated 180 degrees from raw world coordinates so the minimap matches
+        // the in-game sun (see MapTransform). The player arrow/heading must be rotated the same
+        // 180 degrees, i.e. Atan2(forward.X, -forward.Z) + PI, written here in its reduced form.
         return new PlayerMapPose(
             new Vector3(position.X, position.Y, position.Z),
-            MathF.Atan2(forward.X, -forward.Z));
+            MathF.Atan2(-forward.X, forward.Z));
     }
 
     private DeathMapMarker? GetLastDeathMarker() =>
