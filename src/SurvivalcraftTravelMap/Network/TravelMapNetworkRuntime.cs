@@ -228,9 +228,9 @@ internal static class TravelMapNetworkRuntime
                     break;
                 case InvitationRequestStatus.InvitationCreated:
                     SendResult(netNode, inviter, TravelMapText.Get("invitationSent", "传送邀请已发送"));
-                    Send(
+                    Deliver(
                         netNode,
-                        invitee!.PlayerData.Client,
+                        invitee!,
                         LegacyGpsMessage.TeleportResponse(
                             1,
                             TravelMapText.Format("invitationPromptFormat", "{0} 邀请传送到你的位置，是否同意？", inviter.PlayerData.Name)));
@@ -310,10 +310,33 @@ internal static class TravelMapNetworkRuntime
                 .FirstOrDefault(player => player.PlayerGuid == playerId);
 
         private static LegacyInvitationPlayer ToInvitationPlayer(ComponentPlayer player) =>
-            new(player.PlayerGuid, player.PlayerData.Name, player.PlayerData.Client.IsConnected);
+            new(player.PlayerGuid, player.PlayerData.Name, IsPlayerOnline(player));
+
+        // The locally-hosted player (integrated server host) has no network peer, so its
+        // Client.IsConnected is always false. Without this it would look "offline" to every client
+        // and no one could ever invite/teleport to the host. It is present in the world whenever it
+        // is the main player, so treat that as online; remote clients still require a live peer.
+        private static bool IsPlayerOnline(ComponentPlayer player) =>
+            player.PlayerData.IsMainPlayer
+            || player.PlayerData.Client is { IsConnected: true };
 
         private static void SendResult(NetNode netNode, ComponentPlayer player, string message) =>
-            Send(netNode, player.PlayerData.Client, LegacyGpsMessage.TeleportResponse(0, message));
+            Deliver(netNode, player, LegacyGpsMessage.TeleportResponse(0, message));
+
+        // Deliver an invitation prompt/result to a player. A connected remote client gets it over
+        // the network; the locally-hosted player (no live peer, so Send below would silently drop
+        // it) gets it dispatched in-process to its own component, which shows the same dialog/notice.
+        private static void Deliver(NetNode netNode, ComponentPlayer player, LegacyGpsMessage message)
+        {
+            var client = player.PlayerData.Client;
+            if (client is { IsConnected: true })
+            {
+                netNode.QueuePackage(new LegacyGpsPackage(message) { To = client });
+                return;
+            }
+
+            player.Entity.FindComponent<TravelMapComponent>(false)?.HandleLegacyClientResponse(message);
+        }
 
         private static void Send(NetNode netNode, Client target, LegacyGpsMessage message)
         {
