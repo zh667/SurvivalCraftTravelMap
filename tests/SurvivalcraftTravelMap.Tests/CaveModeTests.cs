@@ -155,11 +155,13 @@ public sealed class CaveModeTests
             new Vector2(500f, 0f),
             inset: 16f);
 
+        // A death marker at world +X is now drawn on the left (screen -X): the 180-degree map
+        // rotation makes +X the sun-west direction, which sits on the left of a north-up map.
         Assert.True(projection.IsOffscreen);
-        Assert.True(projection.Position.X > 100f);
+        Assert.True(projection.Position.X < 100f);
         Assert.InRange(projection.Position.Y, 99.99f, 100.01f);
         Assert.True(MapShapeGeometry.Create(new Vector2(200f), shape).ContainsPoint(projection.Position, 15.9f));
-        Assert.True(projection.Direction.X > 0.99f);
+        Assert.True(projection.Direction.X < -0.99f);
     }
 
     [Fact]

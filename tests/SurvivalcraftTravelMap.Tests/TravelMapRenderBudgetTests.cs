@@ -26,11 +26,13 @@ public sealed class TravelMapRenderBudgetTests
 
         TravelMapRenderModel.RenderTerrain(source, transform, 1f, sink);
 
+        // The 180-degree map-plane rotation (Center - world) permutes which world corner lands at
+        // which screen corner, but the cell still covers the identical screen area (same min/max).
         var cell = Assert.Single(sink.Terrain);
-        Assert.Equal(new Vector2(50.5f, 49.5f), cell.ScreenTopLeft);
-        Assert.Equal(new Vector2(50.5f, 50.5f), cell.ScreenTopRight);
-        Assert.Equal(new Vector2(49.5f, 50.5f), cell.ScreenBottomRight);
-        Assert.Equal(new Vector2(49.5f, 49.5f), cell.ScreenBottomLeft);
+        Assert.Equal(new Vector2(49.5f, 50.5f), cell.ScreenTopLeft);
+        Assert.Equal(new Vector2(49.5f, 49.5f), cell.ScreenTopRight);
+        Assert.Equal(new Vector2(50.5f, 49.5f), cell.ScreenBottomRight);
+        Assert.Equal(new Vector2(50.5f, 50.5f), cell.ScreenBottomLeft);
         Assert.Equal(new Vector2(49.5f), cell.ScreenMinimum);
         Assert.Equal(new Vector2(50.5f), cell.ScreenMaximum);
     }
@@ -222,15 +224,18 @@ public sealed class TravelMapRenderBudgetTests
             TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
 
         Assert.NotEmpty(sink.Terrain);
+        // Cells are still emitted in ascending world-X order, but the 180-degree plane rotation
+        // maps increasing world X to decreasing screen X, so the lowest-world-X cell sits at the
+        // right (screen maximum) edge and coverage stays gap-free walking screen-right to -left.
         Assert.Equal(
             transform.WorldToScreen(new Vector2(visibleStartX, visibleStartZ)).X,
-            sink.Terrain[0].ScreenMinimum.X);
+            sink.Terrain[0].ScreenMaximum.X);
         Assert.Equal(
             transform.WorldToScreen(new Vector2(visibleEndX + 1, visibleStartZ)).X,
-            sink.Terrain[^1].ScreenMaximum.X);
+            sink.Terrain[^1].ScreenMinimum.X);
         for (var index = 1; index < sink.Terrain.Count; index++)
         {
-            Assert.Equal(sink.Terrain[index - 1].ScreenMaximum.X, sink.Terrain[index].ScreenMinimum.X);
+            Assert.Equal(sink.Terrain[index - 1].ScreenMinimum.X, sink.Terrain[index].ScreenMaximum.X);
         }
     }
 
@@ -496,9 +501,11 @@ public sealed class TravelMapRenderBudgetTests
             Assert.Equal(2f, cell.ScreenMaximum.X - cell.ScreenMinimum.X);
             Assert.Equal(2f, cell.ScreenMaximum.Y - cell.ScreenMinimum.Y);
         });
+        // Ascending world X maps to descending screen X after the 180-degree plane rotation, so
+        // each cell's screen-minimum meets the previous cell's screen-maximum (still gap-free).
         for (var index = 1; index < firstTileRow.Length; index++)
         {
-            Assert.Equal(firstTileRow[index - 1].ScreenMaximum.X, firstTileRow[index].ScreenMinimum.X);
+            Assert.Equal(firstTileRow[index - 1].ScreenMinimum.X, firstTileRow[index].ScreenMaximum.X);
         }
     }
 
@@ -573,9 +580,10 @@ public sealed class TravelMapRenderBudgetTests
         Assert.Equal(0, source.PixelQueries);
         Assert.NotEmpty(sink.Terrain);
         Assert.All(sink.Terrain, cell => Assert.Equal(new Rgba32(50, 40, 30, 255), cell.Color));
+        // Ascending world X maps to descending screen X after the 180-degree plane rotation.
         for (var index = 1; index < sink.Terrain.Count; index++)
         {
-            Assert.Equal(sink.Terrain[index - 1].ScreenMaximum.X, sink.Terrain[index].ScreenMinimum.X);
+            Assert.Equal(sink.Terrain[index - 1].ScreenMinimum.X, sink.Terrain[index].ScreenMaximum.X);
         }
     }
 
@@ -593,18 +601,20 @@ public sealed class TravelMapRenderBudgetTests
 
         Assert.Equal(2, statistics.WorldStride);
         Assert.NotEmpty(sink.Terrain);
+        // Cells are emitted in ascending world X; the 180-degree plane rotation maps ascending
+        // world X to descending screen X, so the lowest world X sits at the screen-maximum edge.
         Assert.Equal(-511, sink.Terrain[0].WorldX);
         Assert.Equal(
             transform.WorldToScreen(new Vector2(-511f, 0f)).X,
-            sink.Terrain[0].ScreenMinimum.X);
+            sink.Terrain[0].ScreenMaximum.X);
         Assert.Equal(
             transform.WorldToScreen(new Vector2(514f, 0f)).X,
-            sink.Terrain[^1].ScreenMaximum.X);
+            sink.Terrain[^1].ScreenMinimum.X);
         Assert.Equal(1f, sink.Terrain[0].ScreenMaximum.X - sink.Terrain[0].ScreenMinimum.X);
         Assert.Equal(2f, sink.Terrain[^1].ScreenMaximum.X - sink.Terrain[^1].ScreenMinimum.X);
         for (var index = 1; index < sink.Terrain.Count; index++)
         {
-            Assert.Equal(sink.Terrain[index - 1].ScreenMaximum.X, sink.Terrain[index].ScreenMinimum.X);
+            Assert.Equal(sink.Terrain[index - 1].ScreenMinimum.X, sink.Terrain[index].ScreenMaximum.X);
         }
     }
 

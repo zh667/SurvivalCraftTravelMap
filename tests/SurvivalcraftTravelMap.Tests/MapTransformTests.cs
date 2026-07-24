@@ -13,7 +13,9 @@ public sealed class MapTransformTests
 
         var result = map.WorldToScreen(new Vector2(104, -44));
 
-        AssertVectorNear(new Vector2(402, 303), result, 0.001f);
+        // The plane is rotated 180 degrees (Center - world), so a world point +4/-6 blocks from
+        // the center lands -2/-3 pixels from the viewport center instead of +2/+3.
+        AssertVectorNear(new Vector2(398, 297), result, 0.001f);
     }
 
     [Fact]
@@ -42,11 +44,14 @@ public sealed class MapTransformTests
     [Fact]
     public void Rotated_transform_places_the_heading_direction_at_the_top()
     {
+        // With the 180-degree plane rotation (Center - world), the heading-up rotation that puts
+        // the +X world direction at the top is +PI/2 (it is -heading, and facing +X now yields
+        // heading -PI/2). The forward point 10 blocks along +X still lands at the top edge.
         var map = new MapTransform(
             Vector2.Zero,
             1f,
             new Vector2(200f),
-            RotationRadians: -MathF.PI / 2f);
+            RotationRadians: MathF.PI / 2f);
 
         var result = map.WorldToScreen(new Vector2(10f, 0f));
 

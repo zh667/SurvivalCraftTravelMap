@@ -331,6 +331,61 @@ public sealed class ExplorationTileStoreTests : IDisposable
         Assert.NotEqual(local, server);
     }
 
+    [Fact]
+    public void Known_tile_queries_return_only_in_region_tiles_across_far_apart_super_cells()
+    {
+        var store = new ExplorationTileStore(_directory, capacity: 16);
+        // Tiles spread across several 16-tile super-cells, including negative coordinates. Only the
+        // four near the origin fall inside the query region below.
+        int[][] tiles =
+        [
+            [0, 0], [1, 0], [0, 1], [-1, -1],
+            [50, 50], [-40, 20], [200, -200], [17, 0], [0, 17], [-17, -17],
+        ];
+        foreach (var tile in tiles)
+        {
+            MarkTileKnown(store, tile[0], tile[1]);
+        }
+
+        var region = new MapTileRegion(-1, 1, -1, 1);
+        var catalog = store.GetKnownTileCatalog(region, maximumCount: 1000);
+
+        Assert.False(catalog.IsTruncated);
+        Assert.Equal(
+            [new MapTileCoordinate(-1, -1), new MapTileCoordinate(0, 0),
+                new MapTileCoordinate(1, 0), new MapTileCoordinate(0, 1)],
+            catalog.Tiles);
+        // GetKnownTiles agrees, and a distant empty region returns nothing without error.
+        Assert.Equal(catalog.Tiles, store.GetKnownTiles(region));
+        Assert.Empty(store.GetKnownTiles(new MapTileRegion(1000, 1005, 1000, 1005)).ToArray());
+        Assert.Equal(10, store.Diagnostics.KnownTileCount);
+    }
+
+    [Fact]
+    public async Task Known_tile_index_survives_reload_and_honors_the_maximum_count_truncation()
+    {
+        var seed = new ExplorationTileStore(_directory, capacity: 8);
+        MarkTileKnown(seed, 5, 5);
+        MarkTileKnown(seed, 6, 5);
+        MarkTileKnown(seed, 5, 6);
+        await seed.FlushAsync(TestContext.Current.CancellationToken);
+
+        // A fresh store rebuilds the spatial index from disk via LoadKnownTileCatalog.
+        var reloaded = new ExplorationTileStore(_directory, capacity: 8);
+        var region = new MapTileRegion(0, 100, 0, 100);
+        Assert.Equal(3, reloaded.GetKnownTiles(region).Count);
+
+        var truncated = reloaded.GetKnownTileCatalog(region, maximumCount: 2);
+        Assert.True(truncated.IsTruncated);
+        Assert.Equal(2, truncated.Tiles.Count);
+    }
+
+    private static void MarkTileKnown(ExplorationTileStore store, int tileX, int tileZ)
+    {
+        using var lease = store.AcquireMutation(tileX, tileZ);
+        lease.Tile.SetPixel(0, 0, new Rgba32(1, 2, 3, 255));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory))
