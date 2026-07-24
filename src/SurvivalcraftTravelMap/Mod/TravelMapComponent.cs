@@ -423,12 +423,18 @@ public sealed class TravelMapComponent : Component, IUpdateable
             return;
         }
 
+        // CommonLib.Net.Server is a transient wrapper whose PlayerGuid is empty and whose TokenId is
+        // random, but inbound replies resolve From to the real synced server entry (Clients[0], the
+        // ID-0 client with the real GUID/token). Key the session to that real identity so replies are
+        // not discarded as coming from an unexpected peer, which otherwise makes every client-side map
+        // teleport time out. Fall back to the wrapper if the real entry is not resolvable yet.
+        var serverIdentityClient = CommonLib.Net.GetClientByID(0) ?? server;
         _networkActions = new TrackedUiActionRunner(
             _ => ShowMessage(
                 TravelMapText.Get("onlineTravelFailed", "联机旅行请求未能完成"),
                 TravelMapNoticeKind.Failure));
         _coordinateClientSession = new CoordinateTeleportClientSession(
-            TravelMapNetworkPeerIdentity.ForClient(server),
+            TravelMapNetworkPeerIdentity.ForClient(serverIdentityClient),
             message =>
             {
                 var package = new CoordinateTeleportPackage(message) { To = server };
