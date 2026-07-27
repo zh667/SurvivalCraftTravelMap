@@ -98,7 +98,12 @@ public interface ITeleportClock
 
 internal interface ITeleportPositionCommitter
 {
-    void Commit(Func<bool> commitGuard);
+    // committedPosition is the authoritative teleport target. Committers must not read the
+    // live body position instead: on a server, the moving client's own BodyUpdate stream is
+    // position-authoritative and can interpolate the entity back toward its pre-teleport
+    // position during the post-move validation frame, so a live read races with that stream
+    // and can commit (and broadcast) the stale position.
+    void Commit(Func<bool> commitGuard, Vector3 committedPosition);
 }
 
 public sealed class TeleportRollbackException : Exception

@@ -29,7 +29,7 @@ public sealed class SafeTeleportService
             chunkLoader,
             playerMover,
             collisionQuery,
-            new DelegateTeleportPositionCommitter(static () => { }),
+            new DelegateTeleportPositionCommitter(static _ => { }),
             clock,
             static _ => { },
             static _ => { })
@@ -42,7 +42,7 @@ public sealed class SafeTeleportService
         IPlayerMover playerMover,
         IEntityCollisionQuery collisionQuery,
         ITeleportClock clock,
-        Action onPositionCommitted)
+        Action<Vector3> onPositionCommitted)
         : this(
             terrain,
             chunkLoader,
@@ -61,7 +61,7 @@ public sealed class SafeTeleportService
         IPlayerMover playerMover,
         IEntityCollisionQuery collisionQuery,
         ITeleportClock clock,
-        Action onPositionCommitted,
+        Action<Vector3> onPositionCommitted,
         Action<TeleportFailureDiagnostic> reportFailure)
         : this(
             terrain,
@@ -674,7 +674,7 @@ public sealed class SafeTeleportService
             }
 
             trace.Stage = TeleportExecutionStage.PositionSync;
-            _positionCommitter.Commit(commitGuard);
+            _positionCommitter.Commit(commitGuard, movement.Position);
             return TeleportResult.Success;
         }
         catch (Exception originalFailure)
@@ -880,11 +880,11 @@ public sealed class SafeTeleportService
             new(false, reason);
     }
 
-    private sealed class DelegateTeleportPositionCommitter(Action? commit) : ITeleportPositionCommitter
+    private sealed class DelegateTeleportPositionCommitter(Action<Vector3>? commit) : ITeleportPositionCommitter
     {
-        private readonly Action _commit = commit ?? (static () => { });
+        private readonly Action<Vector3> _commit = commit ?? (static _ => { });
 
-        public void Commit(Func<bool> commitGuard)
+        public void Commit(Func<bool> commitGuard, Vector3 committedPosition)
         {
             ArgumentNullException.ThrowIfNull(commitGuard);
             if (!commitGuard())
@@ -893,7 +893,7 @@ public sealed class SafeTeleportService
                     "The teleport commit guard rejected authoritative position synchronization.");
             }
 
-            _commit();
+            _commit(committedPosition);
         }
     }
 

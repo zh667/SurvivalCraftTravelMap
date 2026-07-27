@@ -52,14 +52,14 @@ public sealed class SurvivalcraftPlayerMover : IPlayerMover
 
 internal sealed class GameUpdateTeleportPositionCommitter(
     GameUpdateDispatcher dispatcher,
-    Action synchronizePosition) : ITeleportPositionCommitter
+    Action<System.Numerics.Vector3> synchronizePosition) : ITeleportPositionCommitter
 {
     private readonly GameUpdateDispatcher _dispatcher =
         dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
-    private readonly Action _synchronizePosition =
+    private readonly Action<System.Numerics.Vector3> _synchronizePosition =
         synchronizePosition ?? throw new ArgumentNullException(nameof(synchronizePosition));
 
-    public void Commit(Func<bool> commitGuard)
+    public void Commit(Func<bool> commitGuard, System.Numerics.Vector3 committedPosition)
     {
         ArgumentNullException.ThrowIfNull(commitGuard);
         _dispatcher.Invoke(() =>
@@ -70,7 +70,7 @@ internal sealed class GameUpdateTeleportPositionCommitter(
                     "The network peer binding changed before authoritative position commit.");
             }
 
-            _synchronizePosition();
+            _synchronizePosition(committedPosition);
         });
     }
 }

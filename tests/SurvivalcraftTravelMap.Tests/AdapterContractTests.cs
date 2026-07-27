@@ -380,18 +380,20 @@ public sealed class AdapterContractTests
         var order = new List<string>();
         var committer = new GameUpdateTeleportPositionCommitter(
             dispatcher,
-            () =>
+            _ =>
             {
                 syncThread = Environment.CurrentManagedThreadId;
                 order.Add("sync");
             });
         var worker = Task.Run(
-            () => committer.Commit(() =>
-            {
-                guardThread = Environment.CurrentManagedThreadId;
-                order.Add("guard");
-                return true;
-            }),
+            () => committer.Commit(
+                () =>
+                {
+                    guardThread = Environment.CurrentManagedThreadId;
+                    order.Add("guard");
+                    return true;
+                },
+                new System.Numerics.Vector3(1f, 65f, 2f)),
             TestContext.Current.CancellationToken);
         Assert.True(SpinWait.SpinUntil(() => dispatcher.PendingCount == 1, TimeSpan.FromSeconds(5)));
 

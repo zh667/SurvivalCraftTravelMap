@@ -144,7 +144,7 @@ public sealed class TravelMapPeerBindingTests
             mover,
             collisions,
             clock,
-            () => positionSyncCount++);
+            _ => positionSyncCount++);
         using var session = new CoordinateTeleportServerSession(
             binding.Identity,
             new SafeTeleportExecutor(service),
@@ -264,7 +264,7 @@ public sealed class TravelMapPeerBindingTests
         var positionSyncCount = 0;
         var committer = new InvalidatingPositionCommitter(
             () => current = current with { OwnerClient = new object() },
-            () => positionSyncCount++);
+            _ => positionSyncCount++);
         var service = new SafeTeleportService(
             terrain,
             new FakeChunkLoader(),
@@ -404,12 +404,12 @@ public sealed class TravelMapPeerBindingTests
 
     private sealed class InvalidatingPositionCommitter(
         Action beforeGuard,
-        Action synchronizePosition) : ITeleportPositionCommitter
+        Action<Vector3> synchronizePosition) : ITeleportPositionCommitter
     {
         private readonly Action _beforeGuard = beforeGuard;
-        private readonly Action _synchronizePosition = synchronizePosition;
+        private readonly Action<Vector3> _synchronizePosition = synchronizePosition;
 
-        public void Commit(Func<bool> commitGuard)
+        public void Commit(Func<bool> commitGuard, Vector3 committedPosition)
         {
             _beforeGuard();
             if (!commitGuard())
@@ -417,7 +417,7 @@ public sealed class TravelMapPeerBindingTests
                 throw new OperationCanceledException("The bound peer changed before position commit.");
             }
 
-            _synchronizePosition();
+            _synchronizePosition(committedPosition);
         }
     }
 
