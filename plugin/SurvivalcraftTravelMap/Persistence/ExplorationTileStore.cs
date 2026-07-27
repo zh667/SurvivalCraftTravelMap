@@ -424,35 +424,41 @@ public sealed class ExplorationTileStore
         }
     }
 
-    public async Task FlushAsync(CancellationToken cancellationToken = default)
+    // Runs entirely on the thread pool: flushing is called from the per-frame game update, and
+    // cloning every dirty tile (three arrays each) inside one store-wide lock used to run on the
+    // game thread, costing a 30-400ms hitch every flush interval while exploring. The snapshot
+    // phase now also clones each tile outside the store lock (MapTile.CreateSnapshot takes the
+    // tile's own lock, so every clone is still internally consistent); a tile mutated between the
+    // dirty-list scan and its write simply fails the generation check below and stays dirty for
+    // the next cycle.
+    public Task FlushAsync(CancellationToken cancellationToken = default) =>
+        Task.Run(() => FlushCoreAsync(cancellationToken), cancellationToken);
+
+    private async Task FlushCoreAsync(CancellationToken cancellationToken)
     {
         await _flushGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            List<PendingWrite> pendingWrites;
+            List<(TileKey Key, MapTile Tile, long Generation)> dirtyTiles;
             lock (_sync)
             {
-                pendingWrites = _cache
+                dirtyTiles = _cache
                     .Where(pair => pair.Value.IsDirty)
-                    .Select(pair => new PendingWrite(
-                        pair.Key,
-                        pair.Value.Tile,
-                        pair.Value.Tile.CreateSnapshot(),
-                        pair.Value.Generation))
+                    .Select(pair => (pair.Key, pair.Value.Tile, pair.Value.Generation))
                     .ToList();
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            foreach (var pending in pendingWrites)
+            foreach (var (key, tile, generation) in dirtyTiles)
             {
-                var path = GetPath(pending.Key);
-                await _writeTile(path, pending.Snapshot, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                var snapshot = tile.CreateSnapshot();
+                await _writeTile(GetPath(key), snapshot, cancellationToken).ConfigureAwait(false);
 
                 lock (_sync)
                 {
-                    if (_cache.TryGetValue(pending.Key, out var entry)
-                        && ReferenceEquals(entry.Tile, pending.Original)
-                        && entry.Generation == pending.Generation)
+                    if (_cache.TryGetValue(key, out var entry)
+                        && ReferenceEquals(entry.Tile, tile)
+                        && entry.Generation == generation)
                     {
                         entry.IsDirty = false;
                     }

@@ -305,9 +305,15 @@ internal static class TravelMapNetworkRuntime
             SendResult(netNode, inviter, response);
         }
 
+        // The game masks other players' PlayerGuid with their connection TokenId when syncing to
+        // clients (ClientPackage.WriteItem / PlayerDataPackage "confusion"), so an invite sent by a
+        // remote client identifies its target by that TokenId, not by the real PlayerGuid the
+        // server holds. Match both, like the original 34GPS FindPlayerByGuid did — without the
+        // TokenId fallback every client-initiated invite resolves to "target offline".
         private ComponentPlayer? FindPlayer(Guid playerId) =>
             _project.FindSubsystem<SubsystemPlayers>(true).ComponentPlayers
-                .FirstOrDefault(player => player.PlayerGuid == playerId);
+                .FirstOrDefault(player => player.PlayerGuid == playerId
+                    || (player.PlayerData.Client is { } client && client.TokenId == playerId));
 
         private static LegacyInvitationPlayer ToInvitationPlayer(ComponentPlayer player) =>
             new(player.PlayerGuid, player.PlayerData.Name, IsPlayerOnline(player));

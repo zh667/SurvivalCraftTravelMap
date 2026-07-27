@@ -547,7 +547,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     QueueAuthoritativePositionSync)
                 : new GameUpdateTeleportPositionCommitter(
                     _dispatcher,
-                    static () => { }),
+                    static _ => { }),
             clock,
             TeleportDiagnosticReporter.Report,
             TeleportDiagnosticReporter.ReportSearch);
@@ -561,11 +561,27 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
     }
 
-    private void QueueAuthoritativePositionSync() =>
+    // Matches the original 34GPS TPPlayer pattern: re-assert the body position and construct the
+    // PositionSet package in the same game-update tick. The package constructor captures the LIVE
+    // body position, and for a remote player the client's own BodyUpdate stream (which is
+    // position-authoritative in this engine) can interpolate the entity back to its pre-teleport
+    // position during the post-move validation frame — broadcasting that stale capture is exactly
+    // the "teleport succeeded but nobody moved" bug. Setting the body right before constructing
+    // guarantees the broadcast carries the teleport target; the receiving client then applies it
+    // and starts reporting the new position itself, which makes it stick everywhere.
+    private void QueueAuthoritativePositionSync(System.Numerics.Vector3 committedPosition)
+    {
+        var body = Player.ComponentBody;
+        body.Position = new Engine.Vector3(
+            committedPosition.X,
+            committedPosition.Y,
+            committedPosition.Z);
+        body.Velocity = Engine.Vector3.Zero;
         CommonLib.Net.QueuePackage(
             new ComponentPlayerPackage(
                 Player,
                 ComponentPlayerPackage.PlayerAction.PositionSet));
+    }
 
     private static void ReportCoordinateTeleportResult(
         string route,
@@ -951,10 +967,21 @@ public sealed class TravelMapComponent : Component, IUpdateable
             return;
         }
 
-        if (_teleportPanelButton.IsClicked && !DialogsManager.Dialogs.Contains(_teleportPanel))
+        // Desktop can only click widgets while the mouse cursor is visible, but the game
+        // only shows the cursor when something modal is open — exactly when this HUD
+        // button is hidden. The "N" hotkey (next to "M", which the vanilla game leaves
+        // unbound; "V" is taken by camera switching) is therefore the keyboard route
+        // into the panel; opening it makes it a dialog, which brings the cursor back
+        // for the player list itself. Touch input needs no cursor, so the button still
+        // serves phones unchanged.
+        var input = Player.GameWidget.Input;
+        var openRequested = _teleportPanelButton.IsClicked
+            || input.IsKeyDownOnce(Engine.Input.Key.N);
+        if (openRequested && !DialogsManager.Dialogs.Contains(_teleportPanel))
         {
             _teleportPanel.Refresh();
             DialogsManager.ShowDialog(Player.GuiWidget, _teleportPanel);
+            input.Clear();
         }
     }
 

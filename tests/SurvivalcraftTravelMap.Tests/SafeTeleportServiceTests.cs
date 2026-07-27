@@ -331,7 +331,7 @@ public sealed class SafeTeleportServiceTests
         var context = new TeleportTestContext();
         context.Terrain.SetSafeFeet(0, 65, 0);
         var commitCount = 0;
-        var service = CreateObservedService(context, () => commitCount++);
+        var service = CreateObservedService(context, _ => commitCount++);
 
         var result = await service.TeleportToWaypointAsync(
             new Vector3(0f, 65f, 0f),
@@ -339,6 +339,26 @@ public sealed class SafeTeleportServiceTests
 
         Assert.Equal(TeleportResult.Success, result);
         Assert.Equal(1, commitCount);
+    }
+
+    [Fact]
+    public async Task Position_commit_receives_the_teleport_target_not_a_live_body_read()
+    {
+        // On a server the moving client's BodyUpdate stream can interpolate the entity back
+        // toward its pre-teleport position during the validation frame; the commit must carry
+        // the authoritative candidate position so the PositionSet broadcast cannot capture the
+        // reverted value.
+        var context = new TeleportTestContext();
+        context.Terrain.SetSafeFeet(4, 65, -7);
+        Vector3? committed = null;
+        var service = CreateObservedService(context, position => committed = position);
+
+        var result = await service.TeleportToWaypointAsync(
+            new Vector3(4f, 65f, -7f),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(TeleportResult.Success, result);
+        Assert.Equal(new Vector3(4.5f, 65f, -6.5f), committed);
     }
 
     [Fact]
@@ -386,7 +406,7 @@ public sealed class SafeTeleportServiceTests
         var syncCount = 0;
         context.Terrain.SetSafeFeet(0, 65, 0);
         context.Mover.CaptureException = failure;
-        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+        var service = CreateDiagnosticService(context, diagnostics, _ => syncCount++);
 
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.TeleportToWaypointAsync(
@@ -409,7 +429,7 @@ public sealed class SafeTeleportServiceTests
         var syncCount = 0;
         context.Terrain.SetSafeFeet(0, 65, 0);
         context.Mover.MoveException = failure;
-        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+        var service = CreateDiagnosticService(context, diagnostics, _ => syncCount++);
 
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.TeleportToWaypointAsync(
@@ -432,7 +452,7 @@ public sealed class SafeTeleportServiceTests
         var syncCount = 0;
         context.Terrain.SetSafeFeet(0, 65, 0);
         context.Clock.WaitForUpdate = _ => throw failure;
-        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+        var service = CreateDiagnosticService(context, diagnostics, _ => syncCount++);
 
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.TeleportToWaypointAsync(
@@ -479,7 +499,7 @@ public sealed class SafeTeleportServiceTests
         var service = CreateDiagnosticService(
             context,
             diagnostics,
-            () =>
+            _ =>
             {
                 syncAttempts++;
                 throw failure;
@@ -530,7 +550,7 @@ public sealed class SafeTeleportServiceTests
             context.Terrain.SetBlock(0, 64, 0, TeleportBlockKind.Lava);
             return Task.CompletedTask;
         };
-        var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+        var service = CreateDiagnosticService(context, diagnostics, _ => syncCount++);
 
         var result = await service.TeleportToWaypointAsync(
             new Vector3(0f, 65f, 0f),
@@ -552,7 +572,7 @@ public sealed class SafeTeleportServiceTests
             var diagnostics = new List<TeleportFailureDiagnostic>();
             var syncCount = 0;
             context.Terrain.SetSafeFeet(0, 65, 0);
-            var service = CreateDiagnosticService(context, diagnostics, () => syncCount++);
+            var service = CreateDiagnosticService(context, diagnostics, _ => syncCount++);
 
             var result = useSurface
                 ? await service.TeleportToSurfaceAsync(0, 0, TestContext.Current.CancellationToken)
@@ -581,7 +601,7 @@ public sealed class SafeTeleportServiceTests
             context.Mover,
             context.Collisions,
             context.Clock,
-            static () => { },
+            static _ => { },
             _ =>
             {
                 reportAttempts++;
@@ -950,7 +970,7 @@ public sealed class SafeTeleportServiceTests
             return Task.CompletedTask;
         };
         var commitCount = 0;
-        var service = CreateObservedService(context, () => commitCount++);
+        var service = CreateObservedService(context, _ => commitCount++);
 
         var result = await service.TeleportToWaypointAsync(
             new Vector3(0f, 65f, 0f),
@@ -965,7 +985,7 @@ public sealed class SafeTeleportServiceTests
     {
         var context = new TeleportTestContext();
         var commitCount = 0;
-        var service = CreateObservedService(context, () => commitCount++);
+        var service = CreateObservedService(context, _ => commitCount++);
 
         var result = await service.TeleportToWaypointAsync(
             new Vector3(0f, 65f, 0f),
@@ -984,7 +1004,7 @@ public sealed class SafeTeleportServiceTests
             TaskCreationOptions.RunContinuationsAsynchronously).Task;
         context.Clock.Delay = (_, _) => Task.CompletedTask;
         var commitCount = 0;
-        var service = CreateObservedService(context, () => commitCount++);
+        var service = CreateObservedService(context, _ => commitCount++);
 
         var result = await service.TeleportToSurfaceAsync(
             0,
@@ -1351,7 +1371,7 @@ public sealed class SafeTeleportServiceTests
 
     private static SafeTeleportService CreateObservedService(
         TeleportTestContext context,
-        Action onPositionCommitted) =>
+        Action<Vector3> onPositionCommitted) =>
         new(
             context.Terrain,
             context.Chunks,
@@ -1363,14 +1383,14 @@ public sealed class SafeTeleportServiceTests
     private static SafeTeleportService CreateDiagnosticService(
         TeleportTestContext context,
         List<TeleportFailureDiagnostic> diagnostics,
-        Action? onPositionCommitted = null) =>
+        Action<Vector3>? onPositionCommitted = null) =>
         new(
             context.Terrain,
             context.Chunks,
             context.Mover,
             context.Collisions,
             context.Clock,
-            onPositionCommitted ?? (static () => { }),
+            onPositionCommitted ?? (static _ => { }),
             diagnostics.Add);
 
     private static SafeTeleportService CreateSearchDiagnosticService(
@@ -1400,7 +1420,7 @@ public sealed class SafeTeleportServiceTests
 
     private sealed class TestTeleportPositionCommitter : ITeleportPositionCommitter
     {
-        public void Commit(Func<bool> commitGuard)
+        public void Commit(Func<bool> commitGuard, Vector3 committedPosition)
         {
             if (!commitGuard())
             {

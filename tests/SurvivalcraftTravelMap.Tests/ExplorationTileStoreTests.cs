@@ -380,6 +380,63 @@ public sealed class ExplorationTileStoreTests : IDisposable
         Assert.Equal(2, truncated.Tiles.Count);
     }
 
+    [Fact]
+    public async Task Flush_runs_off_the_calling_thread_so_the_game_update_never_pays_for_snapshots()
+    {
+        // Flushing is triggered from the per-frame game update; the snapshot/write work must not
+        // execute synchronously on that thread or every flush interval hitches gameplay. The
+        // write callback blocks its executing thread, so if FlushAsync still did the work on the
+        // caller thread this call would never return (the old behavior hangs here).
+        using var blocker = new ManualResetEventSlim(initialState: false);
+        var store = new ExplorationTileStore(
+            _directory,
+            capacity: 8,
+            flushInterval: null,
+            writeTile: (_, _, _) =>
+            {
+                blocker.Wait(TimeSpan.FromSeconds(30));
+                return Task.CompletedTask;
+            });
+        MarkTileKnown(store, 0, 0);
+
+        var flush = store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(flush.IsCompleted);
+        blocker.Set();
+        await flush;
+    }
+
+    [Fact]
+    public async Task Tile_mutated_between_flush_scan_and_write_stays_dirty_for_the_next_cycle()
+    {
+        var writeStarted = new SemaphoreSlim(0);
+        var releaseWrite = new SemaphoreSlim(0);
+        var writeCount = 0;
+        var store = new ExplorationTileStore(
+            _directory,
+            capacity: 8,
+            flushInterval: null,
+            writeTile: async (_, _, token) =>
+            {
+                Interlocked.Increment(ref writeCount);
+                writeStarted.Release();
+                await releaseWrite.WaitAsync(token);
+            });
+        MarkTileKnown(store, 0, 0);
+
+        var flush = store.FlushAsync(TestContext.Current.CancellationToken);
+        await writeStarted.WaitAsync(TestContext.Current.CancellationToken);
+        // Mutate the same tile while its write is in flight: the generation check must keep it
+        // dirty so the newer content is persisted by a later flush.
+        MarkTileKnown(store, 0, 0);
+        releaseWrite.Release();
+        await flush;
+
+        releaseWrite.Release();
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, writeCount);
+    }
+
     private static void MarkTileKnown(ExplorationTileStore store, int tileX, int tileZ)
     {
         using var lease = store.AcquireMutation(tileX, tileZ);
