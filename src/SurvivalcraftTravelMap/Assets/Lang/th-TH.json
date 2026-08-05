@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "เซิร์ฟเวอร์นี้ไม่รองรับการเคลื่อนย้ายผู้เล่นข้ามเซิร์ฟเวอร์",
     "serverTeleportComponentUnavailable": "คอมโพเนนต์ map-teleport ของเซิร์ฟเวอร์ไม่พร้อมใช้งาน",
     "onlineTravelFailed": "คําขอเดินทางออนไลน์ไม่เสร็จสมบูรณ์",
+    "networkPackageConflict": "Another mod occupies the map's network channel (package ID conflict); online teleport is unavailable, the rest of the map still works",
     "onlineTravelBusy": "คําขอเดินทางออนไลน์อื่นยังคงทํางานอยู่",
     "teleportRejected": "เซิร์ฟเวอร์ปฏิเสธคําขอเทเลพอร์ตแผนที่",
     "teleportUnsupported": "เซิร์ฟเวอร์ไม่รองรับการเคลื่อนย้ายแผนที่",
