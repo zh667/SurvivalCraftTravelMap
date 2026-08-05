@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "Bu sunucu, sunucular arası oyuncu ışınlanmasını desteklemez",
     "serverTeleportComponentUnavailable": "Sunucu harita-teleport bileşeni kullanılamaz",
     "onlineTravelFailed": "Çevrimiçi seyahat talebi tamamlanmadı",
+    "networkPackageConflict": "Another mod occupies the map's network channel (package ID conflict); online teleport is unavailable, the rest of the map still works",
     "onlineTravelBusy": "Başka bir çevrimiçi seyahat talebi hâlâ devam ediyor",
     "teleportRejected": "Sunucu, harita teleport talebini reddetti",
     "teleportUnsupported": "Sunucu, harita ışınlanmasını desteklemiyor",
