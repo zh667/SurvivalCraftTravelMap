@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "此服务器不支持跨服务器玩家传送",
     "serverTeleportComponentUnavailable": "服务器地图传送组件不可用",
     "onlineTravelFailed": "联机旅行请求未能完成",
+    "networkPackageConflict": "Another mod occupies the map's network channel (package ID conflict); online teleport is unavailable, the rest of the map still works",
     "onlineTravelBusy": "另一项联机旅行请求仍在进行",
     "teleportRejected": "服务器拒绝了地图传送请求",
     "teleportUnsupported": "服务器不支持地图传送",
