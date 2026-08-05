@@ -367,7 +367,12 @@ internal static class BoundedBinaryString
 
 public sealed class CoordinateTeleportPackage : IPackage
 {
-    public const byte PackageId = 61;
+    // Moved from 61 in v1.2.5: popular server-side anticheat mods claim 61 (their
+    // AntiCheatHeartbeatPackage gets auto-downloaded into ModsCache when joining such a server and
+    // then conflicts in every later session). 217 sits far from the vanilla ranges (0-40, 56-59,
+    // 250-253) and known ecosystem picks. Mixed mod versions across peers lose coordinate
+    // teleports until both sides update; the map itself is unaffected either way.
+    public const byte PackageId = 217;
 
     public byte ID => PackageId;
 

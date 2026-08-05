@@ -7,36 +7,35 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class PackageRegistrationTests
 {
     [Theory]
-    [InlineData(41)]
-    [InlineData(61)]
-    public void Persistent_startup_failure_keeps_later_xdb_component_inert(int failingId)
+    [InlineData(41, false, true)]
+    [InlineData(217, true, false)]
+    public void Package_conflict_degrades_only_that_feature_and_keeps_the_mod_active(
+        int failingId,
+        bool expectLegacyGps,
+        bool expectCoordinateTeleport)
     {
         TravelMapStartup.ResetForTests();
-        var registrations = new List<byte>();
+        var warnings = new List<string>();
         var active = TravelMapStartup.EnsureInitialized(
             _ => false,
             package =>
             {
-                registrations.Add(package.ID);
                 if (package.ID == failingId)
                 {
                     throw new InvalidOperationException("conflict");
                 }
             },
-            _ => { },
-            _ => { });
-        var laterRegistrations = 0;
-        var later = TravelMapStartup.EnsureInitialized(
-            _ => false,
-            _ => laterRegistrations++,
-            _ => { },
-            _ => { });
+            _ => throw new InvalidOperationException("unexpected error dialog"),
+            warnings.Add);
 
-        Assert.False(active);
-        Assert.False(later);
-        Assert.False(TravelMapStartup.IsActive);
-        Assert.Equal(TravelMapStartupState.RegistrationFailed, TravelMapStartup.CurrentState);
-        Assert.Equal(0, laterRegistrations);
+        Assert.True(active);
+        Assert.True(TravelMapStartup.IsActive);
+        Assert.Equal(TravelMapStartupState.Active, TravelMapStartup.CurrentState);
+        Assert.Equal(expectLegacyGps, TravelMapStartup.IsLegacyGpsAvailable);
+        Assert.Equal(expectCoordinateTeleport, TravelMapStartup.IsCoordinateTeleportAvailable);
+        var warning = Assert.Single(warnings);
+        Assert.Contains(failingId.ToString(), warning, StringComparison.Ordinal);
+        Assert.Contains("map itself is unaffected", warning, StringComparison.Ordinal);
         TravelMapStartup.ResetForTests();
     }
 
@@ -46,16 +45,26 @@ public sealed class PackageRegistrationTests
         TravelMapStartup.ResetForTests();
         var registrations = 0;
 
-        Assert.True(TravelMapStartup.EnsureInitialized(_ => false, _ => registrations++, _ => { }, _ => { }));
-        Assert.True(TravelMapStartup.EnsureInitialized(_ => false, _ => registrations++, _ => { }, _ => { }));
+        Assert.True(TravelMapStartup.EnsureInitialized(
+            _ => false,
+            _ => registrations++,
+            _ => { },
+            _ => { }));
+        Assert.True(TravelMapStartup.EnsureInitialized(
+            _ => false,
+            _ => registrations++,
+            _ => { },
+            _ => { }));
 
         Assert.True(TravelMapStartup.IsActive);
+        Assert.True(TravelMapStartup.IsLegacyGpsAvailable);
+        Assert.True(TravelMapStartup.IsCoordinateTeleportAvailable);
         Assert.Equal(2, registrations);
         TravelMapStartup.ResetForTests();
     }
 
     [Fact]
-    public void Startup_checks_only_34gpsfix_and_does_not_partially_register_on_conflict()
+    public void Startup_checks_only_34gpsfix_and_registers_nothing_on_legacy_conflict()
     {
         var checkedPackages = new List<string>();
         var registered = new List<byte>();
@@ -68,10 +77,12 @@ public sealed class PackageRegistrationTests
                 return true;
             },
             package => registered.Add(package.ID),
-            _ => throw new InvalidOperationException("unexpected rollback"),
-            messages.Add);
+            messages.Add,
+            _ => throw new InvalidOperationException("unexpected warning"),
+            out var packages);
 
         Assert.False(success);
+        Assert.Equal(default, packages);
         Assert.Equal(["34GPSFix"], checkedPackages);
         Assert.Empty(registered);
         var message = Assert.Single(messages);
@@ -80,7 +91,7 @@ public sealed class PackageRegistrationTests
     }
 
     [Fact]
-    public void Startup_registers_exactly_41_and_61_when_legacy_mod_is_absent()
+    public void Startup_registers_exactly_41_and_217_when_legacy_mod_is_absent()
     {
         var checkedPackages = new List<string>();
         var registered = new List<byte>();
@@ -92,53 +103,59 @@ public sealed class PackageRegistrationTests
                 return false;
             },
             package => registered.Add(package.ID),
-            _ => throw new InvalidOperationException("unexpected rollback"),
-            _ => throw new InvalidOperationException("unexpected error"));
+            _ => throw new InvalidOperationException("unexpected error"),
+            _ => throw new InvalidOperationException("unexpected warning"),
+            out var packages);
 
         Assert.True(success);
+        Assert.Equal(new TravelMapPackageAvailability(true, true), packages);
         Assert.Equal(["34GPSFix"], checkedPackages);
-        Assert.Equal(new byte[] { 41, 61 }, registered);
+        Assert.Equal(new byte[] { 41, 217 }, registered);
     }
 
     [Fact]
-    public void Registration_installs_only_41_and_61()
+    public void Coordinate_teleport_id_avoids_vanilla_and_known_conflicting_ranges()
     {
-        var registered = new List<byte>();
+        // Vanilla uses 0-40, 56-59 and 250-253; server-side anticheat mods are known to claim 61
+        // (the original coordinate-teleport ID). Both packages must stay clear of all of those.
+        byte[] claimed = [41, 217];
+        var forbidden = Enumerable.Range(0, 41)
+            .Concat(Enumerable.Range(56, 4))
+            .Concat(Enumerable.Range(250, 4))
+            .Concat([61])
+            .ToHashSet();
 
-        var success = TravelMapPackageRegistration.TryRegister(
+        Assert.Equal(41, claimed[0]);
+        Assert.DoesNotContain(claimed[1], forbidden.Select(id => (byte)id));
+        var registered = new List<byte>();
+        TravelMapPackageRegistration.TryRegister(
             package => registered.Add(package.ID),
-            _ => throw new InvalidOperationException("unexpected rollback"),
-            _ => throw new InvalidOperationException("unexpected error"));
-
-        Assert.True(success);
-        Assert.Equal(new byte[] { 41, 61 }, registered);
-        Assert.DoesNotContain((byte)60, registered);
+            _ => throw new InvalidOperationException("unexpected warning"));
+        Assert.Equal(claimed, registered);
     }
 
     [Fact]
-    public void Registration_rolls_back_41_if_61_conflicts_and_reports_the_id()
+    public void Registration_keeps_41_when_217_conflicts_and_reports_the_id()
     {
         var registered = new List<byte>();
-        var unregistered = new List<byte>();
-        var errors = new List<string>();
+        var warnings = new List<string>();
 
-        var success = TravelMapPackageRegistration.TryRegister(
+        var packages = TravelMapPackageRegistration.TryRegister(
             package =>
             {
-                if (package.ID == 61)
+                if (package.ID == 217)
                 {
                     throw new InvalidOperationException("duplicate package");
                 }
 
                 registered.Add(package.ID);
             },
-            package => unregistered.Add(package.ID),
-            errors.Add);
+            warnings.Add);
 
-        Assert.False(success);
+        Assert.Equal(new TravelMapPackageAvailability(LegacyGps: true, CoordinateTeleport: false), packages);
         Assert.Equal(new byte[] { 41 }, registered);
-        Assert.Equal(new byte[] { 41 }, unregistered);
-        Assert.Single(errors);
-        Assert.Contains("61", errors[0], StringComparison.Ordinal);
+        var warning = Assert.Single(warnings);
+        Assert.Contains("217", warning, StringComparison.Ordinal);
+        Assert.Contains("online map teleport", warning, StringComparison.Ordinal);
     }
 }

@@ -37,12 +37,12 @@ public sealed class TravelMapModLoader : ModLoader
         TravelMapStartup.EnsureInitialized(
             packageName => ModsManager.GetModEntity(packageName, out _),
             PackageManager.RegisterPackage,
-            PackageManager.UnRegisterPackage,
             message =>
             {
                 Engine.Log.Warning($"[TravelMap] {message}");
                 DialogsManager.Alert("Mod conflict", message);
-            });
+            },
+            message => Engine.Log.Warning($"[TravelMap] {message}"));
     }
 }
 
@@ -124,14 +124,21 @@ public enum TravelMapStartupState
     Initializing,
     Active,
     LegacyConflict,
-    RegistrationFailed,
 }
+
+/// <summary>
+/// Which of the mod's network packages could claim their wire IDs. The map itself (recording,
+/// rendering, waypoints, host-side teleports) needs no packages, so a conflict on either ID only
+/// degrades the corresponding online feature.
+/// </summary>
+public readonly record struct TravelMapPackageAvailability(bool LegacyGps, bool CoordinateTeleport);
 
 public static class TravelMapStartup
 {
     public const string LegacyPackageName = "34GPSFix";
     private static readonly object Sync = new();
     private static TravelMapStartupState s_state;
+    private static TravelMapPackageAvailability s_packages;
 
     public static TravelMapStartupState CurrentState
     {
@@ -146,6 +153,28 @@ public static class TravelMapStartup
 
     public static bool IsActive => CurrentState == TravelMapStartupState.Active;
 
+    public static bool IsLegacyGpsAvailable
+    {
+        get
+        {
+            lock (Sync)
+            {
+                return s_packages.LegacyGps;
+            }
+        }
+    }
+
+    public static bool IsCoordinateTeleportAvailable
+    {
+        get
+        {
+            lock (Sync)
+            {
+                return s_packages.CoordinateTeleport;
+            }
+        }
+    }
+
     public static bool HasLegacyConflict(Func<string, bool> isInstalled)
     {
         ArgumentNullException.ThrowIfNull(isInstalled);
@@ -155,10 +184,12 @@ public static class TravelMapStartup
     public static bool TryInitialize(
         Func<string, bool> isInstalled,
         Action<IPackage> register,
-        Action<IPackage> unregister,
-        Action<string> reportError)
+        Action<string> reportError,
+        Action<string> reportWarning,
+        out TravelMapPackageAvailability packages)
     {
         ArgumentNullException.ThrowIfNull(reportError);
+        packages = default;
         if (HasLegacyConflict(isInstalled))
         {
             reportError(
@@ -167,19 +198,20 @@ public static class TravelMapStartup
             return false;
         }
 
-        return TravelMapPackageRegistration.TryRegister(register, unregister, reportError);
+        packages = TravelMapPackageRegistration.TryRegister(register, reportWarning);
+        return true;
     }
 
     public static bool EnsureInitialized(
         Func<string, bool> isInstalled,
         Action<IPackage> register,
-        Action<IPackage> unregister,
-        Action<string> reportError)
+        Action<string> reportError,
+        Action<string> reportWarning)
     {
         ArgumentNullException.ThrowIfNull(isInstalled);
         ArgumentNullException.ThrowIfNull(register);
-        ArgumentNullException.ThrowIfNull(unregister);
         ArgumentNullException.ThrowIfNull(reportError);
+        ArgumentNullException.ThrowIfNull(reportWarning);
         lock (Sync)
         {
             if (s_state != TravelMapStartupState.Uninitialized)
@@ -197,14 +229,9 @@ public static class TravelMapStartup
                 return false;
             }
 
-            var registered = TravelMapPackageRegistration.TryRegister(
-                register,
-                unregister,
-                reportError);
-            s_state = registered
-                ? TravelMapStartupState.Active
-                : TravelMapStartupState.RegistrationFailed;
-            return registered;
+            s_packages = TravelMapPackageRegistration.TryRegister(register, reportWarning);
+            s_state = TravelMapStartupState.Active;
+            return true;
         }
     }
 
@@ -213,48 +240,50 @@ public static class TravelMapStartup
         lock (Sync)
         {
             s_state = TravelMapStartupState.Uninitialized;
+            s_packages = default;
         }
     }
 }
 
 public static class TravelMapPackageRegistration
 {
-    public static bool TryRegister(
+    public static TravelMapPackageAvailability TryRegister(
         Action<IPackage> register,
-        Action<IPackage> unregister,
-        Action<string> reportError)
+        Action<string> reportWarning)
     {
         ArgumentNullException.ThrowIfNull(register);
-        ArgumentNullException.ThrowIfNull(unregister);
-        ArgumentNullException.ThrowIfNull(reportError);
-        IPackage[] packages = [new LegacyGpsPackage(), new CoordinateTeleportPackage()];
-        var registered = new List<IPackage>(packages.Length);
-        foreach (var package in packages)
+        ArgumentNullException.ThrowIfNull(reportWarning);
+        // The packages are independent, and a wire-ID conflict is an environmental condition
+        // (another installed mod — possibly auto-downloaded into ModsCache by a server — claimed
+        // the ID first), so each failure disables only its own online feature. The in-game notice
+        // appears when the player actually uses a degraded feature, not as a startup dialog.
+        return new TravelMapPackageAvailability(
+            TryRegisterOne(new LegacyGpsPackage(), "legacy GPS interop", register, reportWarning),
+            TryRegisterOne(
+                new CoordinateTeleportPackage(),
+                "online map teleport",
+                register,
+                reportWarning));
+    }
+
+    private static bool TryRegisterOne(
+        IPackage package,
+        string feature,
+        Action<IPackage> register,
+        Action<string> reportWarning)
+    {
+        try
         {
-            try
-            {
-                register(package);
-                registered.Add(package);
-            }
-            catch (Exception exception)
-            {
-                foreach (var completed in registered.AsEnumerable().Reverse())
-                {
-                    try
-                    {
-                        unregister(completed);
-                    }
-                    catch
-                    {
-                    }
-                }
-
-                reportError(
-                    $"Survivalcraft Travel Map could not register network package ID {package.ID}: {exception.Message}");
-                return false;
-            }
+            register(package);
+            return true;
         }
-
-        return true;
+        catch (Exception exception)
+        {
+            reportWarning(
+                $"Survivalcraft Travel Map could not register network package ID {package.ID}: "
+                + $"{exception.Message} The {feature} feature is disabled for this session; "
+                + "the map itself is unaffected.");
+            return false;
+        }
     }
 }

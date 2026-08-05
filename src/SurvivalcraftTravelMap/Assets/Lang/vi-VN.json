@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "Máy chủ này không hỗ trợ dịch chuyển tức thời của người chơi trên nhiều máy chủ",
     "serverTeleportComponentUnavailable": "Thành phần bản đồ-dịch chuyển máy chủ không khả dụng",
     "onlineTravelFailed": "Yêu cầu du lịch trực tuyến không được hoàn thành",
+    "networkPackageConflict": "Một mod khác đang chiếm kênh mạng của bản đồ (xung đột ID gói tin); dịch chuyển trực tuyến không khả dụng, các tính năng bản đồ khác vẫn hoạt động",
     "onlineTravelBusy": "Một yêu cầu du lịch trực tuyến khác vẫn đang chạy",
     "teleportRejected": "Máy chủ đã từ chối yêu cầu dịch chuyển tức thời bản đồ",
     "teleportUnsupported": "Máy chủ không hỗ trợ dịch chuyển tức thời bản đồ",

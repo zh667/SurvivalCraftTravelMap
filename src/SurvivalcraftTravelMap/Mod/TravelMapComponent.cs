@@ -173,7 +173,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         if (!TravelMapStartup.EnsureInitialized(
                 packageName => ModsManager.GetModEntity(packageName, out _),
                 PackageManager.RegisterPackage,
-                PackageManager.UnRegisterPackage,
+                message => Engine.Log.Warning($"[TravelMap] {message}"),
                 message => Engine.Log.Warning($"[TravelMap] {message}")))
         {
             return;
@@ -416,6 +416,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
     private void InitializeCoordinateClient()
     {
+        if (!TravelMapStartup.IsCoordinateTeleportAvailable)
+        {
+            ShowMessage(
+                TravelMapText.Get(
+                    "networkPackageConflict",
+                    "地图网络通道被其他模组占用（数据包ID冲突），联机传送暂不可用；地图其他功能不受影响"),
+                TravelMapNoticeKind.Failure);
+            return;
+        }
+
         var server = CommonLib.Net.Server;
         if (server is null)
         {
@@ -1219,6 +1229,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
             && Project is ProjectNet projectNet)
         {
             TravelMapNetworkRuntime.HandleLegacyHost(message, Player, projectNet, CommonLib.Net);
+            return;
+        }
+
+        if (!TravelMapStartup.IsLegacyGpsAvailable)
+        {
+            ShowMessage(
+                TravelMapText.Get(
+                    "networkPackageConflict",
+                    "地图网络通道被其他模组占用（数据包ID冲突），联机传送暂不可用；地图其他功能不受影响"),
+                TravelMapNoticeKind.Failure);
             return;
         }
 

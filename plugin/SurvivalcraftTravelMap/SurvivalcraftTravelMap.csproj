@@ -8,6 +8,7 @@
         <AssemblyName>SurvivalcraftTravelMap</AssemblyName>
         <Deterministic>true</Deterministic>
         <LangVersion>preview</LangVersion>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>disable</Nullable>

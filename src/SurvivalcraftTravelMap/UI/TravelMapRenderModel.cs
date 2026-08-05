@@ -217,7 +217,8 @@ internal readonly record struct MapTileSamplePlan(
 public sealed class TileStoreMapPixelSource :
     IExploredMapTileIndexSource,
     IExploredMapLodSource,
-    IBoundedExploredMapTileIndexSource
+    IBoundedExploredMapTileIndexSource,
+    IExploredMapTileVersionSource
 {
     public const int MaximumLodTileMaterializationsPerFrame = 512;
 
@@ -260,6 +261,11 @@ public sealed class TileStoreMapPixelSource :
     }
 
     public IExploredMapReadSession BeginReadSession() => new ReadSession(this);
+
+    long IExploredMapTileVersionSource.MutationVersion => _provider.MutationVersion;
+
+    long IExploredMapTileVersionSource.GetTileMutationVersion(int tileX, int tileZ) =>
+        _provider.GetTileMutationVersion(tileX, tileZ);
 
     public IReadOnlyList<MapTileCoordinate> GetKnownTiles(MapTileRegion region) =>
         _provider.GetKnownTiles(region);
