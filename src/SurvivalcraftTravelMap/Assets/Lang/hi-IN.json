@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "यह सर्वर क्रॉस-सर्वर प्लेयर टेलीपोर्टेशन का समर्थन नहीं करता है",
     "serverTeleportComponentUnavailable": "सर्वर मैप-टेलीपोर्ट घटक अनुपलब्ध है",
     "onlineTravelFailed": "ऑनलाइन यात्रा अनुरोध पूरा नहीं हुआ था",
+    "networkPackageConflict": "Another mod occupies the map's network channel (package ID conflict); online teleport is unavailable, the rest of the map still works",
     "onlineTravelBusy": "एक और ऑनलाइन यात्रा अनुरोध अभी भी चल रहा है",
     "teleportRejected": "सर्वर ने मानचित्र टेलीपोर्ट अनुरोध को अस्वीकार कर दिया",
     "teleportUnsupported": "सर्वर मानचित्र टेलीपोर्टेशन का समर्थन नहीं करता है",
