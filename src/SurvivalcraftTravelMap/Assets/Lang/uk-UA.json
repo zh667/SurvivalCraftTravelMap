@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "Цей сервер не підтримує телепортацію між гравцями між серверами",
     "serverTeleportComponentUnavailable": "Компонент серверної карти-телепортації недоступний",
     "onlineTravelFailed": "Онлайн-запит на подорож не був виконаний",
+    "networkPackageConflict": "Another mod occupies the map's network channel (package ID conflict); online teleport is unavailable, the rest of the map still works",
     "onlineTravelBusy": "Ще один онлайн-запит на подорожі триває",
     "teleportRejected": "Сервер відхилив запит на телепортацію карти",
     "teleportUnsupported": "Сервер не підтримує телепортацію карти",
