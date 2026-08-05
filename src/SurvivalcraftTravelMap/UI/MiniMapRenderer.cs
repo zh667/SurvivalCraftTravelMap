@@ -250,7 +250,14 @@ internal interface IMapSurfacePrimitiveQueue
 internal readonly record struct MapSurfaceDrawContext(
     NVector2 ViewportSize,
     IMapSurfacePrimitiveQueue PrimitiveQueue,
-    IMapFontQueue? FontQueue = null);
+    IMapFontQueue? FontQueue = null)
+{
+    /// <summary>
+    /// True when the background and terrain were already drawn from the terrain texture cache, so
+    /// the sink-based pass must only contribute overlays (markers, compass, frame, text).
+    /// </summary>
+    public bool TerrainPresentedExternally { get; init; }
+}
 
 internal static class MapSurfaceBatchGuard
 {
@@ -292,6 +299,11 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     private IMapSurfacePrimitiveQueue? _frameQueue;
     private IMapFontQueue? _mapFontQueue;
     private MapShapeGeometry? _shapeGeometry;
+    private MiniMapTerrainTextureModel? _terrainTextureModel;
+    private Texture2D? _terrainTexture;
+    private Action? _deviceResetHandler;
+    private bool _ownsGraphicsResources;
+    private bool _terrainTexturePathBroken;
     private Engine.Matrix _drawTransform;
     private MapTransform _drawMapTransform;
     private NVector2? _labelPointer;
@@ -380,6 +392,13 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     }
 
     public bool AutoCenterOnPlayer { get; set; }
+
+    /// <summary>
+    /// Renders terrain from a cached, incrementally updated texture (one textured quad per frame)
+    /// instead of re-emitting thousands of per-cell quads every frame. This is what keeps the
+    /// always-on mini map cheap on mobile; the large map dialog keeps the immediate-mode path.
+    /// </summary>
+    public bool UseTerrainTextureCache { get; set; }
 
     public bool ApplyConfiguredMiniMapOrientation { get; set; }
 
@@ -564,6 +583,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             0,
             depthStencilState: DepthStencilState.None,
             blendState: BlendState.AlphaBlend);
+        var terrainPresented = UseTerrainTextureCache
+            && TryPresentTerrainTexture(dc, flatBatch, viewport);
         var fontBatch = dc.PrimitivesRenderer2D.FontBatch(
             _font,
             1,
@@ -576,20 +597,17 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
         Draw(new MapSurfaceDrawContext(
             viewport,
             primitiveQueue,
-            new EngineMapFontQueue(fontBatch)));
+            new EngineMapFontQueue(fontBatch))
+        {
+            TerrainPresentedExternally = terrainPresented,
+        });
 
         primitiveQueue.Complete();
         fontBatch.TransformTriangles(_drawTransform, textStart);
     }
 
-    internal void Draw(MapSurfaceDrawContext context)
+    private PlayerMapPose UpdateFrameTransform(NVector2 viewport)
     {
-        var viewport = context.ViewportSize;
-        if (viewport.X <= 0f || viewport.Y <= 0f)
-        {
-            return;
-        }
-
         var pose = _playerPose();
         var center = AutoCenterOnPlayer
             ? new NVector2(pose.Position.X, pose.Position.Z)
@@ -604,25 +622,158 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             ViewportSize = viewport,
             RotationRadians = rotation,
         };
+        return pose;
+    }
+
+    private bool TryPresentTerrainTexture(DrawContext dc, FlatBatch2D flatBatch, NVector2 viewport)
+    {
+        if (_terrainTexturePathBroken)
+        {
+            return false;
+        }
+
+        try
+        {
+            return PresentTerrainTextureCore(dc, flatBatch, viewport);
+        }
+        catch (Exception exception)
+        {
+            // Never let an engine incompatibility take the mini map down: log once, then fall
+            // back permanently to the immediate-mode terrain path for this session.
+            _terrainTexturePathBroken = true;
+            Engine.Log.Warning(
+                $"[TravelMap] Mini map texture cache disabled after renderer error: {exception}");
+            return false;
+        }
+    }
+
+    private bool PresentTerrainTextureCore(DrawContext dc, FlatBatch2D flatBatch, NVector2 viewport)
+    {
+        UpdateFrameTransform(viewport);
+        _terrainTextureModel ??= new MiniMapTerrainTextureModel();
+        var uploadRequired = _terrainTextureModel.Update(
+            _pixelSource,
+            Transform,
+            _settings.HeightShadingStyle.ToStrength(),
+            Time.FrameStartTime);
+        var textureSize = _terrainTextureModel.TextureSize;
+        if (textureSize <= 0)
+        {
+            return false;
+        }
+
+        if (_terrainTexture is null || _terrainTexture.Width != textureSize)
+        {
+            _terrainTexture?.Dispose();
+            _terrainTexture = new Texture2D(textureSize, textureSize, 1, ColorFormat.Rgba8888);
+            _ownsGraphicsResources = true;
+            if (_deviceResetHandler is null)
+            {
+                _deviceResetHandler = () => _terrainTextureModel?.InvalidateUpload();
+                Display.DeviceReset += _deviceResetHandler;
+            }
+
+            uploadRequired = true;
+        }
+
+        if (uploadRequired)
+        {
+            UploadTerrainTexturePixels(_terrainTexture, _terrainTextureModel.Pixels);
+        }
+
+        // Draw background and terrain immediately (background flush first, terrain flush second)
+        // so the overlays queued afterwards into the shared batches always land on top without
+        // relying on cross-batch layer ordering.
+        var geometry = MapShapeGeometry.Create(viewport, EffectiveMapShape);
+        var backgroundQueue = new EngineMapSurfacePrimitiveQueue(flatBatch, _drawTransform);
+        new ShapeClippedPrimitiveQueue(backgroundQueue, geometry).QueueQuad(
+            MapSurfacePrimitiveKind.Background,
+            NVector2.Zero,
+            viewport,
+            new Rgba32(BackgroundColor.R, BackgroundColor.G, BackgroundColor.B, 224));
+        backgroundQueue.Complete();
+        flatBatch.Flush(PrimitivesRenderer2D.ViewportMatrix(), clearAfterFlush: true);
+
+        var triangles = MiniMapTerrainTextureQuad.BuildTriangles(
+            Transform,
+            geometry,
+            _terrainTextureModel.OriginX,
+            _terrainTextureModel.OriginZ,
+            _terrainTextureModel.SpanBlocks);
+        if (triangles.Count >= 3)
+        {
+            var terrainBatch = dc.PrimitivesRenderer2D.TexturedBatch(
+                _terrainTexture,
+                useAlphaTest: false,
+                0,
+                DepthStencilState.None,
+                blendState: BlendState.AlphaBlend,
+                samplerState: SamplerState.PointClamp);
+            var triangleStart = terrainBatch.TriangleVertices.Count;
+            var brightness = Math.Clamp(
+                _settings.UseDayNightTint ? _brightness() : 1f,
+                0f,
+                1f);
+            var tintByte = (byte)MathF.Round(brightness * byte.MaxValue);
+            var tint = new Color(tintByte, tintByte, tintByte, byte.MaxValue);
+            for (var index = 0; index <= triangles.Count - 3; index += 3)
+            {
+                terrainBatch.QueueTriangle(
+                    ToEngine(triangles[index].Position),
+                    ToEngine(triangles[index + 1].Position),
+                    ToEngine(triangles[index + 2].Position),
+                    0f,
+                    ToEngine(triangles[index].TexCoord),
+                    ToEngine(triangles[index + 1].TexCoord),
+                    ToEngine(triangles[index + 2].TexCoord),
+                    tint);
+            }
+
+            terrainBatch.TransformTriangles(_drawTransform, triangleStart);
+            terrainBatch.Flush(PrimitivesRenderer2D.ViewportMatrix(), clearAfterFlush: true);
+        }
+
+        return true;
+    }
+
+    // Netmod engine: the generic array overload marshals correctly (GCHandle + glTexImage2D).
+    // The plugin (SCAPI) edition overrides this call site — its engine's array overload passes the
+    // pointer variable's own address to GL, so it must use the unsafe pointer overload instead.
+    private static void UploadTerrainTexturePixels(Texture2D texture, Rgba32[] pixels) =>
+        texture.SetData(0, pixels);
+
+    internal void Draw(MapSurfaceDrawContext context)
+    {
+        var viewport = context.ViewportSize;
+        if (viewport.X <= 0f || viewport.Y <= 0f)
+        {
+            return;
+        }
+
+        var pose = UpdateFrameTransform(viewport);
         _drawMapTransform = Transform;
         _frameQueue = context.PrimitiveQueue
             ?? throw new ArgumentNullException(nameof(context));
         _shapeGeometry = MapShapeGeometry.Create(viewport, EffectiveMapShape);
         _primitiveQueue = new ShapeClippedPrimitiveQueue(_frameQueue, _shapeGeometry);
         _mapFontQueue = context.FontQueue;
-        _primitiveQueue.QueueQuad(
-            MapSurfacePrimitiveKind.Background,
-            NVector2.Zero,
-            viewport,
-            new Rgba32(BackgroundColor.R, BackgroundColor.G, BackgroundColor.B, 224));
+        if (!context.TerrainPresentedExternally)
+        {
+            _primitiveQueue.QueueQuad(
+                MapSurfacePrimitiveKind.Background,
+                NVector2.Zero,
+                viewport,
+                new Rgba32(BackgroundColor.R, BackgroundColor.G, BackgroundColor.B, 224));
 
-        var terrainBrightness = _settings.UseDayNightTint ? _brightness() : 1f;
-        TravelMapRenderModel.RenderTerrain(
-            _pixelSource,
-            Transform,
-            terrainBrightness,
-            this,
-            _settings.HeightShadingStyle.ToStrength());
+            var terrainBrightness = _settings.UseDayNightTint ? _brightness() : 1f;
+            TravelMapRenderModel.RenderTerrain(
+                _pixelSource,
+                Transform,
+                terrainBrightness,
+                this,
+                _settings.HeightShadingStyle.ToStrength());
+        }
+
         _drawWaypoints = _waypoints();
         DrawCreatureMarkers();
         TravelMapRenderModel.RenderOverlays(
@@ -1316,6 +1467,34 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     protected virtual NVector2 GetSurfaceViewportSize() => new(ActualSize.X, ActualSize.Y);
 
+    public override void Dispose()
+    {
+        // Graphics types are only touched when the GPU draw path ran at least once; the flag (not
+        // the texture field) is checked here so this method stays JIT-safe in headless test runs
+        // where the graphics assemblies are absent.
+        if (_ownsGraphicsResources)
+        {
+            ReleaseTerrainTextureResources();
+        }
+
+        base.Dispose();
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private void ReleaseTerrainTextureResources()
+    {
+        if (_deviceResetHandler is not null)
+        {
+            Display.DeviceReset -= _deviceResetHandler;
+            _deviceResetHandler = null;
+        }
+
+        _terrainTexture?.Dispose();
+        _terrainTexture = null;
+        _ownsGraphicsResources = false;
+    }
+
     private MapShape EffectiveMapShape => ApplyConfiguredMiniMapShape
         ? _settings.MiniMapShape
         : MapShape.Square;
@@ -1417,6 +1596,7 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
                 "miniMapZoomSaveFailedSession",
                 "小地图比例未能保存，本次会话将保留当前值")));
         AutoCenterOnPlayer = true;
+        UseTerrainTextureCache = true;
         ApplyConfiguredMiniMapOrientation = true;
         ApplyConfiguredMiniMapShape = true;
         ShowCompassOverlay = true;

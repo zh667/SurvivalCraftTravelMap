@@ -66,9 +66,37 @@ internal sealed class MapViewPixelSource(
     Func<IExploredMapPixelSource> cave) :
     IExploredMapTileIndexSource,
     IExploredMapLodSource,
-    IBoundedExploredMapTileIndexSource
+    IBoundedExploredMapTileIndexSource,
+    IExploredMapTileVersionSource
 {
     private IExploredMapPixelSource Active => mode() == MapViewMode.Cave ? cave() : surface;
+
+    // The mini map's texture cache treats a source without version stamps as immutable after the
+    // initial fill (refresh only on scroll/reset), so this wrapper must forward the active
+    // source's stamps or live exploration never appears until a scroll or a rejoin. The stamps
+    // are salted with the active source's identity so a surface/cave (or cave-layer) switch can
+    // never alias two sources' version spaces and skip a repaint.
+    long IExploredMapTileVersionSource.MutationVersion
+    {
+        get
+        {
+            var active = Active;
+            return active is IExploredMapTileVersionSource versioned
+                ? IdentitySalt(active) ^ versioned.MutationVersion
+                : IdentitySalt(active);
+        }
+    }
+
+    long IExploredMapTileVersionSource.GetTileMutationVersion(int tileX, int tileZ)
+    {
+        var active = Active;
+        return active is IExploredMapTileVersionSource versioned
+            ? IdentitySalt(active) ^ versioned.GetTileMutationVersion(tileX, tileZ)
+            : IdentitySalt(active);
+    }
+
+    private static long IdentitySalt(IExploredMapPixelSource active) =>
+        (long)System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(active) << 32;
 
     public IExploredMapReadSession BeginReadSession() => Active.BeginReadSession();
 
