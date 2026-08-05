@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "Server ini tidak mendukung teleportasi pemain lintas server",
     "serverTeleportComponentUnavailable": "Komponen teleportasi peta server tidak tersedia",
     "onlineTravelFailed": "Permintaan perjalanan online tidak selesai",
+    "networkPackageConflict": "Mod lain menempati kanal jaringan peta (konflik ID paket); teleport online tidak tersedia, fitur peta lainnya tetap berfungsi",
     "onlineTravelBusy": "Permintaan perjalanan online lainnya masih berjalan",
     "teleportRejected": "Server menolak permintaan teleportasi peta",
     "teleportUnsupported": "Server tidak mendukung teleportasi peta",

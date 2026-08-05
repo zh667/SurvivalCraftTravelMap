@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "이 서버는 크로스 서버 플레이어 텔레포트를 지원하지 않습니다",
     "serverTeleportComponentUnavailable": "서버 맵-텔레포트 구성 요소는 사용할 수 없습니다",
     "onlineTravelFailed": "온라인 여행 요청이 완료되지 않았습니다",
+    "networkPackageConflict": "다른 모드가 지도 네트워크 채널을 사용 중입니다(패킷 ID 충돌). 온라인 순간이동은 사용할 수 없지만 지도 기능은 정상 작동합니다",
     "onlineTravelBusy": "또 다른 온라인 여행 요청이 아직 진행 중입니다",
     "teleportRejected": "서버는 지도 텔레포트 요청을 거부했습니다",
     "teleportUnsupported": "서버는 지도 텔레포트를 지원하지 않습니다",

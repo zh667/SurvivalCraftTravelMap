@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "هذا الخادم لا يدعم النقل الآني بين اللاعبين عبر الخوادم",
     "serverTeleportComponentUnavailable": "مكون خريطة الخادم والنقل غير متوفر",
     "onlineTravelFailed": "لم يتم إكمال طلب السفر عبر الإنترنت",
+    "networkPackageConflict": "هناك مود آخر يشغل قناة الشبكة الخاصة بالخريطة (تعارض معرف الحزمة)؛ النقل عبر الإنترنت غير متاح، وبقية وظائف الخريطة تعمل",
     "onlineTravelBusy": "لا يزال طلب سفر عبر الإنترنت آخر قيد التشغيل",
     "teleportRejected": "رفض الخادم طلب نقل الخريطة",
     "teleportUnsupported": "الخادم لا يدعم النقل الآني بالخريطة",

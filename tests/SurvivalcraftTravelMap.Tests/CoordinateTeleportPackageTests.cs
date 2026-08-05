@@ -20,10 +20,10 @@ public sealed class CoordinateTeleportPackageTests
 
     [Theory]
     [MemberData(nameof(RoundTrips))]
-    public void Codec_round_trips_every_ID61_message(CoordinateTeleportMessage message)
+    public void Codec_round_trips_every_coordinate_teleport_message(CoordinateTeleportMessage message)
     {
         Assert.Equal(message, CoordinateTeleportCodec.Deserialize(CoordinateTeleportCodec.Serialize(message)));
-        Assert.Equal(61, CoordinateTeleportPackage.PackageId);
+        Assert.Equal(217, CoordinateTeleportPackage.PackageId);
     }
 
     [Theory]
@@ -272,7 +272,7 @@ public sealed class CoordinateTeleportPackageTestsServerSession
     }
 
     [Fact]
-    public async Task Different_ID61_request_ids_cannot_overlap_one_players_safe_teleport_transaction()
+    public async Task Different_coordinate_request_ids_cannot_overlap_one_players_safe_teleport_transaction()
     {
         var context = new TeleportTestContext();
         var service = context.Service;

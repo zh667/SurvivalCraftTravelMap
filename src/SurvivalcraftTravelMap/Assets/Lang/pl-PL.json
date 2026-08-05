@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "Ten serwer nie obsługuje teleportacji między serwerami",
     "serverTeleportComponentUnavailable": "Komponent serwera map-teleport jest niedostępny",
     "onlineTravelFailed": "Wniosek o podróż online nie został zrealizowany",
+    "networkPackageConflict": "Inny mod zajmuje kanał sieciowy mapy (konflikt ID pakietu); teleportacja online jest niedostępna, reszta mapy działa normalnie",
     "onlineTravelBusy": "Kolejne internetowe zgłoszenie podróży wciąż jest w toku",
     "teleportRejected": "Serwer odrzucił prośbę o teleportację mapy",
     "teleportUnsupported": "Serwer nie obsługuje teleportacji mapy",

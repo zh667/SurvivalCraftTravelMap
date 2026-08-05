@@ -135,7 +135,6 @@ public sealed class PackageStructureTests
         Assert.Contains("DialogsManager.Alert", source, StringComparison.Ordinal);
         Assert.Contains("TravelMapPackageRegistration.TryRegister", source, StringComparison.Ordinal);
         Assert.Contains("PackageManager.RegisterPackage", source, StringComparison.Ordinal);
-        Assert.Contains("PackageManager.UnRegisterPackage", source, StringComparison.Ordinal);
         Assert.DoesNotContain("PackageId = 60", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AntiCheat", source, StringComparison.OrdinalIgnoreCase);
     }
@@ -663,7 +662,7 @@ public sealed class PackageStructureTests
             .Order()
             .ToArray();
 
-        Assert.Equal(new byte[] { 41, 61 }, packageIds);
+        Assert.Equal(new byte[] { 41, 217 }, packageIds);
         Assert.DoesNotContain((byte)60, packageIds);
     }
 

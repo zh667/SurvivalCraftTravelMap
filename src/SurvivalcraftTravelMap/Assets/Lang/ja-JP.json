@@ -104,6 +104,7 @@
     "crossServerTeleportUnsupported": "このサーバーはクロスサーバー間のプレイヤーテレポーテーションをサポートしていません",
     "serverTeleportComponentUnavailable": "サーバーマップ・テレポートコンポーネントは利用できません",
     "onlineTravelFailed": "オンラインの旅行申請は完了していません",
+    "networkPackageConflict": "他のモッドがマップのネットワークチャンネルを使用しています（パケットID競合）。オンラインテレポートは利用できませんが、マップの他の機能は使えます",
     "onlineTravelBusy": "別のオンライン旅行リクエストはまだ進行中です",
     "teleportRejected": "サーバーはマップのテレポートリクエストを拒否しました",
     "teleportUnsupported": "サーバーはマップのテレポーテーションをサポートしていません",
