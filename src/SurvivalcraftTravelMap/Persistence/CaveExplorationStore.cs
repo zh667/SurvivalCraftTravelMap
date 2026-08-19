@@ -5,6 +5,8 @@ namespace SurvivalcraftTravelMap.Persistence;
 
 internal sealed class CaveExplorationStore
 {
+    public const int LayerTileCapacity = 32;
+
     private readonly object _sync = new();
     private readonly string _directory;
     private readonly Dictionary<int, LayerEntry> _layers = [];
@@ -17,6 +19,54 @@ internal sealed class CaveExplorationStore
     }
 
     public TimeSpan FlushInterval => TimeSpan.FromSeconds(5);
+
+    public int LayerCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _layers.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Same contract as <see cref="ExplorationTileStore.CanAdmitMutation"/>: cave sampling is the
+    /// most expensive scan in the mod, so the caller checks before it samples.
+    /// </summary>
+    public bool CanAdmit(int centerY, TerrainChunkCoordinate chunk)
+    {
+        var coordinate = TileCoordinate.FromWorld(chunk.OriginX, chunk.OriginZ);
+        return GetLayer(centerY).Store.CanAdmitMutation(coordinate.TileX, coordinate.TileZ);
+    }
+
+    public ExplorationTileStoreDiagnostics GetDiagnostics(int centerY) =>
+        GetLayer(centerY).Store.Diagnostics;
+
+    /// <summary>
+    /// Unwritten tiles across every open layer. Shutdown uses it to size how long it is worth
+    /// waiting for the final flush.
+    /// </summary>
+    public int TotalDirtyTileCount
+    {
+        get
+        {
+            LayerEntry[] layers;
+            lock (_sync)
+            {
+                layers = _layers.Values.ToArray();
+            }
+
+            var total = 0;
+            foreach (var layer in layers)
+            {
+                total += layer.Store.Diagnostics.DirtyTileCount;
+            }
+
+            return total;
+        }
+    }
 
     public IExploredMapPixelSource GetPixelSource(int centerY) => GetLayer(centerY).Source;
 
@@ -99,8 +149,10 @@ internal sealed class CaveExplorationStore
 
             var store = new ExplorationTileStore(
                 Path.Combine(_directory, "projection_v2", $"y_{centerY:D3}"),
-                capacity: 32);
-            var created = new LayerEntry(store, new TileStoreMapPixelSource(store, snapshotCapacity: 32));
+                capacity: LayerTileCapacity);
+            var created = new LayerEntry(
+                store,
+                new TileStoreMapPixelSource(store, snapshotCapacity: LayerTileCapacity));
             _layers.Add(centerY, created);
             return created;
         }

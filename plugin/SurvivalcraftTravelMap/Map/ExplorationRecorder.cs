@@ -39,6 +39,14 @@ public sealed class ExplorationRecorder(
 
     public ExplorationRecordResult RecordChunk(TerrainChunkCoordinate chunk)
     {
+        // Sampling the chunk scans 256 terrain columns, so the cheap admission probe comes first:
+        // a refused tile used to burn a full sample every frame it stayed refused.
+        var coordinate = TileCoordinate.FromWorld(chunk.OriginX, chunk.OriginZ);
+        if (!_tileStore.CanAdmitMutation(coordinate.TileX, coordinate.TileZ))
+        {
+            return ExplorationRecordResult.Pressure;
+        }
+
         Span<Rgba32> colors = stackalloc Rgba32[TerrainChunkCoordinate.PixelCount];
         Span<byte> heightShades = stackalloc byte[TerrainChunkCoordinate.PixelCount];
         if (!_sampler.TrySampleChunk(chunk, colors, heightShades))
@@ -46,7 +54,6 @@ public sealed class ExplorationRecorder(
             return ExplorationRecordResult.NotReady;
         }
 
-        var coordinate = TileCoordinate.FromWorld(chunk.OriginX, chunk.OriginZ);
         if (_tileStore.TryAcquireMutation(coordinate.TileX, coordinate.TileZ, out var lease)
             == TileMutationAdmission.Pressure)
         {

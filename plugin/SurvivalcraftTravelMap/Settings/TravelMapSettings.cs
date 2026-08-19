@@ -21,6 +21,23 @@ public enum HeightShadingStyle
     HighContrast,
 }
 
+/// <summary>
+/// How much terrain detail the large map keeps. Trades texture memory (and how long the map takes
+/// to sharpen after opening) for how many blocks a single map texel averages — it does not trade
+/// against frame rate, because the large map draws its cached terrain as a single quad either way.
+/// </summary>
+public enum LargeMapDetail
+{
+    /// <summary>1 MB of terrain texture. For low-memory devices.</summary>
+    PowerSaver,
+
+    /// <summary>4 MB. Roughly one map texel per screen pixel at the default zoom.</summary>
+    Standard,
+
+    /// <summary>16 MB. Keeps full detail while zooming, at a longer fill time.</summary>
+    High,
+}
+
 public static class HeightShadingStyleExtensions
 {
     /// <summary>
@@ -83,6 +100,8 @@ public sealed class TravelMapSettings
 
     public float LargeMapBlocksPerPixel { get; set; } = 2f;
 
+    public LargeMapDetail LargeMapDetail { get; set; } = LargeMapDetail.Standard;
+
     public string LargeMapHotkey { get; set; } = "M";
 
     public float NightMinimumBrightness { get; set; } = 0.4f;
@@ -115,6 +134,7 @@ public sealed class TravelMapSettings
         MiniMapSize = defaults.MiniMapSize;
         MiniMapBlocksPerPixel = defaults.MiniMapBlocksPerPixel;
         LargeMapBlocksPerPixel = defaults.LargeMapBlocksPerPixel;
+        LargeMapDetail = defaults.LargeMapDetail;
         LargeMapHotkey = defaults.LargeMapHotkey;
         NightMinimumBrightness = defaults.NightMinimumBrightness;
     }
@@ -141,6 +161,11 @@ public sealed class TravelMapSettings
         if (!Enum.IsDefined(HeightShadingStyle))
         {
             HeightShadingStyle = HeightShadingStyle.Standard;
+        }
+
+        if (!Enum.IsDefined(LargeMapDetail))
+        {
+            LargeMapDetail = LargeMapDetail.Standard;
         }
 
         LargeMapHotkey = "M";

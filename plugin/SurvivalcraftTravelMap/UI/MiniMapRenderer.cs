@@ -300,6 +300,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     private IMapFontQueue? _mapFontQueue;
     private MapShapeGeometry? _shapeGeometry;
     private MiniMapTerrainTextureModel? _terrainTextureModel;
+    private MiniMapTerrainTextureOptions _terrainTextureOptions =
+        MiniMapTerrainTextureOptions.MiniMap;
     private Texture2D? _terrainTexture;
     private Action? _deviceResetHandler;
     private bool _ownsGraphicsResources;
@@ -395,10 +397,39 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
     /// <summary>
     /// Renders terrain from a cached, incrementally updated texture (one textured quad per frame)
-    /// instead of re-emitting thousands of per-cell quads every frame. This is what keeps the
-    /// always-on mini map cheap on mobile; the large map dialog keeps the immediate-mode path.
+    /// instead of re-emitting thousands of per-cell quads every frame. This is what keeps the map
+    /// cheap on mobile, and it is also what lets it be sharp: the immediate-mode path has to
+    /// downsample to stay inside its per-frame quad budget, this one does not.
     /// </summary>
     public bool UseTerrainTextureCache { get; set; }
+
+    /// <summary>
+    /// Sizing for the terrain texture cache. Replacing it discards the cached texture, so only
+    /// assign when the value actually changed.
+    /// </summary>
+    internal MiniMapTerrainTextureOptions TerrainTextureOptions
+    {
+        get => _terrainTextureOptions;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (_terrainTextureOptions == value)
+            {
+                return;
+            }
+
+            _terrainTextureOptions = value;
+            _terrainTextureModel = null;
+        }
+    }
+
+    /// <summary>
+    /// Repaints the cached terrain from scratch. Call when the underlying world layer changes
+    /// (surface/cave, cave depth): version stamps cannot distinguish that from ordinary
+    /// exploration, so without this the previous layer stays on screen until the budgeted refill
+    /// catches up.
+    /// </summary>
+    public void InvalidateTerrainCache() => _terrainTextureModel?.InvalidateContent();
 
     public bool ApplyConfiguredMiniMapOrientation { get; set; }
 
@@ -650,7 +681,9 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
     private bool PresentTerrainTextureCore(DrawContext dc, FlatBatch2D flatBatch, NVector2 viewport)
     {
         UpdateFrameTransform(viewport);
-        _terrainTextureModel ??= new MiniMapTerrainTextureModel();
+        MiniMapTerrainTextureModel.BackgroundFillFailureReporter ??= static fault =>
+            Engine.Log.Warning($"[TravelMap] Background terrain fill failed; filling inline: {fault}");
+        _terrainTextureModel ??= new MiniMapTerrainTextureModel(_terrainTextureOptions);
         var uploadRequired = _terrainTextureModel.Update(
             _pixelSource,
             Transform,

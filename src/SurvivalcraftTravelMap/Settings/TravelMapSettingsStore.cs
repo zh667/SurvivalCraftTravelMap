@@ -556,6 +556,9 @@ public sealed class TravelMapSettingsStore
 
         public float LargeMapBlocksPerPixel { get; set; } = 2f;
 
+        public string LargeMapDetail { get; set; } = nameof(
+            global::SurvivalcraftTravelMap.Settings.LargeMapDetail.Standard);
+
         public string LargeMapHotkey { get; set; } = "M";
 
         public float NightMinimumBrightness { get; set; } = 0.4f;
@@ -589,6 +592,7 @@ public sealed class TravelMapSettingsStore
                 MiniMapSize = MiniMapSize,
                 MiniMapBlocksPerPixel = MiniMapBlocksPerPixel,
                 LargeMapBlocksPerPixel = LargeMapBlocksPerPixel,
+                LargeMapDetail = ParseLargeMapDetail(LargeMapDetail),
                 LargeMapHotkey = LargeMapHotkey,
                 NightMinimumBrightness = NightMinimumBrightness,
             };
@@ -620,10 +624,21 @@ public sealed class TravelMapSettingsStore
             MiniMapSize = settings.MiniMapSize,
             MiniMapBlocksPerPixel = settings.MiniMapBlocksPerPixel,
             LargeMapBlocksPerPixel = settings.LargeMapBlocksPerPixel,
+            LargeMapDetail = settings.LargeMapDetail.ToString(),
             LargeMapHotkey = settings.LargeMapHotkey,
             NightMinimumBrightness = settings.NightMinimumBrightness,
             ExtensionData = extensionData,
         };
+
+        private static global::SurvivalcraftTravelMap.Settings.LargeMapDetail ParseLargeMapDetail(
+            string? value) =>
+            Enum.TryParse<global::SurvivalcraftTravelMap.Settings.LargeMapDetail>(
+                value,
+                ignoreCase: false,
+                out var parsed)
+            && Enum.IsDefined(parsed)
+                ? parsed
+                : global::SurvivalcraftTravelMap.Settings.LargeMapDetail.Standard;
 
         private static global::SurvivalcraftTravelMap.Settings.MiniMapOrientation ParseMiniMapOrientation(
             string? value) =>

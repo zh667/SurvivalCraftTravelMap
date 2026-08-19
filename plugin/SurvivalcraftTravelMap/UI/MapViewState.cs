@@ -60,6 +60,22 @@ public sealed class MapViewState
     }
 }
 
+/// <summary>
+/// Identifies which world layer a map view is showing. Cached terrain has to be repainted from
+/// scratch when this changes, because two layers reuse the same map tiles with unrelated content
+/// and so cannot be told apart by tile version stamps.
+/// </summary>
+internal readonly record struct MapLayerIdentity(MapViewMode Mode, int CaveY)
+{
+    /// <summary>
+    /// The cave depth follows the player's Y every frame, including while the surface view is the
+    /// one on screen — so it only forms part of the identity when the cave view is being drawn.
+    /// </summary>
+    public static MapLayerIdentity For(MapViewMode mode, int caveY) => mode == MapViewMode.Cave
+        ? new MapLayerIdentity(MapViewMode.Cave, caveY)
+        : new MapLayerIdentity(MapViewMode.Surface, 0);
+}
+
 internal sealed class MapViewPixelSource(
     IExploredMapPixelSource surface,
     Func<MapViewMode> mode,

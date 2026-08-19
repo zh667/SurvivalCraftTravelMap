@@ -284,7 +284,10 @@ public sealed class ExplorationRecorderTests
         var result = recorder.RecordChunk(new TerrainChunkCoordinate(0, 0));
 
         Assert.Equal(ExplorationRecordResult.Pressure, result);
-        Assert.Equal(TerrainChunkCoordinate.PixelCount, source.SampledColumns.Count);
+
+        // The admission probe runs before the sampler: a refused chunk is retried on the next
+        // frame, so paying for 256 column scans first burnt the frame budget for nothing.
+        Assert.Empty(source.SampledColumns);
         Assert.Equal(diagnostics, store.Diagnostics);
         Assert.True(store.IsUnderPressure);
         Assert.Equal(0, writer.WriteCount);

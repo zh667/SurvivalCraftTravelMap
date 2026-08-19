@@ -8,9 +8,18 @@ $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.IO.Compression
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
-$expectedPackageName = "SurvivalcraftTravelMap.netmod"
-if ([IO.Path]::GetFileName($resolvedPackage) -cne $expectedPackageName) {
-    throw "Package filename must be exactly '$expectedPackageName'."
+# Two shapes are valid: the build artifact name, and the versioned name used when
+# publishing to the community site (which indexes by PackageName + Version).
+$buildArtifactName = "SurvivalcraftTravelMap.netmod"
+$releaseNamePattern = "^\[NET\]TravelMap(?<version>\d+\.\d+\.\d+)\.netmod$"
+$packageFileName = [IO.Path]::GetFileName($resolvedPackage)
+$filenameVersion = $null
+if ($packageFileName -cne $buildArtifactName) {
+    $releaseMatch = [regex]::Match($packageFileName, $releaseNamePattern)
+    if (-not $releaseMatch.Success) {
+        throw "Package filename must be '$buildArtifactName' or '[NET]TravelMap<version>.netmod'."
+    }
+    $filenameVersion = $releaseMatch.Groups["version"].Value
 }
 
 $requiredEntries = @(
@@ -148,21 +157,35 @@ try {
 
     $dllText = [Text.Encoding]::UTF8.GetString($entryBytes["SurvivalcraftTravelMap.dll"]) +
         "`n" + [Text.Encoding]::Unicode.GetString($entryBytes["SurvivalcraftTravelMap.dll"])
-    if (-not $dllText.Contains("AssemblyInformationalVersionAttribute") -or
-        -not $dllText.Contains("1.0.0")) {
-        throw "Package DLL must expose stable informational version '1.0.0'."
+    # The point of this check is that the informational version stays stable, i.e. the
+    # build does not append a source revision hash. Pinning a literal number here is what
+    # let the shipped manifests rot at 1.0.0, so assert the shape, not the value.
+    if (-not $dllText.Contains("AssemblyInformationalVersionAttribute")) {
+        throw "Package DLL must expose an informational version."
     }
-
+    if ([regex]::IsMatch($dllText, "(?i)\d+\.\d+\.\d+\+[0-9a-f]{40}")) {
+        throw "Package DLL informational version must not carry a source revision hash."
+    }
 
     $manifestText = [Text.Encoding]::UTF8.GetString($entryBytes["modinfo.json"])
     $manifest = $manifestText | ConvertFrom-Json
     if ($manifest.Name -cne "Survivalcraft Travel Map" -or
-        $manifest.Author -cne "SCTM" -or
+        $manifest.Author -cne "zh667" -or
         $manifest.PackageName -cne "SurvivalcraftTravelMap" -or
         $manifest.ApiVersion -cne "1.44" -or
         $manifest.ScVersion -cne "2.4.40.6" -or
         $manifest.Dependencies.Count -ne 0) {
         throw "Package manifest identity is invalid."
+    }
+
+    # The community site indexes by PackageName + Version, so a stale or unparsable
+    # Version silently makes every release look identical.
+    $manifestVersion = [version]::new()
+    if (-not [version]::TryParse($manifest.Version, [ref]$manifestVersion)) {
+        throw "Package manifest Version '$($manifest.Version)' is not a parsable version."
+    }
+    if ($null -ne $filenameVersion -and $manifest.Version -cne $filenameVersion) {
+        throw "Filename version '$filenameVersion' does not match manifest Version '$($manifest.Version)'."
     }
 
     [xml]$xdb = [Text.Encoding]::UTF8.GetString($entryBytes["mod.netxdb"])

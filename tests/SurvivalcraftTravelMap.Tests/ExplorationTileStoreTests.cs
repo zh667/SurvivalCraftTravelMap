@@ -18,6 +18,90 @@ public sealed class ExplorationTileStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task One_unwritable_tile_does_not_hold_the_rest_of_the_backlog_hostage()
+    {
+        var written = new List<string>();
+        var store = new ExplorationTileStore(
+            _directory,
+            capacity: 8,
+            flushInterval: null,
+            (path, tile, _) =>
+            {
+                if (Path.GetFileName(path) == "1_0.sctm")
+                {
+                    throw new IOException("disk full");
+                }
+
+                written.Add(Path.GetFileName(path));
+                return Task.CompletedTask;
+            });
+
+        foreach (var tile in new[] { (0, 0), (1, 0), (2, 0) })
+        {
+            using var lease = store.AcquireMutation(tile.Item1, tile.Item2);
+            lease.Tile.SetPixel(1, 1, new Rgba32(10, 20, 30, 255));
+        }
+
+        await Assert.ThrowsAsync<IOException>(
+            () => store.FlushAsync(TestContext.Current.CancellationToken));
+
+        // The failing tile stays dirty and is retried; the tiles queued behind it are already safe.
+        Assert.Equal(["0_0.sctm", "2_0.sctm"], written.Order().ToArray());
+        Assert.Equal(1, store.Diagnostics.DirtyTileCount);
+        Assert.Equal(2, store.Diagnostics.LastFlushTileCount);
+    }
+
+    [Fact]
+    public async Task Admission_probe_matches_acquisition_and_never_touches_the_cache()
+    {
+        var store = new ExplorationTileStore(_directory, capacity: 1);
+        using (var lease = store.AcquireMutation(0, 0))
+        {
+            lease.Tile.SetPixel(4, 5, new Rgba32(10, 20, 30, 255));
+        }
+
+        // The single slot now holds a dirty tile, so only that tile can still be mutated.
+        Assert.True(store.CanAdmitMutation(0, 0));
+        Assert.False(store.CanAdmitMutation(9, 9));
+        var diagnostics = store.Diagnostics;
+        Assert.False(store.CanAdmitMutation(9, 9));
+        Assert.Equal(diagnostics, store.Diagnostics);
+        Assert.Equal(
+            TileMutationAdmission.Pressure,
+            store.TryAcquireMutation(9, 9, out var refused));
+        Assert.Null(refused);
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Flushing made the entry evictable again, so the probe has to open back up in step.
+        Assert.True(store.CanAdmitMutation(9, 9));
+        Assert.Equal(
+            TileMutationAdmission.Acquired,
+            store.TryAcquireMutation(9, 9, out var admitted));
+        admitted!.Dispose();
+    }
+
+    [Fact]
+    public async Task Diagnostics_report_the_backlog_and_the_last_flush()
+    {
+        var store = new ExplorationTileStore(_directory, capacity: 4);
+        foreach (var tile in new[] { (0, 0), (1, 0), (0, 1) })
+        {
+            using var lease = store.AcquireMutation(tile.Item1, tile.Item2);
+            lease.Tile.SetPixel(1, 1, new Rgba32(10, 20, 30, 255));
+        }
+
+        Assert.Equal(3, store.Diagnostics.DirtyTileCount);
+        Assert.Equal(0, store.Diagnostics.LastFlushTileCount);
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, store.Diagnostics.DirtyTileCount);
+        Assert.Equal(3, store.Diagnostics.LastFlushTileCount);
+        Assert.True(store.Diagnostics.LastFlushMilliseconds >= 0);
+    }
+
+    [Fact]
     public async Task Mutation_lease_dispose_is_idempotent_and_publishes_the_completed_write()
     {
         var store = new ExplorationTileStore(_directory, capacity: 1);

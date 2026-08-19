@@ -24,6 +24,8 @@ public sealed class ExplorationTileStore
     private long _diskReadAttempts;
     private long _mutationVersion;
     private bool _isUnderPressure;
+    private int _lastFlushTileCount;
+    private long _lastFlushMilliseconds;
 
     public ExplorationTileStore(
         string directory,
@@ -85,7 +87,10 @@ public sealed class ExplorationTileStore
                     _cache.Count,
                     _tileMaterializations,
                     _fileProbeCount,
-                    _diskReadAttempts);
+                    _diskReadAttempts,
+                    _cache.Values.Count(entry => entry.IsDirty),
+                    _lastFlushTileCount,
+                    _lastFlushMilliseconds);
             }
         }
     }
@@ -369,6 +374,30 @@ public sealed class ExplorationTileStore
             : throw new InvalidOperationException("Tile cache is under write pressure.");
     }
 
+    /// <summary>
+    /// Reports whether a mutation for this tile would be admitted right now, without touching the
+    /// cache. Recording a chunk samples 256 terrain columns before it ever reaches the store, and
+    /// under write pressure that whole sample is thrown away and retried on the very next frame,
+    /// so callers ask first and skip the sampling instead of burning it. The answer is a hint:
+    /// <see cref="TryAcquireMutation"/> stays the authority.
+    /// </summary>
+    public bool CanAdmitMutation(int tileX, int tileZ)
+    {
+        var key = new TileKey(tileX, tileZ);
+        lock (_sync)
+        {
+            if (_cache.ContainsKey(key) || HasEvictableEntry())
+            {
+                return true;
+            }
+
+            // A refusal here is the same refusal TryAcquireMutation would have returned, so it
+            // raises the same flag; only a flush that frees a slot clears it again.
+            _isUnderPressure = true;
+            return false;
+        }
+    }
+
     public TileMutationAdmission TryAcquireMutation(
         int tileX,
         int tileZ,
@@ -437,6 +466,8 @@ public sealed class ExplorationTileStore
     private async Task FlushCoreAsync(CancellationToken cancellationToken)
     {
         await _flushGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var writtenTiles = 0;
         try
         {
             List<(TileKey Key, MapTile Tile, long Generation)> dirtyTiles;
@@ -448,11 +479,30 @@ public sealed class ExplorationTileStore
                     .ToList();
             }
 
+            // One unwritable tile used to abort the whole cycle, leaving every tile behind it dirty
+            // for good: the cache then filled up and stayed under permanent write pressure. Each
+            // tile is now attempted on its own and the first failure is rethrown at the end, so the
+            // caller still sees the error without the rest of the backlog being held hostage.
+            Exception? firstFailure = null;
             foreach (var (key, tile, generation) in dirtyTiles)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var snapshot = tile.CreateSnapshot();
-                await _writeTile(GetPath(key), snapshot, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _writeTile(GetPath(key), snapshot, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    firstFailure ??= exception;
+                    continue;
+                }
+
+                writtenTiles++;
 
                 lock (_sync)
                 {
@@ -467,9 +517,27 @@ public sealed class ExplorationTileStore
                     RefreshPressureState();
                 }
             }
+
+            if (firstFailure is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFailure).Throw();
+            }
         }
         finally
         {
+            // Recorded even when the cycle is cancelled or a write throws, so the backpressure
+            // diagnostics still show how far the last attempt got. A cycle that found nothing to
+            // write says nothing about throughput, so it leaves the previous numbers standing.
+            stopwatch.Stop();
+            if (writtenTiles > 0)
+            {
+                lock (_sync)
+                {
+                    _lastFlushTileCount = writtenTiles;
+                    _lastFlushMilliseconds = stopwatch.ElapsedMilliseconds;
+                }
+            }
+
             _flushGate.Release();
         }
     }
@@ -572,6 +640,10 @@ public sealed class ExplorationTileStore
         }
     }
 
+    private bool HasEvictableEntry() =>
+        _cache.Count < Capacity
+        || _cache.Values.Any(entry => !entry.IsDirty && entry.PinCount == 0);
+
     private bool MakeRoomForNewEntry()
     {
         while (_cache.Count >= Capacity)
@@ -669,7 +741,10 @@ public readonly record struct ExplorationTileStoreDiagnostics(
     int CachedTileCount,
     long TileMaterializations,
     long FileProbeCount,
-    long DiskReadAttempts);
+    long DiskReadAttempts,
+    int DirtyTileCount,
+    int LastFlushTileCount,
+    long LastFlushMilliseconds);
 
 public enum TileMutationAdmission
 {

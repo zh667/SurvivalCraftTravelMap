@@ -373,26 +373,76 @@ public sealed class TravelMapRenderBudgetTests
     }
 
     [Fact]
-    public void Catalog_larger_than_the_one_command_per_tile_limit_terminates_without_materialization()
+    public void Catalog_larger_than_the_sample_budget_still_draws_within_budget()
     {
+        // More tiles in view than samples available: even one sample per whole tile overshoots.
+        // The frame must still draw (it used to abandon the terrain entirely, so zooming out over
+        // a well explored world went blank) and must stay inside the budget.
         var tileCount = TravelMapRenderModel.MaximumTerrainSamplesPerFrame + 1;
         var provider = new KnownTileProvider(CreateFullyExploredTile(new Rgba32(20, 40, 60, 255)), tileCount);
         var source = new TileStoreMapPixelSource(provider);
+        var sink = new CapturingRenderSink();
 
         var statistics = TravelMapRenderModel.RenderTerrain(
             source,
             new MapTransform(Vector2.Zero, 32f, new Vector2(1920f, 1080f)),
             1f,
-            new CountingRenderSink());
+            sink);
 
-        Assert.Equal(default, statistics);
+        Assert.InRange(
+            statistics.PrimitiveCount,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.InRange(
+            statistics.PixelQueries,
+            1,
+            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
+        Assert.Equal(statistics.PrimitiveCount, sink.Terrain.Count);
         Assert.InRange(
             provider.CatalogCoordinatesReturned,
             0,
-            TravelMapRenderModel.MaximumTerrainSamplesPerFrame);
-        Assert.Equal(0, provider.GetOrLoadCalls);
-        Assert.Equal(0, source.SnapshotCloneCount);
-        Assert.Equal(0, source.CachedLodSampleCount);
+            TravelMapRenderModel.MaximumIndexedTileDescriptorsPerFrame);
+        Assert.InRange(statistics.WorldStride, 1, MapTile.Size);
+    }
+
+    [Fact]
+    public void Tiles_beyond_the_budget_are_dropped_farthest_from_the_view_centre_first()
+    {
+        var tiles = new List<MapTileCoordinate>();
+        for (var z = -8; z <= 8; z++)
+        {
+            for (var x = -8; x <= 8; x++)
+            {
+                tiles.Add(new MapTileCoordinate(x, z));
+            }
+        }
+
+        // One sample per whole tile, so the budget is a tile count outright.
+        var affordable = TravelMapRenderModel.MaximumTerrainSamplesPerFrame;
+        var kept = TravelMapRenderModel.LimitTilesToBudget(
+            tiles,
+            MapTile.Size,
+            centerX: 0.0,
+            centerZ: 0.0);
+        Assert.Same(tiles, kept);
+
+        var centered = tiles.Take(9).ToArray();
+        Assert.Same(centered, TravelMapRenderModel.LimitTilesToBudget(centered, 1, 0.0, 0.0));
+
+        var oversized = Enumerable.Range(0, affordable + 16)
+            .Select(index => new MapTileCoordinate(index, 0))
+            .ToArray();
+        var limited = TravelMapRenderModel.LimitTilesToBudget(
+            oversized,
+            MapTile.Size,
+            centerX: 0.0,
+            centerZ: 0.0);
+
+        Assert.Equal(affordable, limited.Count);
+        Assert.Equal(
+            Enumerable.Range(0, affordable).ToArray(),
+            limited.Select(tile => tile.X).ToArray());
+        Assert.All(limited, tile => Assert.Equal(0, tile.Z));
     }
 
     [Fact]

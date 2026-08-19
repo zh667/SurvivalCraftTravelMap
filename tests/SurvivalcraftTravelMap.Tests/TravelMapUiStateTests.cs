@@ -730,6 +730,44 @@ public sealed class TravelMapSettingsStoreTests
     }
 
     [Fact]
+    public async Task Saved_large_map_detail_round_trips_and_unknown_values_fall_back()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"LargeMapDetail\":\"High\"}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(LargeMapDetail.High, result.Settings.LargeMapDetail);
+
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"LargeMapDetail\":\"Ludicrous\"}",
+            TestContext.Current.CancellationToken);
+
+        var fallback = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(LargeMapDetail.Standard, fallback.Settings.LargeMapDetail);
+    }
+
+    [Fact]
+    public async Task Settings_written_before_the_large_map_detail_option_load_as_standard()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"MiniMapSize\":128}",
+            TestContext.Current.CancellationToken);
+
+        var result = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(128, result.Settings.MiniMapSize);
+        Assert.Equal(LargeMapDetail.Standard, result.Settings.LargeMapDetail);
+    }
+
+    [Fact]
     public async Task Current_schema_preserves_hidden_last_death_marker_setting()
     {
         using var directory = new UiTemporaryDirectory();

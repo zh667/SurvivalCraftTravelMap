@@ -234,7 +234,7 @@ public sealed class PackageStructureTests
     {
         var source = File.ReadAllText(TestPaths.Component);
         var update = ExtractBraceBlock(source, "public void Update(float dt)");
-        var exploration = ExtractBraceBlock(source, "private void UpdateExploration()");
+        var exploration = ExtractBraceBlock(source, "private void UpdateExploration(float dt)");
         var cleanup = ExtractBraceBlock(source, "private void CleanupRuntimeResources()");
 
         AssertCodeContains(source, "public UpdateOrder UpdateOrder => UpdateOrder.Views;");
@@ -244,10 +244,11 @@ public sealed class PackageStructureTests
             source,
             "private readonly TerrainChunkExplorationScheduler _explorationScheduler = new();",
             "scheduler field");
-        AssertCodeContains(update, "UpdateExploration();");
-        AssertCodeDoesNotContain(update, "UpdateExploration(dt)");
+        // dt is passed for the storage-pressure backoff only; recording itself still runs every
+        // frame rather than on a timer.
+        AssertCodeContains(update, "UpdateExploration(dt);");
         Assert.True(
-            IndexOfCode(update, "UpdateExploration();")
+            IndexOfCode(update, "UpdateExploration(dt);")
             < IndexOfCode(update, "if (_miniMap is null || _settings is null)"));
 
         AssertCodeContains(exploration, "Terrain.Terrain.AllocatedChunks");
@@ -291,7 +292,7 @@ public sealed class PackageStructureTests
     public void Component_attempts_each_pending_chunk_independently_and_completes_only_recorded_chunks()
     {
         var source = File.ReadAllText(TestPaths.Component);
-        var exploration = ExtractBraceBlock(source, "private void UpdateExploration()");
+        var exploration = ExtractBraceBlock(source, "private void UpdateExploration(float dt)");
         var attemptLoop = ExtractBraceBlock(
             exploration,
             "foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))");
@@ -305,7 +306,7 @@ public sealed class PackageStructureTests
         AssertCodeContains(recordedBranch, "_explorationScheduler.MarkCompleted(chunk);");
         Assert.Equal(1, CountOccurrences(exploration, "MarkCompleted("));
         AssertCodeContains(attemptLoop, "result == ExplorationRecordResult.Pressure");
-        AssertCodeContains(attemptLoop, "!_explorationPressureWarningShown");
+        AssertCodeContains(attemptLoop, "pressured = true;");
 
         AssertCodeContains(exceptionHandler, "_explorationFailureReporter.Report(");
         AssertCodeContains(exceptionHandler, "ExplorationFailureOperation.Record");
@@ -315,6 +316,73 @@ public sealed class PackageStructureTests
         {
             Assert.Equal(0, CountOccurrences(exceptionHandler, forbiddenExit));
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Storage_pressure_backs_off_instead_of_retrying_every_frame(bool plugin)
+    {
+        var source = File.ReadAllText(plugin ? TestPaths.PluginComponent : TestPaths.Component);
+        var exploration = ExtractBraceBlock(source, "private void UpdateExploration(float dt)");
+        var backoff = ExtractBraceBlock(exploration, "if (_storagePressureBackoff > 0f)");
+        AssertCodeContains(backoff, "_storagePressureBackoff -= dt;");
+        AssertCodeContains(backoff, "return;");
+        AssertCodeContains(exploration, "ReportStoragePressure(isCaveLayer: false);");
+
+        var report = ExtractBraceBlock(source, "private void ReportStoragePressure(bool isCaveLayer)");
+        AssertCodeContains(report, "_storagePressureBackoff = StoragePressureBackoffSeconds;");
+        AssertCodeContains(report, "Engine.Log.Warning(DescribeStoragePressure(isCaveLayer));");
+        AssertCodeContains(report, "!_explorationPressureWarningShown");
+
+        // The cave scan is the most expensive sampler in the mod, so its admission check has to
+        // come before the sample rather than after it.
+        var cave = ExtractBraceBlock(
+            source,
+            "private void UpdateCaveExploration(IReadOnlyList<TerrainChunkCoordinate> loadedChunks)");
+        AssertCodeContains(cave, "if (!_caveStore.CanAdmit(layerY, chunk))");
+        Assert.True(
+            cave.IndexOf("_caveStore.CanAdmit(", StringComparison.Ordinal)
+                < cave.IndexOf("_caveSampler.TrySampleChunk(", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Teardown_drains_the_map_stores_before_anything_is_cancelled(bool plugin)
+    {
+        var source = File.ReadAllText(plugin ? TestPaths.PluginComponent : TestPaths.Component);
+        var cleanup = ExtractBraceBlock(source, "private void CleanupRuntimeResources()");
+
+        AssertCodeContains(cleanup, "RunCleanupStep(FlushMapStoresBeforeShutdown);");
+        Assert.True(
+            IndexOfCode(cleanup, "RunCleanupStep(FlushMapStoresBeforeShutdown);")
+            < IndexOfCode(cleanup, "_lifetimeCancellation.Cancel()"),
+            "The final flush has to run before the lifetime token cancels the in-flight one.");
+
+        // The UI teardown budget is for widgets; map data must not have to compete with it.
+        var cleanupUi = ExtractBraceBlock(source, "private void CleanupUi()");
+        AssertCodeDoesNotContain(cleanupUi, "FlushMapStoresAsync");
+
+        var flush = ExtractBraceBlock(source, "private void FlushMapStoresBeforeShutdown()");
+        AssertCodeContains(flush, "ShutdownFlushBudget(backlog)");
+        AssertCodeContains(flush, "if (remainingTiles > 0)");
+        AssertCodeContains(flush, "Engine.Log.Warning(");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Zoom_sliders_snap_to_reachable_steps(bool plugin)
+    {
+        var source = File.ReadAllText(plugin ? TestPaths.PluginSettingsWidget : TestPaths.SettingsWidget);
+
+        AssertCodeContains(
+            source,
+            "_miniMapZoom = CreateSlider(0.5f, 8f, settings.MiniMapBlocksPerPixel, granularity: 0.1f);");
+        AssertCodeContains(
+            source,
+            "_largeMapZoom = CreateSlider(0.25f, 32f, settings.LargeMapBlocksPerPixel, granularity: 0.25f);");
     }
 
     [Fact]
@@ -1524,6 +1592,51 @@ public sealed class PackageVerifierBehaviorTests
     }
 
     [Fact]
+    public void Verifier_accepts_the_versioned_release_filename()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        var renamed = Path.Combine(temporaryDirectory.Path, "[NET]TravelMap2.7.0.netmod");
+        File.Move(package, renamed);
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, renamed);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("PACKAGE_OK", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verifier_rejects_a_release_filename_that_disagrees_with_the_manifest_version()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        var renamed = Path.Combine(temporaryDirectory.Path, "[NET]TravelMap9.9.9.netmod");
+        File.Move(package, renamed);
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, renamed);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("9.9.9", result.AllOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verifier_rejects_an_unparsable_manifest_version()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var package = PackageFixtures.CreateValidPackage(temporaryDirectory.Path);
+        PackageFixtures.ReplaceEntry(
+            package,
+            "modinfo.json",
+            Encoding.UTF8.GetBytes(
+                "{\"Name\":\"Survivalcraft Travel Map\",\"Author\":\"zh667\",\"Version\":\"latest\",\"ApiVersion\":\"1.44\",\"ScVersion\":\"2.4.40.6\",\"PackageName\":\"SurvivalcraftTravelMap\",\"Dependencies\":[]}"));
+
+        var result = PowerShellRunner.Run(TestPaths.VerifyScript, package);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("latest", result.AllOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Verifier_rejects_a_missing_required_asset()
     {
         using var temporaryDirectory = new TemporaryDirectory();
@@ -1720,7 +1833,7 @@ internal static class PackageFixtures
             archive,
             new PackageEntry(
                 "modinfo.json",
-                "{\"Name\":\"Survivalcraft Travel Map\",\"Author\":\"SCTM\",\"Version\":\"1.0.0\",\"ApiVersion\":\"1.44\",\"ScVersion\":\"2.4.40.6\",\"PackageName\":\"SurvivalcraftTravelMap\",\"Dependencies\":[]}"));
+                "{\"Name\":\"Survivalcraft Travel Map\",\"Author\":\"zh667\",\"Version\":\"2.7.0\",\"ApiVersion\":\"1.44\",\"ScVersion\":\"2.4.40.6\",\"PackageName\":\"SurvivalcraftTravelMap\",\"Dependencies\":[]}"));
         AddEntry(archive, new PackageEntry("mod.netxdb", FinalXdb));
         AddEntry(archive, new PackageEntry("Assets/BlockPixelColor.json", CreateColorJson()));
         AddEntry(archive, new PackageEntry("Assets/Point.png", MinimalPng.Bytes));
@@ -1906,6 +2019,27 @@ internal static class TestPaths
         "src",
         "SurvivalcraftTravelMap",
         "mod.netxdb");
+
+    internal static string SettingsWidget => Path.Combine(
+        RepositoryRoot,
+        "src",
+        "SurvivalcraftTravelMap",
+        "UI",
+        "TravelMapSettingsWidget.cs");
+
+    internal static string PluginSettingsWidget => Path.Combine(
+        RepositoryRoot,
+        "plugin",
+        "SurvivalcraftTravelMap",
+        "UI",
+        "TravelMapSettingsWidget.cs");
+
+    internal static string PluginComponent => Path.Combine(
+        RepositoryRoot,
+        "plugin",
+        "SurvivalcraftTravelMap",
+        "Mod",
+        "TravelMapComponent.cs");
 
     internal static string BuildScript => Path.Combine(
         RepositoryRoot,

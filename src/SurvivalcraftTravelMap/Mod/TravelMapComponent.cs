@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text;
 using Engine.Graphics;
 using Engine.Input;
 using Game;
@@ -88,6 +89,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private const int MaximumChunkAttemptsPerFrame = 16;
     private const int MaximumCaveChunkAttemptsPerFrame = 2;
     private const int MaximumCoverageChecksPerFrame = 16;
+
+    // Under write pressure every recording attempt is refused, so retrying 16 chunks a frame only
+    // heats the device. Idle for slightly longer than one flush interval so the backlog gets a
+    // whole cycle to drain before exploration starts competing with it again.
+    private const float StoragePressureBackoffSeconds = 6f;
+    private const float StoragePressureDiagnosticSeconds = 10f;
     private static int s_nextUpdateLocationId = -1_000_000;
     private static readonly CoordinateTeleportFutureSchemaWarningGate ServerSettingsWarningGate = new();
     private static readonly TravelMapSettingsFutureSchemaWarningGate SettingsWarningGate = new();
@@ -133,6 +140,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private Texture2D? _teleportButtonPressedTexture;
     private float _flushElapsed;
     private bool _explorationPressureWarningShown;
+    private float _storagePressureBackoff;
+    private float _storagePressureDiagnosticCooldown;
     private const int ExplorationObserveIntervalFrames = 30;
     private TerrainChunkCoordinate? _lastObservedCenter;
     private int _framesSinceExplorationObserve;
@@ -220,10 +229,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
         UpdateMiniMapPlacement();
         UpdateInvitationUi(hudState);
         UpdateOpenMapButton();
-        UpdateExploration();
+        UpdateExploration(dt);
         if (_miniMapPlacementSession is null)
         {
             HandleLargeMapHotkey();
+        }
+        else
+        {
+            // Placement drags cover the screen the same way the large map does, and leak into the
+            // movement pads for the same reason.
+            ReleaseGameTouchCaptures();
         }
         if (_miniMap is null || _settings is null)
         {
@@ -842,7 +857,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             BeginMiniMapPlacement,
             GetLastDeathMarker,
             _mapViewState,
-            GetPreviousDeathMarker);
+            GetPreviousDeathMarker,
+            ReleaseGameTouchCaptures);
         if (state.WaypointLoadOutcome == WaypointLoadOutcome.CorruptIsolated)
         {
             ShowMessage(
@@ -1055,6 +1071,46 @@ public sealed class TravelMapComponent : Component, IUpdateable
         }
     }
 
+    /// <summary>
+    /// Drops whatever touch the game's on-screen move/look pads have latched onto.
+    /// <para>
+    /// SurvivalCraft only suppresses those pads while a modal panel is up
+    /// (<c>ComponentInput.UpdateInputFromWidgets</c> returns early on <c>ModalPanelWidget</c>);
+    /// dialogs are expected to shield them by hit-testing on top, which works for a *new* touch but
+    /// not for one already captured. <see cref="TouchInputWidget"/> only hit-tests on press, then
+    /// follows that pointer id until it sees the matching release — so a finger resting on the move
+    /// pad when the map opens keeps walking the player, and a release swallowed by any
+    /// <c>Input.Clear()</c> leaves the pad latched onto a pointer id the platform later reuses, at
+    /// which point dragging the map walks the player for the rest of the session.
+    /// </para>
+    /// Clearing the capture every frame the map owns the screen fixes both: no new capture is
+    /// possible there anyway (the dialog covers the hit test), so there is nothing legitimate to
+    /// lose. <c>m_touchInput</c> goes too, because the pads may already have updated this frame.
+    /// </summary>
+    private void ReleaseGameTouchCaptures()
+    {
+        var gui = Gui;
+        if (gui is null)
+        {
+            return;
+        }
+
+        ReleaseTouchCapture(gui.MoveWidget);
+        ReleaseTouchCapture(gui.LookWidget);
+        ReleaseTouchCapture(gui.ViewWidget);
+    }
+
+    private static void ReleaseTouchCapture(TouchInputWidget? widget)
+    {
+        if (widget is null)
+        {
+            return;
+        }
+
+        widget.m_touchId = null;
+        widget.m_touchInput = null;
+    }
+
     private void BeginMiniMapPlacement()
     {
         if (_settings is null || _miniMap is null || _miniMapPlacementWidget is null)
@@ -1245,7 +1301,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         CommonLib.Net.QueuePackage(new LegacyGpsPackage(message));
     }
 
-    private void UpdateExploration()
+    private void UpdateExploration(float dt)
     {
         if (_explorationRecorder is null || _explorationCoverageProbe is null)
         {
@@ -1254,6 +1310,16 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         var position = Player.ComponentBody.Position;
         _mapViewState?.UpdatePlayerY(position.Y);
+        _storagePressureDiagnosticCooldown = MathF.Max(0f, _storagePressureDiagnosticCooldown - dt);
+        if (_storagePressureBackoff > 0f)
+        {
+            // Saving is behind, so every attempt would be refused after paying for a full chunk
+            // sample. Stand down until the flush has had time to drain instead of burning the
+            // frame budget on work that is thrown away.
+            _storagePressureBackoff -= dt;
+            return;
+        }
+
         var center = TerrainChunkCoordinate.FromWorld(
             checked((int)MathF.Floor(position.X)),
             checked((int)MathF.Floor(position.Z)));
@@ -1282,6 +1348,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             _explorationCoverageProbe.IsFullyExplored,
             MaximumCoverageChecksPerFrame);
 
+        var pressured = false;
         foreach (var chunk in _explorationScheduler.GetPendingAttempts(MaximumChunkAttemptsPerFrame))
         {
             try
@@ -1291,14 +1358,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 {
                     _explorationScheduler.MarkCompleted(chunk);
                 }
-                else if (result == ExplorationRecordResult.Pressure && !_explorationPressureWarningShown)
+                else if (result == ExplorationRecordResult.Pressure)
                 {
-                    _explorationPressureWarningShown = true;
-                    ShowMessage(
-                        TravelMapText.Get(
-                            "mapStoragePaused",
-                            "地图存储持续失败；已暂停记录新区块，现有探索仍会保留并重试保存"),
-                        TravelMapNoticeKind.Failure);
+                    pressured = true;
                 }
             }
             catch (Exception exception)
@@ -1308,6 +1370,17 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     ExplorationFailureOperation.Record,
                     exception);
             }
+
+            if (pressured)
+            {
+                break;
+            }
+        }
+
+        if (pressured)
+        {
+            ReportStoragePressure(isCaveLayer: false);
+            return;
         }
 
         UpdateCaveExploration(_cachedLoadedChunks);
@@ -1340,6 +1413,14 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 continue;
             }
 
+            // Cave sampling is the most expensive scan in the mod (a +/-8 block column probe per
+            // pixel), so the admission check comes before it rather than after.
+            if (!_caveStore.CanAdmit(layerY, chunk))
+            {
+                ReportStoragePressure(isCaveLayer: true);
+                break;
+            }
+
             attempts++;
             if (!_caveSampler.TrySampleChunk(chunk, layerY, colors, heightShades))
             {
@@ -1347,15 +1428,68 @@ public sealed class TravelMapComponent : Component, IUpdateable
             }
 
             var result = _caveStore.RecordChunk(layerY, chunk, colors, heightShades);
-            if (result == ExplorationRecordResult.Pressure && !_explorationPressureWarningShown)
+            if (result == ExplorationRecordResult.Pressure)
             {
-                _explorationPressureWarningShown = true;
-                ShowMessage(
-                    TravelMapText.Get("mapStoragePaused", "地图缓存持续失败，已暂停记录新区块；稍后探索会自动重试保存"),
-                    TravelMapNoticeKind.Failure);
+                ReportStoragePressure(isCaveLayer: true);
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Saving has fallen behind exploration. Back off, warn the player once, and log enough state
+    /// to tell a slow flush apart from a stuck one the next time this shows up in a bug report.
+    /// </summary>
+    private void ReportStoragePressure(bool isCaveLayer)
+    {
+        _storagePressureBackoff = StoragePressureBackoffSeconds;
+        if (_storagePressureDiagnosticCooldown <= 0f)
+        {
+            _storagePressureDiagnosticCooldown = StoragePressureDiagnosticSeconds;
+            Engine.Log.Warning(DescribeStoragePressure(isCaveLayer));
+        }
+
+        if (!_explorationPressureWarningShown)
+        {
+            _explorationPressureWarningShown = true;
+            ShowMessage(
+                TravelMapText.Get(
+                    "mapStoragePaused",
+                    "地图保存跟不上探索速度，已暂停记录新区块；已探索内容不会丢失，稍后自动继续"),
+                TravelMapNoticeKind.Failure);
+        }
+    }
+
+    private string DescribeStoragePressure(bool isCaveLayer)
+    {
+        var scope = isCaveLayer ? "cave" : "surface";
+        var description = new StringBuilder("[TravelMap] Map storage backpressure: scope=")
+            .Append(scope);
+        if (isCaveLayer && _caveStore is not null && _mapViewState is not null)
+        {
+            var layerY = _mapViewState.CaveY;
+            description
+                .Append(", caveY=")
+                .Append(layerY)
+                .Append(", caveLayers=")
+                .Append(_caveStore.LayerCount)
+                .Append(", ")
+                .Append(Describe(_caveStore.GetDiagnostics(layerY), CaveExplorationStore.LayerTileCapacity));
+        }
+
+        if (_tileStore is not null)
+        {
+            description
+                .Append(", surface ")
+                .Append(Describe(_tileStore.Diagnostics, _tileStore.Capacity));
+        }
+
+        return description.ToString();
+
+        static string Describe(ExplorationTileStoreDiagnostics diagnostics, int capacity) =>
+            $"cached={diagnostics.CachedTileCount}/{capacity}, dirty={diagnostics.DirtyTileCount}, "
+            + $"known={diagnostics.KnownTileCount}, "
+            + $"lastFlush={diagnostics.LastFlushTileCount} tiles/{diagnostics.LastFlushMilliseconds}ms";
     }
 
     private static long DistanceSquared(
@@ -1991,6 +2125,10 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _isActive = false;
         _explorationScheduler.Clear();
         _explorationFailureReporter.Clear();
+        // Before anything is cancelled: the component is torn down and rebuilt on every respawn
+        // (the game creates a fresh player entity each time), so whatever is still dirty here is
+        // explored map that would otherwise be dropped on the floor.
+        RunCleanupStep(FlushMapStoresBeforeShutdown);
         RunCleanupStep(() => _lifetimeCancellation.Cancel());
         RunCleanupStep(() =>
         {
@@ -2025,6 +2163,68 @@ public sealed class TravelMapComponent : Component, IUpdateable
         _flushTask = null;
         RunCleanupStep(() => _lifetimeCancellation.Dispose());
     }
+
+    /// <summary>
+    /// Drains the map stores while the component still owns them. The budget scales with the
+    /// backlog so an ordinary teardown stays imperceptible while a real backlog gets a fair chance
+    /// to reach disk, and anything left over is reported instead of vanishing silently.
+    /// </summary>
+    private void FlushMapStoresBeforeShutdown()
+    {
+        if (_tileStore is null && _caveStore is null)
+        {
+            return;
+        }
+
+        var backlog = (_tileStore?.Diagnostics.DirtyTileCount ?? 0)
+            + (_caveStore?.TotalDirtyTileCount ?? 0);
+        if (backlog == 0 && _flushTask is null)
+        {
+            return;
+        }
+
+        var budget = ShutdownFlushBudget(backlog);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        TimeSpan Remaining() => clock.Elapsed >= budget ? TimeSpan.Zero : budget - clock.Elapsed;
+        static void ReportFlushFailure(Exception exception) =>
+            Engine.Log.Warning($"[TravelMap] Shutdown flush failed: {exception.Message}");
+
+        // The in-flight cycle is already part-way through the same backlog, so it is waited on
+        // rather than cancelled and redone.
+        var inFlight = _flushTask;
+        _flushTask = null;
+        if (inFlight is not null)
+        {
+            RunCleanupStep(() => BoundedTaskObserver.ObserveWithin(
+                inFlight,
+                Remaining(),
+                ReportFlushFailure));
+        }
+
+        if (Remaining() > TimeSpan.Zero)
+        {
+            RunCleanupStep(() =>
+            {
+                using var flushCancellation = new CancellationTokenSource(Remaining());
+                BoundedTaskObserver.ObserveWithin(
+                    FlushMapStoresAsync(flushCancellation.Token),
+                    Remaining(),
+                    ReportFlushFailure);
+            });
+        }
+
+        var remainingTiles = (_tileStore?.Diagnostics.DirtyTileCount ?? 0)
+            + (_caveStore?.TotalDirtyTileCount ?? 0);
+        if (remainingTiles > 0)
+        {
+            Engine.Log.Warning(
+                $"[TravelMap] Shutdown flush incomplete: {remainingTiles} of {backlog} tiles "
+                + $"could not be written within {budget.TotalMilliseconds:F0}ms and were lost.");
+        }
+    }
+
+    private static TimeSpan ShutdownFlushBudget(int backlog) => TimeSpan.FromMilliseconds(
+        Math.Clamp(250d + (25d * backlog), 250d, 5000d));
 
     private static void RunCleanupStep(Action cleanup)
     {
@@ -2122,27 +2322,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             RunCleanupStep(teleportButtonPressedTexture.Dispose);
         }
 
-        if (_tileStore is not null || _caveStore is not null)
-        {
-            var pendingFlushCompleted = true;
-            RunCleanupStep(() => pendingFlushCompleted = _flushTask is null
-                || BoundedTaskObserver.ObserveWithin(
-                    _flushTask,
-                    RemainingTime(),
-                    ReportShutdownFailure));
-            if (pendingFlushCompleted && RemainingTime() > TimeSpan.Zero)
-            {
-                RunCleanupStep(() =>
-                {
-                    using var flushCancellation = new CancellationTokenSource(RemainingTime());
-                    BoundedTaskObserver.ObserveWithin(
-                        FlushMapStoresAsync(flushCancellation.Token),
-                        RemainingTime(),
-                        ReportShutdownFailure);
-                });
-            }
-        }
-
+        // Map stores are drained by FlushMapStoresBeforeShutdown, ahead of cancellation and on its
+        // own backlog-sized budget; the 2s budget here is for UI work only.
         if (dialogWork is not null && RemainingTime() > TimeSpan.Zero)
         {
             RunCleanupStep(() => BoundedTaskObserver.ObserveWithin(

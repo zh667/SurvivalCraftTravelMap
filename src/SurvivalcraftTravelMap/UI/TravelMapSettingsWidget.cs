@@ -26,6 +26,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
     private readonly List<BevelledButtonWidget> _sizeButtons = [];
     private readonly List<BevelledButtonWidget> _shapeButtons = [];
     private readonly List<BevelledButtonWidget> _heightShadingButtons = [];
+    private readonly List<BevelledButtonWidget> _largeMapDetailButtons = [];
     private readonly List<(CheckboxWidget Widget, Func<bool> Read)> _toggleBindings = [];
     private bool _refreshingControls;
 
@@ -157,8 +158,12 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             () => settings.AcceptTeleportInvitations,
             value => settings.AcceptTeleportInvitations = value));
 
-        _miniMapZoom = CreateSlider(0.5f, 8f, settings.MiniMapBlocksPerPixel);
-        _largeMapZoom = CreateSlider(0.25f, 32f, settings.LargeMapBlocksPerPixel);
+        // Both zoom sliders used to be continuous, so a drag landed on 0.93 or 1.07 and hitting a
+        // round scale by hand was luck. Snap them to steps that are coarse enough to aim at: a
+        // tenth of a block per pixel on the mini map, and a quarter on the large map, whose range
+        // is four times wider (0.01 steps would be back to sub-pixel aiming).
+        _miniMapZoom = CreateSlider(0.5f, 8f, settings.MiniMapBlocksPerPixel, granularity: 0.1f);
+        _largeMapZoom = CreateSlider(0.25f, 32f, settings.LargeMapBlocksPerPixel, granularity: 0.25f);
         _creatureMarkerSize = CreateSlider(3f, 16f, settings.CreatureMarkerSize, granularity: 1f);
         _compassFontScale = CreateSlider(0.5f, 2f, settings.CompassFontScale, granularity: 0.1f);
         settingsStack.Children.Add(CreateSliderRow(
@@ -223,6 +228,28 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             };
             _shapeButtons.Add(button);
             shapeStack.Children.Add(button);
+        }
+
+        settingsStack.Children.Add(CreateSectionLabel(
+            TravelMapText.Get("largeMapDetail", "大地图清晰度")));
+        var largeMapDetailStack = new StackPanelWidget
+        {
+            Direction = LayoutDirection.Horizontal,
+            Margin = new Vector2(2f),
+        };
+        settingsStack.Children.Add(largeMapDetailStack);
+        foreach (var detail in Enum.GetValues<LargeMapDetail>())
+        {
+            var button = new BevelledButtonWidget
+            {
+                Text = TravelMapText.LargeMapDetail(detail),
+                Size = new Vector2(114f, 38f),
+                Color = SnowText,
+                CenterColor = detail == settings.LargeMapDetail ? Moss : Basalt,
+                Tag = detail,
+            };
+            _largeMapDetailButtons.Add(button);
+            largeMapDetailStack.Children.Add(button);
         }
 
         _placementButton = new BevelledButtonWidget
@@ -314,6 +341,14 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             if (button.IsClicked && button.Tag is HeightShadingStyle style)
             {
                 SetHeightShadingStyle(style);
+            }
+        }
+
+        foreach (var button in _largeMapDetailButtons)
+        {
+            if (button.IsClicked && button.Tag is LargeMapDetail detail)
+            {
+                SetLargeMapDetail(detail);
             }
         }
 
@@ -432,6 +467,7 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             RefreshSizeButtons();
             RefreshShapeButtons();
             RefreshHeightShadingButtons();
+            RefreshLargeMapDetailButtons();
         }
         finally
         {
@@ -522,6 +558,24 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
         _settings.HeightShadingStyle = style;
         RefreshHeightShadingButtons();
         Persist();
+    }
+
+    private void SetLargeMapDetail(LargeMapDetail detail)
+    {
+        _settings.LargeMapDetail = detail;
+        RefreshLargeMapDetailButtons();
+        Persist();
+    }
+
+    private void RefreshLargeMapDetailButtons()
+    {
+        foreach (var button in _largeMapDetailButtons)
+        {
+            if (button.Tag is LargeMapDetail buttonDetail)
+            {
+                button.CenterColor = buttonDetail == _settings.LargeMapDetail ? Moss : Basalt;
+            }
+        }
     }
 
     private void RefreshHeightShadingButtons()

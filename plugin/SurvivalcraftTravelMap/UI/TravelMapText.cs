@@ -32,6 +32,17 @@ internal static class TravelMapText
         _ => string.Empty,
     };
 
+    public static string LargeMapDetail(LargeMapDetail detail) => detail switch
+    {
+        global::SurvivalcraftTravelMap.Settings.LargeMapDetail.PowerSaver =>
+            Get("largeMapDetailPowerSaver", "省内存"),
+        global::SurvivalcraftTravelMap.Settings.LargeMapDetail.Standard =>
+            Get("largeMapDetailStandard", "标准"),
+        global::SurvivalcraftTravelMap.Settings.LargeMapDetail.High =>
+            Get("largeMapDetailHigh", "高清"),
+        _ => string.Empty,
+    };
+
     public static string HeightShading(HeightShadingStyle style) => style switch
     {
         HeightShadingStyle.Off => Get("heightShadingOff", "关闭"),

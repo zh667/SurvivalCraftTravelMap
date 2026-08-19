@@ -7,7 +7,7 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class TeleportDiagnosticReporterTests
 {
     [Fact]
-    public void Search_formatter_redacts_nonzero_counts_in_enum_order_without_coordinate_fields()
+    public void Search_formatter_reports_nonzero_counts_in_enum_order_without_coordinate_fields()
     {
         var diagnostic = new TeleportSearchDiagnostic(
             new Dictionary<TeleportCandidateRejectionReason, int>
@@ -25,9 +25,11 @@ public sealed class TeleportDiagnosticReporterTests
         Assert.Contains("route=host", text, StringComparison.Ordinal);
         Assert.Contains("request=78", text, StringComparison.Ordinal);
         Assert.Contains("kind=SurfaceRequest", text, StringComparison.Ordinal);
-        Assert.Contains("HarmfulContent=<number>", text, StringComparison.Ordinal);
-        Assert.Contains("NonBreathableHead=<number>", text, StringComparison.Ordinal);
-        Assert.Contains("EntityCollision=<number>", text, StringComparison.Ordinal);
+        // Counts carry no position information, and without them the line cannot say which
+        // rejection reason dominated - the only thing it is logged for.
+        Assert.Contains("HarmfulContent=12", text, StringComparison.Ordinal);
+        Assert.Contains("NonBreathableHead=3", text, StringComparison.Ordinal);
+        Assert.Contains("EntityCollision=4", text, StringComparison.Ordinal);
         Assert.DoesNotContain("NoSupport", text, StringComparison.Ordinal);
         Assert.True(
             text.IndexOf("HarmfulContent", StringComparison.Ordinal)
@@ -38,9 +40,6 @@ public sealed class TeleportDiagnosticReporterTests
         Assert.DoesNotContain("targetX", text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("targetZ", text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("candidate", text, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("=12", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("=3", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("=4", text, StringComparison.Ordinal);
     }
 
     [Fact]

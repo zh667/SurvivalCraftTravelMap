@@ -53,6 +53,7 @@ public sealed class TravelMapDialog : Dialog
     private readonly Func<float> _gameTime;
     private readonly MapViewState _mapViewState;
     private readonly Action<TravelMapNotice> _notify;
+    private readonly Action _releaseGameTouchCaptures;
     private readonly TravelMapContextActionHandler _actionHandler;
     private readonly TrackedUiActionRunner _actionRunner;
     private readonly TrackedUiActionRunner _persistenceRunner;
@@ -93,6 +94,8 @@ public sealed class TravelMapDialog : Dialog
     private TravelMapContextMenu? _activeMenu;
     private NVector2? _lastDragPosition;
     private float _lastScale = float.NaN;
+    private LargeMapDetail? _terrainDetail;
+    private MapLayerIdentity? _terrainLayer;
     private bool _scaleSavePending;
     private double _scaleSaveTime;
     private (int X, int Y, int Z) _lastTopCoordinate;
@@ -116,7 +119,8 @@ public sealed class TravelMapDialog : Dialog
         Action requestMiniMapPlacement,
         Func<DeathMapMarker?>? lastDeath = null,
         MapViewState? mapViewState = null,
-        Func<DeathMapMarker?>? previousDeath = null)
+        Func<DeathMapMarker?>? previousDeath = null,
+        Action? releaseGameTouchCaptures = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
@@ -127,6 +131,7 @@ public sealed class TravelMapDialog : Dialog
         _gameTime = gameTime ?? throw new ArgumentNullException(nameof(gameTime));
         _actionHandler = actionHandler ?? throw new ArgumentNullException(nameof(actionHandler));
         _notify = notify ?? throw new ArgumentNullException(nameof(notify));
+        _releaseGameTouchCaptures = releaseGameTouchCaptures ?? (static () => { });
         _actionRunner = new TrackedUiActionRunner(
             _ => Notify(
                 TravelMapText.Get("mapActionFailed", "地图操作未能完成"),
@@ -168,7 +173,14 @@ public sealed class TravelMapDialog : Dialog
                 new NVector2(playerPose().Position.X, playerPose().Position.Z),
                 settings.LargeMapBlocksPerPixel,
                 NVector2.One),
+
+            // Terrain comes from the cached texture, as it does on the mini map. The immediate
+            // path had to downsample hard to fit a full-screen map inside its per-frame quad
+            // budget, which is what made the large map a mosaic on phones.
+            UseTerrainTextureCache = true,
         };
+        _surface.TerrainTextureOptions = MiniMapTerrainTextureOptions.ForLargeMap(
+            settings.LargeMapDetail);
         _surface.PreviousDeathProvider = _previousDeath;
         _mapHost.Children.Add(_surface);
 
@@ -421,6 +433,11 @@ public sealed class TravelMapDialog : Dialog
 
     public override void Update()
     {
+        // Must run before any early return, and before the game's own widgets update this frame:
+        // the map owns the screen while it is open, so nothing behind it may still be steering the
+        // player. See TravelMapComponent.ReleaseGameTouchCaptures for why that is not automatic.
+        _releaseGameTouchCaptures();
+
         if (!_noticeController.Update(Time.FrameStartTime))
         {
             _noticeHost.IsVisible = false;
@@ -432,6 +449,7 @@ public sealed class TravelMapDialog : Dialog
         _returnToDeathButton.IsVisible = lastDeath is not null;
         _mapModeHost.IsVisible = !_settingsWidget.IsVisible;
         RefreshMapModeControls();
+        RefreshTerrainCacheState();
         RefreshTopInformation();
         var livePosition = _playerPose().Position;
         _surface.Transform = _followState.Update(
@@ -933,6 +951,29 @@ public sealed class TravelMapDialog : Dialog
             "scaleFormat",
             "比例  1 px : {0:0.00} 方块",
             scale);
+    }
+
+    /// <summary>
+    /// Keeps the cached terrain texture in step with the things the cache cannot detect on its
+    /// own: the quality tier (which resizes the buffer) and the world layer being viewed (whose
+    /// tiles carry unrelated version stamps, so a switch has to force a full repaint instead of
+    /// leaving the previous layer on screen while the budgeted refill catches up).
+    /// </summary>
+    private void RefreshTerrainCacheState()
+    {
+        var detail = _settings.LargeMapDetail;
+        if (_terrainDetail != detail)
+        {
+            _terrainDetail = detail;
+            _surface.TerrainTextureOptions = MiniMapTerrainTextureOptions.ForLargeMap(detail);
+        }
+
+        var layer = MapLayerIdentity.For(_mapViewState.Mode, _mapViewState.CaveY);
+        if (_terrainLayer != layer)
+        {
+            _terrainLayer = layer;
+            _surface.InvalidateTerrainCache();
+        }
     }
 
     private void RefreshMapModeControls()

@@ -103,6 +103,45 @@ public sealed class CaveModeTests
     }
 
     [Fact]
+    public async Task Cave_layer_refuses_further_tiles_once_its_backlog_fills_up()
+    {
+        using var directory = new TemporaryDirectory();
+        var colors = Enumerable.Repeat(
+            CaveMapSampler.HiddenRockColor,
+            TerrainChunkCoordinate.PixelCount).ToArray();
+        var shades = Enumerable.Repeat(
+            TerrainHeightShading.Neutral,
+            TerrainChunkCoordinate.PixelCount).ToArray();
+        var store = new CaveExplorationStore(directory.Path);
+
+        // One chunk per 64-block tile, so each recording claims a fresh cache slot.
+        for (var index = 0; index < CaveExplorationStore.LayerTileCapacity; index++)
+        {
+            var chunk = new TerrainChunkCoordinate(index * 4, 0);
+            Assert.True(store.CanAdmit(20, chunk));
+            Assert.Equal(
+                ExplorationRecordResult.Recorded,
+                store.RecordChunk(20, chunk, colors, shades));
+        }
+
+        var overflow = new TerrainChunkCoordinate(CaveExplorationStore.LayerTileCapacity * 4, 0);
+        Assert.False(store.CanAdmit(20, overflow));
+        Assert.Equal(
+            ExplorationRecordResult.Pressure,
+            store.RecordChunk(20, overflow, colors, shades));
+
+        // Every Y gets its own store, so a neighbouring layer still has its own budget.
+        Assert.Equal(1, store.LayerCount);
+        Assert.True(store.CanAdmit(21, overflow));
+        Assert.Equal(2, store.LayerCount);
+
+        await store.FlushAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(store.CanAdmit(20, overflow));
+        Assert.Equal(0, store.GetDiagnostics(20).DirtyTileCount);
+    }
+
+    [Fact]
     public async Task Cave_store_keeps_layers_separate_and_survives_reload()
     {
         using var directory = new TemporaryDirectory();
@@ -217,5 +256,29 @@ public sealed class CaveModeTests
             terrain.SetContent(x, feetY, z, 0);
             terrain.SetContent(x, feetY + 1, z, 0);
         }
+    }
+}
+
+public sealed class MapLayerIdentityTests
+{
+    [Fact]
+    public void Surface_identity_ignores_the_cave_depth()
+    {
+        // The cave depth follows the player's Y every frame; if it counted while the surface view
+        // is on screen, walking up or down stairs would repaint the whole cached large map.
+        Assert.Equal(
+            MapLayerIdentity.For(MapViewMode.Surface, caveY: 3),
+            MapLayerIdentity.For(MapViewMode.Surface, caveY: 9));
+    }
+
+    [Fact]
+    public void Cave_identity_separates_depths_and_the_surface()
+    {
+        Assert.NotEqual(
+            MapLayerIdentity.For(MapViewMode.Cave, caveY: 3),
+            MapLayerIdentity.For(MapViewMode.Cave, caveY: 4));
+        Assert.NotEqual(
+            MapLayerIdentity.For(MapViewMode.Cave, caveY: 3),
+            MapLayerIdentity.For(MapViewMode.Surface, caveY: 3));
     }
 }

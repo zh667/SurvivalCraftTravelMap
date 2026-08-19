@@ -431,6 +431,48 @@ public sealed class TileStoreMapPixelSource :
         private readonly Dictionary<(int X, int Z), MapTileSnapshot> _tiles = [];
         private readonly HashSet<(int X, int Z)> _unknownTiles = [];
 
+        // Callers walk world positions in scan order, so run after run of reads lands in the same
+        // 64x64 tile. Remembering the last resolved tile turns the two hash lookups every single
+        // read used to pay into two integer compares — which matters because the texture cache
+        // does one read per texel, a million of them for a full-screen fill.
+        private int _memoTileX = int.MinValue;
+        private int _memoTileZ = int.MinValue;
+        private MapTileSnapshot? _memoSnapshot;
+
+        private bool TryResolveTile(int tileX, int tileZ, out MapTileSnapshot snapshot)
+        {
+            if (tileX == _memoTileX && tileZ == _memoTileZ)
+            {
+                snapshot = _memoSnapshot!;
+                return _memoSnapshot is not null;
+            }
+
+            var key = (tileX, tileZ);
+            if (_tiles.TryGetValue(key, out var cached))
+            {
+                snapshot = cached;
+            }
+            else if (_unknownTiles.Contains(key) || !source._provider.IsKnownTile(tileX, tileZ))
+            {
+                _unknownTiles.Add(key);
+                _memoTileX = tileX;
+                _memoTileZ = tileZ;
+                _memoSnapshot = null;
+                snapshot = null!;
+                return false;
+            }
+            else
+            {
+                snapshot = source.GetSnapshot(tileX, tileZ);
+                _tiles.Add(key, snapshot);
+            }
+
+            _memoTileX = tileX;
+            _memoTileZ = tileZ;
+            _memoSnapshot = snapshot;
+            return true;
+        }
+
         public bool TryGetExploredPixel(int worldX, int worldZ, out Rgba32 color)
         {
             var found = TryGetExploredTerrainPixel(worldX, worldZ, out var pixel);
@@ -444,24 +486,10 @@ public sealed class TileStoreMapPixelSource :
             out MapTerrainPixel pixel)
         {
             var coordinate = TileCoordinate.FromWorld(worldX, worldZ);
-            var key = (coordinate.TileX, coordinate.TileZ);
-            if (_unknownTiles.Contains(key))
+            if (!TryResolveTile(coordinate.TileX, coordinate.TileZ, out var snapshot))
             {
                 pixel = default;
                 return false;
-            }
-
-            if (!_tiles.TryGetValue(key, out var snapshot))
-            {
-                if (!source._provider.IsKnownTile(key.TileX, key.TileZ))
-                {
-                    _unknownTiles.Add(key);
-                    pixel = default;
-                    return false;
-                }
-
-                snapshot = source.GetSnapshot(key.TileX, key.TileZ);
-                _tiles.Add(key, snapshot);
             }
 
             return snapshot.TryGetTerrainPixel(coordinate.LocalX, coordinate.LocalZ, out pixel);
@@ -496,24 +524,10 @@ public sealed class TileStoreMapPixelSource :
                 return false;
             }
 
-            var key = (coordinate.TileX, coordinate.TileZ);
-            if (_unknownTiles.Contains(key))
+            if (!TryResolveTile(coordinate.TileX, coordinate.TileZ, out var snapshot))
             {
                 pixel = default;
                 return false;
-            }
-
-            if (!_tiles.TryGetValue(key, out var snapshot))
-            {
-                if (!source._provider.IsKnownTile(key.TileX, key.TileZ))
-                {
-                    _unknownTiles.Add(key);
-                    pixel = default;
-                    return false;
-                }
-
-                snapshot = source.GetSnapshot(key.TileX, key.TileZ);
-                _tiles.Add(key, snapshot);
             }
 
             return snapshot.TryGetExploredTerrainRegion(
@@ -714,7 +728,12 @@ public static class TravelMapRenderModel
     public static int MaximumTerrainSamplesPerFrame =>
         VersionsManager.Platform == Platform.Android ? 8_192 : 262_144;
 
-    public static int MaximumIndexedTileDescriptorsPerFrame => MaximumTerrainSamplesPerFrame;
+    // Tile descriptors are just coordinates: enumerating them is far cheaper than sampling them,
+    // so this is deliberately not tied to the sample budget. Tying the two meant a large explored
+    // area in view (over 8192 tiles on Android) truncated the catalog, and a truncated catalog
+    // used to abandon the frame — the terrain simply vanished when zooming out over a well
+    // explored world.
+    public static int MaximumIndexedTileDescriptorsPerFrame => 32_768;
 
     public static MapRenderStatistics RenderTerrain(
         IExploredMapPixelSource source,
@@ -948,18 +967,27 @@ public static class TravelMapRenderModel
         var catalog = source is IBoundedExploredMapTileIndexSource boundedSource
             ? boundedSource.GetKnownTileCatalog(region, MaximumIndexedTileDescriptorsPerFrame)
             : CreateBoundedCatalog(source.GetKnownTiles(region));
-        if (catalog.IsTruncated || catalog.Tiles.Count == 0)
+        if (catalog.Tiles.Count == 0)
         {
             return default;
         }
 
-        var tiles = catalog.Tiles;
-
+        // Coarsening stops paying off once a sample already covers a whole tile, so past that the
+        // only way back inside the budget is to draw fewer tiles — nearest to the view centre
+        // first, which keeps what the player is looking at rather than an arbitrary subset.
         var pixelStride = 1;
-        while ((long)tiles.Count * SamplesPerWholeTile(pixelStride) > MaximumTerrainSamplesPerFrame)
+        while (pixelStride < MapTile.Size
+               && (long)catalog.Tiles.Count * SamplesPerWholeTile(pixelStride)
+                   > MaximumTerrainSamplesPerFrame)
         {
             pixelStride *= 2;
         }
+
+        var tiles = LimitTilesToBudget(
+            catalog.Tiles,
+            pixelStride,
+            (minimumX + maximumX) / 2.0,
+            (minimumZ + maximumZ) / 2.0);
 
         var sampleRanges = tiles
             .Select(tile => CreateSampleRange(
@@ -1039,6 +1067,35 @@ public static class TravelMapRenderModel
     {
         var samplesPerAxis = ((MapTile.Size - 1) / stride) + 1;
         return (long)samplesPerAxis * samplesPerAxis;
+    }
+
+    /// <summary>
+    /// Keeps only as many tiles as the sample budget affords at <paramref name="pixelStride"/>,
+    /// nearest to the viewport centre first.
+    /// </summary>
+    internal static IReadOnlyList<MapTileCoordinate> LimitTilesToBudget(
+        IReadOnlyList<MapTileCoordinate> tiles,
+        int pixelStride,
+        double centerX,
+        double centerZ)
+    {
+        var affordable = MaximumTerrainSamplesPerFrame / SamplesPerWholeTile(pixelStride);
+        if (affordable >= tiles.Count)
+        {
+            return tiles;
+        }
+
+        var centerTileX = centerX / MapTile.Size;
+        var centerTileZ = centerZ / MapTile.Size;
+        return tiles
+            .OrderBy(tile =>
+            {
+                var dx = tile.X - centerTileX;
+                var dz = tile.Z - centerTileZ;
+                return (dx * dx) + (dz * dz);
+            })
+            .Take((int)Math.Max(1, affordable))
+            .ToArray();
     }
 
     private static MapTileSamplePlan CreateSampleRange(

@@ -27,6 +27,7 @@ public sealed class TravelMapSettingsTests
         Assert.Equal(160, settings.MiniMapSize);
         Assert.Equal(1.0f, settings.MiniMapBlocksPerPixel);
         Assert.Equal(2.0f, settings.LargeMapBlocksPerPixel);
+        Assert.Equal(LargeMapDetail.Standard, settings.LargeMapDetail);
         Assert.Equal("M", settings.LargeMapHotkey);
         Assert.Equal(0.4f, settings.NightMinimumBrightness);
     }
@@ -55,6 +56,7 @@ public sealed class TravelMapSettingsTests
             MiniMapSize = 384,
             MiniMapBlocksPerPixel = 7f,
             LargeMapBlocksPerPixel = 18f,
+            LargeMapDetail = LargeMapDetail.PowerSaver,
             NightMinimumBrightness = 0.9f,
         };
 
@@ -80,6 +82,7 @@ public sealed class TravelMapSettingsTests
         Assert.Equal(defaults.MiniMapSize, settings.MiniMapSize);
         Assert.Equal(defaults.MiniMapBlocksPerPixel, settings.MiniMapBlocksPerPixel);
         Assert.Equal(defaults.LargeMapBlocksPerPixel, settings.LargeMapBlocksPerPixel);
+        Assert.Equal(defaults.LargeMapDetail, settings.LargeMapDetail);
         Assert.Equal(defaults.NightMinimumBrightness, settings.NightMinimumBrightness);
     }
 

@@ -1,11 +1,11 @@
 {
   "Name": "Survivalcraft Travel Map",
-  "Version": "1.0.0",
+  "Version": "2.7.0",
   "ApiVersion": "1.44",
   "Description": "Travel map for Survivalcraft.",
   "ScVersion": "2.4.40.6",
   "Link": "",
-  "Author": "SCTM",
+  "Author": "zh667",
   "PackageName": "SurvivalcraftTravelMap",
   "Dependencies": []
 }

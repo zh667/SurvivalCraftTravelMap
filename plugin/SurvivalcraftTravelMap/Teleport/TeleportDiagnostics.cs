@@ -125,10 +125,13 @@ internal static partial class TeleportDiagnosticReporter
                 continue;
             }
 
+            // The counts are the whole point of this line — which reason dominated tells us why a
+            // teleport had nowhere to land. They carry no position information, so unlike exception
+            // text and stack traces they are logged as-is.
             builder.Append(", ")
                 .Append(reason)
                 .Append('=')
-                .Append(RedactNumbers(count.ToString(CultureInfo.InvariantCulture)));
+                .Append(count.ToString(CultureInfo.InvariantCulture));
         }
 
         return builder.Append('.').ToString();
