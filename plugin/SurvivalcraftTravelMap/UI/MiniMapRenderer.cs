@@ -1620,7 +1620,26 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         Action requestOpenLargeMap,
         Action<string> notify,
         Action<DeathMapMarker>? requestLocateLastDeath = null)
-        : base(pixelSource, settings, playerPose, waypoints, creatures, lastDeath, brightness)
+        : this(pixelSource, settings, settingsStore, playerPose, waypoints, creatures, lastDeath,
+            brightness, inputBlocked, requestOpenLargeMap, notify, requestLocateLastDeath, font: null)
+    {
+    }
+
+    internal MiniMapRenderer(
+        IExploredMapPixelSource pixelSource,
+        TravelMapSettings settings,
+        TravelMapSettingsStore settingsStore,
+        Func<PlayerMapPose> playerPose,
+        Func<IReadOnlyList<Waypoint>> waypoints,
+        Func<IReadOnlyList<CreatureMapMarker>> creatures,
+        Func<DeathMapMarker?> lastDeath,
+        Func<float> brightness,
+        Func<bool> inputBlocked,
+        Action requestOpenLargeMap,
+        Action<string> notify,
+        Action<DeathMapMarker>? requestLocateLastDeath,
+        BitmapFont? font)
+        : base(pixelSource, settings, playerPose, waypoints, creatures, lastDeath, brightness, font)
     {
         _settings = settings;
         ArgumentNullException.ThrowIfNull(settingsStore);
@@ -1700,6 +1719,14 @@ public sealed class MiniMapRenderer : MapSurfaceWidget
         }
 
         if (HandleTouchActivation())
+        {
+            return;
+        }
+
+        // A hidden/locked mouse can retain its last UI position. Its raw buttons and wheel
+        // belong to combat and hotbar selection, not the HUD. Keep this after touch handling:
+        // touch screens do not need a visible mouse cursor to open the map.
+        if (!Input.IsMouseCursorVisible)
         {
             return;
         }

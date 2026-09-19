@@ -1772,13 +1772,14 @@ public sealed class DeterministicBuildBehaviorTests
     [Fact]
     public void Consecutive_real_builds_have_identical_hash_entries_and_timestamps()
     {
-        var firstResult = PowerShellRunner.Run(TestPaths.BuildScript);
-        Assert.Equal(0, firstResult.ExitCode);
+        var gameDirectory = Path.GetDirectoryName(typeof(Game.Widget).Assembly.Location)!;
+        var firstResult = PowerShellRunner.Run(TestPaths.BuildScript, "-SurvivalcraftDir", gameDirectory);
+        Assert.True(firstResult.ExitCode == 0, firstResult.AllOutput);
         Assert.Contains("NETMOD_BUILT", firstResult.StandardOutput, StringComparison.Ordinal);
         var first = PackageSnapshot.Read(TestPaths.BuiltPackage);
 
-        var secondResult = PowerShellRunner.Run(TestPaths.BuildScript);
-        Assert.Equal(0, secondResult.ExitCode);
+        var secondResult = PowerShellRunner.Run(TestPaths.BuildScript, "-SurvivalcraftDir", gameDirectory);
+        Assert.True(secondResult.ExitCode == 0, secondResult.AllOutput);
         Assert.Contains("NETMOD_BUILT", secondResult.StandardOutput, StringComparison.Ordinal);
         var second = PackageSnapshot.Read(TestPaths.BuiltPackage);
 

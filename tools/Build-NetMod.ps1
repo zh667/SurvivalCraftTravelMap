@@ -47,7 +47,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $SurvivalcraftDir "Survivalcraft.dll
     throw "Survivalcraft.dll was not found in '$SurvivalcraftDir'."
 }
 
-& dotnet build $projectPath -c Release "-p:SurvivalcraftDir=$SurvivalcraftDir"
+# Windows PowerShell's native argument quoting can turn a trailing backslash before
+# a closing quote into a literal quote when the game directory contains spaces.
+$msbuildGameDir = $SurvivalcraftDir.Replace("\", "/")
+& dotnet build $projectPath -c Release "-p:SurvivalcraftDir=$msbuildGameDir"
 if ($LASTEXITCODE -ne 0) {
     throw "Release build failed with exit code $LASTEXITCODE."
 }
