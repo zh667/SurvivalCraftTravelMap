@@ -237,7 +237,7 @@ public class Lab : ModLoader
             CloseLargeMap();
 
             Teleport(new Vector3(home.X + 0.5f, 150, home.Y + 0.5f));
-            foreach (var x in Until(() => ColumnsReady(terrain, home, 56), 180, "region reloaded")) yield return x;
+            foreach (var x in Until(() => ColumnsReady(terrain, home, 40), 180, "region reloaded")) yield return x;
             foreach (var x in Seconds(4)) yield return x;
             var agreement = Agreement(predicted, MapSeason.Current, out var detail, out var land);
             metrics[$"{phase.Item3}_agreement"] = detail;
@@ -299,8 +299,11 @@ public class Lab : ModLoader
         var terrain = GameManager.Project.FindSubsystem<SubsystemTerrain>(true).Terrain;
         int agree = 0, total = 0, mapOnly = 0, terrainOnly = 0, landTotal = 0, landAgree = 0, waterTotal = 0, waterAgree = 0;
         var groups = new Dictionary<string, int>();
+        var skipped = 0;
         foreach (var p in pixels)
         {
+            // The square's corners lie past the 64-block view range; only loaded columns can be checked.
+            if (terrain.GetChunkAtCell(p.X, p.Z) is not { State: TerrainChunkState.Valid }) { skipped++; continue; }
             var top = terrain.GetTopHeight(p.X, p.Z);
             var content = terrain.GetCellContents(p.X, top, p.Z);
             var actual = content is 61 or 62;
@@ -318,7 +321,7 @@ public class Lab : ModLoader
             if (p.Kind == (int)MapSeasonKind.Water) { waterTotal++; if (actual == shown) waterAgree++; }
         }
 
-        detail = $"{agree}/{total} agree; map-only frozen {mapOnly}, terrain-only frozen {terrainOnly}; land {landAgree}/{landTotal}, shore water {waterAgree}/{waterTotal}";
+        detail = $"{agree}/{total} agree ({skipped} not loaded); map-only frozen {mapOnly}, terrain-only frozen {terrainOnly}; land {landAgree}/{landTotal}, shore water {waterAgree}/{waterTotal}";
         notes.Add("mismatch groups: " + string.Join(" | ", groups.OrderByDescending(g => g.Value).Take(14).Select(g => $"{g.Value}x {g.Key}")));
         landRatio = landTotal == 0 ? 0 : landAgree / (double)landTotal;
         return total == 0 ? 0 : agree / (double)total;
@@ -332,6 +335,11 @@ public class Lab : ModLoader
         foreach (var x in Seconds(5)) yield return x;
         var spawn = data.ComponentPlayer.ComponentBody.Position;
         var dialog = OpenLargeMap(new Vector2(spawn.X, spawn.Z));
+
+        // The runtime is reused between runs and the map remembers its zoom; start each run at 2 blocks per pixel so
+        // the pinch below always has room to zoom in.
+        var settings = FieldOrNull(dialog, "_settings")!;
+        settings.GetType().GetProperty("LargeMapBlocksPerPixel")!.SetValue(settings, 2f);
         foreach (var x in Seconds(2)) yield return x;
         var surface = Field<MapSurfaceWidget>(dialog, "_surface");
         var size = surface.ActualSize;
