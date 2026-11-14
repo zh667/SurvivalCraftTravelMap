@@ -150,6 +150,15 @@ public sealed class TerrainMapSampler
             content = _terrain.GetContent(x, topHeight, z);
             seasonKind = MapSeasonKind.Land;
             observedFrozen = true;
+
+            // The game lays snow on ice too (ShaftHasSnowOnIce). Under both lies water: the thaw
+            // removes the snow and then the ice. Recording the ice as the bare colour left white
+            // specks along lake shores all summer (seen in the isolated run's screenshots).
+            if (content == IceContent)
+            {
+                content = WaterContent;
+                seasonKind = MapSeasonKind.Water;
+            }
         }
         else if (content == IceContent)
         {

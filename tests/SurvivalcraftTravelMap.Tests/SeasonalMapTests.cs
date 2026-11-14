@@ -132,6 +132,21 @@ public sealed class SeasonalMapTests : IDisposable
     }
 
     [Fact]
+    public void Snow_on_ice_records_water_that_melts_in_summer()
+    {
+        var source = new SeasonTerrain { BaseTemperature = 4 };
+        source.Top[(0, 0)] = (65, TerrainMapSampler.SnowContent);
+        source.Cells[(0, 64, 0)] = TerrainMapSampler.IceContent;
+
+        var (color, code) = SampleOne(source, 0, 0);
+
+        Assert.Equal(new Rgba32(0, 40, 85, 255), color);
+        Assert.Equal(MapSeasonKind.Water, MapSeasonCode.GetKind(code));
+        Assert.True(MapSeasonCode.WasObservedFrozen(code));
+        Assert.Equal(color, SeasonalTerrainColor.Resolve(color, MapSeasonCode.ToSample(code), Summer));
+    }
+
+    [Fact]
     public void Snow_capable_bare_ground_is_land_and_rock_is_fixed()
     {
         var source = new SeasonTerrain { BaseTemperature = 3 };

@@ -214,7 +214,7 @@ public class Lab : ModLoader
             frameLog = null;
             Check(MapSeason.Current.Temperature == phase.Item2, $"{phase.Item3}: the map sees season temperature {phase.Item2}");
 
-            var predicted = RegionPixels(home, 40);
+            var predicted = RegionPixels(home, 56);
             var predictedFrozen = predicted.Count(p => IsFrozenOnMap(p, MapSeason.Current));
             metrics[$"{phase.Item3}_predictedFrozen"] = predictedFrozen;
 
@@ -237,7 +237,7 @@ public class Lab : ModLoader
             CloseLargeMap();
 
             Teleport(new Vector3(home.X + 0.5f, 150, home.Y + 0.5f));
-            foreach (var x in Until(() => ColumnsReady(terrain, home, 40), 120, "region reloaded")) yield return x;
+            foreach (var x in Until(() => ColumnsReady(terrain, home, 56), 180, "region reloaded")) yield return x;
             foreach (var x in Seconds(4)) yield return x;
             var agreement = Agreement(predicted, MapSeason.Current, out var detail, out var land);
             metrics[$"{phase.Item3}_agreement"] = detail;
