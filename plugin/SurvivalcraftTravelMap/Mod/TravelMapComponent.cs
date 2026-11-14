@@ -256,6 +256,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         UpdateHudPositions();
         UpdateMiniMapPlacement();
         UpdateOpenMapButton();
+        UpdateMapSeason();
         UpdateExploration(dt);
         if (_miniMapPlacementSession is null)
         {
@@ -922,6 +923,30 @@ public sealed class TravelMapComponent : Component, IUpdateable
                     "小地图位置未能保存，本次会话仍保留当前位置"),
                 TravelMapNoticeKind.Failure);
         }
+    }
+
+    private SubsystemGameInfo? _seasonGameInfo;
+
+    /// <summary>
+    /// Publishes the world's season to every map surface. Reading two fields a frame is cheaper
+    /// than any throttling; the surfaces only repaint when the value actually changes (about every
+    /// 1/48 of a year, when the rounded season temperature moves by one degree).
+    /// </summary>
+    private void UpdateMapSeason()
+    {
+        if (!RuntimeContext.IsMainPlayer)
+        {
+            return;
+        }
+
+        _seasonGameInfo ??= Project.FindSubsystem<SubsystemGameInfo>(false);
+        var settings = _seasonGameInfo?.WorldSettings;
+        MapSeason.Current = settings is null
+            ? default
+            : new MapSeason(
+                Terrain.Terrain.SeasonTemperature,
+                PredictsFreezing: settings.EnvironmentBehaviorMode == EnvironmentBehaviorMode.Living,
+                WeatherEffects: settings.AreWeatherEffectsEnabled);
     }
 
     private void UpdateExploration(float dt)

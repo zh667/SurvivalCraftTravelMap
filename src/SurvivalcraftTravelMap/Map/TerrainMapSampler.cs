@@ -38,6 +38,21 @@ public interface ITerrainMapSource
         color = default;
         return false;
     }
+
+    /// <summary>
+    /// Whether the game would treat this place as frozen at the given season temperature offset:
+    /// <c>SubsystemWeather.IsPlaceFrozen(seasonal temperature, y)</c>, with the seasonal
+    /// temperature computed the way the edition does it (the plugin edition clamps it at 0).
+    /// </summary>
+    bool IsPlaceFrozenAtSeason(int x, int z, int y, int seasonTemperature) =>
+        GetSeasonalTemperature(x, z) + seasonTemperature
+            + TerrainMapSampler.GetTemperatureAdjustmentAtHeight(y) <= 0;
+
+    /// <summary>
+    /// Whether snow settles on (or replaces) the top cell when the place freezes — the game's
+    /// <c>SubsystemSnowBlockBehavior.CanSupportSnow</c> / <c>CanBeReplacedBySnow</c>.
+    /// </summary>
+    bool CanHoldSnow(int x, int y, int z) => false;
 }
 
 public sealed class TerrainMapSampler
@@ -104,10 +119,108 @@ public sealed class TerrainMapSampler
         return Multiply(environmentColor, pixel.Color);
     }
 
+    internal const int SnowContent = 61;
+    internal const int IceContent = 62;
+    internal const int WaterContent = 18;
+
     private TerrainSample SampleCore(int x, int z)
     {
         var topHeight = _terrain.GetTopHeight(x, z);
         var content = _terrain.GetContent(x, topHeight, z);
+
+        // Record the bare surface and how the seasons change it, not the snow or ice lying on it:
+        // the map then shows each season the way the game will have it when the player arrives.
+        var seasonKind = MapSeasonKind.Fixed;
+        var observedFrozen = false;
+        if (content == SnowContent && topHeight > 0)
+        {
+            topHeight--;
+            content = _terrain.GetContent(x, topHeight, z);
+            seasonKind = MapSeasonKind.Land;
+            observedFrozen = true;
+        }
+        else if (content == IceContent)
+        {
+            content = WaterContent;
+            seasonKind = MapSeasonKind.Water;
+            observedFrozen = true;
+        }
+        else if (content is WaterContent or 226 or 229 or 232 or 233)
+        {
+            if (IsShoreWater(x, topHeight, z))
+            {
+                seasonKind = MapSeasonKind.Water;
+            }
+        }
+        else if (_terrain.CanHoldSnow(x, topHeight, z))
+        {
+            seasonKind = MapSeasonKind.Land;
+        }
+
+        var season = seasonKind == MapSeasonKind.Fixed
+            ? MapSeasonCode.Create(MapSeasonKind.Fixed, false, 0)
+            : MapSeasonCode.Create(
+                seasonKind,
+                observedFrozen,
+                FindFreezeLimit(x, z, topHeight));
+        var sample = SampleSurface(x, z, topHeight, content);
+        return sample with { Season = season };
+    }
+
+    /// <summary>
+    /// Water freezes on chunk load only where it touches a solid block (the game spreads ice
+    /// further only while the chunk stays loaded), so open water keeps its colour year-round.
+    /// </summary>
+    private bool IsShoreWater(int x, int y, int z) =>
+        IsSolidNeighbour(x + 1, y, z)
+        || IsSolidNeighbour(x - 1, y, z)
+        || IsSolidNeighbour(x, y, z + 1)
+        || IsSolidNeighbour(x, y, z - 1);
+
+    private bool IsSolidNeighbour(int x, int y, int z)
+    {
+        var content = _terrain.GetContent(x, y, z);
+        return content is not (0 or WaterContent or IceContent or 226 or 229 or 232 or 233)
+            && !_terrain.IsFluidCell(x, y, z);
+    }
+
+    /// <summary>
+    /// The highest season temperature at which this place counts as frozen, found with the game's
+    /// own rule (mods may replace it), assuming only that colder never thaws what warmer froze.
+    /// </summary>
+    private int FindFreezeLimit(int x, int z, int y)
+    {
+        var low = MapSeasonCode.MinimumLimit;
+        var high = MapSeasonCode.MaximumLimit;
+        if (!_terrain.IsPlaceFrozenAtSeason(x, z, y, low))
+        {
+            return low;
+        }
+
+        if (_terrain.IsPlaceFrozenAtSeason(x, z, y, high))
+        {
+            return high;
+        }
+
+        // Invariant: frozen at low, thawed at high.
+        while (high - low > 1)
+        {
+            var middle = (low + high) / 2;
+            if (_terrain.IsPlaceFrozenAtSeason(x, z, y, middle))
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
+    private TerrainSample SampleSurface(int x, int z, int topHeight, int content)
+    {
         var isCrossPlant = _terrain.IsCrossPlant(content);
         if (content is 28 or 99 or 174 or 25)
         {
@@ -132,7 +245,8 @@ public sealed class TerrainMapSampler
             return new TerrainSample(
                 CreateGeneratedColor(content),
                 isCrossPlant ? Math.Max(0, topHeight - 1) : topHeight,
-                isCrossPlant);
+                isCrossPlant,
+                0);
         }
 
         if (!pixel.NeedChangeWithEnvironment)
@@ -140,7 +254,8 @@ public sealed class TerrainMapSampler
             return new TerrainSample(
                 pixel.Color,
                 isCrossPlant ? Math.Max(0, topHeight - 1) : topHeight,
-                isCrossPlant);
+                isCrossPlant,
+                0);
         }
 
         var temperature = _terrain.GetSeasonalTemperature(x, z)
@@ -156,7 +271,8 @@ public sealed class TerrainMapSampler
         return new TerrainSample(
             Multiply(environmentColor, pixel.Color),
             isCrossPlant ? Math.Max(0, topHeight - 1) : topHeight,
-            isCrossPlant);
+            isCrossPlant,
+            0);
     }
 
     public bool TrySample(int x, int z, out Rgba32 color)
@@ -190,6 +306,24 @@ public sealed class TerrainMapSampler
         Span<Rgba32> destination,
         Span<byte> heightShades)
     {
+        Span<byte> seasons = stackalloc byte[TerrainChunkCoordinate.PixelCount];
+        return TrySampleChunk(chunk, destination, heightShades, seasons);
+    }
+
+    /// <param name="seasons">Receives one <see cref="MapSeasonCode"/> per pixel.</param>
+    public bool TrySampleChunk(
+        TerrainChunkCoordinate chunk,
+        Span<Rgba32> destination,
+        Span<byte> heightShades,
+        Span<byte> seasons)
+    {
+        if (seasons.Length != TerrainChunkCoordinate.PixelCount)
+        {
+            throw new ArgumentException(
+                $"Season destination must be exactly {TerrainChunkCoordinate.PixelCount} values.",
+                nameof(seasons));
+        }
+
         if (destination.Length != TerrainChunkCoordinate.PixelCount)
         {
             throw new ArgumentException(
@@ -219,6 +353,7 @@ public sealed class TerrainMapSampler
                 var sample = SampleCore(chunk.OriginX + localX, chunk.OriginZ + localZ);
                 var index = (localZ * TerrainChunkCoordinate.Size) + localX;
                 destination[index] = sample.Color;
+                seasons[index] = sample.Season;
                 heights[((localZ + 1) * heightGridSize) + localX + 1] = sample.SolidHeight;
                 crossPlants[index] = sample.IsCrossPlant ? (byte)1 : (byte)0;
                 if (sample.Color.A == 0)
@@ -273,7 +408,7 @@ public sealed class TerrainMapSampler
     private int? TryGetSolidHeight(int x, int z) =>
         _terrain.TryGetSolidHeight(x, z, out var height) ? height : null;
 
-    private static int GetTemperatureAdjustmentAtHeight(int y) =>
+    internal static int GetTemperatureAdjustmentAtHeight(int y) =>
         (int)Math.Round(y > 64
             ? -0.0008f * (y - 64) * (y - 64)
             : 0.1f * (64 - y));
@@ -338,7 +473,8 @@ public sealed class TerrainMapSampler
     private readonly record struct TerrainSample(
         Rgba32 Color,
         int SolidHeight,
-        bool IsCrossPlant);
+        bool IsCrossPlant,
+        byte Season);
 
     private static class EnvironmentPalettes
     {

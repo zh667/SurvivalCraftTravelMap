@@ -2,7 +2,10 @@ namespace SurvivalcraftTravelMap.Map;
 
 public readonly record struct Rgba32(byte R, byte G, byte B, byte A);
 
-public readonly record struct MapTerrainPixel(Rgba32 Color, byte HeightShade);
+public readonly record struct MapTerrainPixel(
+    Rgba32 Color,
+    byte HeightShade,
+    MapSeasonSample Season = default);
 
 public sealed class MapTile
 {
@@ -11,10 +14,12 @@ public sealed class MapTile
     internal const int ExploredByteCount = PixelCount / 8;
     internal const int ColorByteCount = PixelCount * 4;
     internal const int HeightShadeByteCount = PixelCount;
+    internal const int SeasonByteCount = PixelCount;
 
     private readonly byte[] _explored;
     private readonly byte[] _colors;
     private readonly byte[] _heightShades;
+    private readonly byte[] _seasons;
     private readonly object _sync = new();
     private long _version;
 
@@ -24,7 +29,8 @@ public sealed class MapTile
             tileZ,
             new byte[ExploredByteCount],
             new byte[ColorByteCount],
-            new byte[HeightShadeByteCount])
+            new byte[HeightShadeByteCount],
+            new byte[SeasonByteCount])
     {
     }
 
@@ -34,8 +40,27 @@ public sealed class MapTile
     }
 
     internal MapTile(int tileX, int tileZ, byte[] explored, byte[] colors, byte[] heightShades)
+        : this(tileX, tileZ, explored, colors, heightShades, new byte[SeasonByteCount])
+    {
+    }
+
+    internal MapTile(
+        int tileX,
+        int tileZ,
+        byte[] explored,
+        byte[] colors,
+        byte[] heightShades,
+        byte[] seasons)
     {
         ArgumentNullException.ThrowIfNull(explored);
+        ArgumentNullException.ThrowIfNull(seasons);
+        if (seasons.Length != SeasonByteCount)
+        {
+            throw new ArgumentException(
+                $"Season data must be exactly {SeasonByteCount} bytes.",
+                nameof(seasons));
+        }
+
         ArgumentNullException.ThrowIfNull(colors);
         ArgumentNullException.ThrowIfNull(heightShades);
         if (explored.Length != ExploredByteCount)
@@ -60,6 +85,7 @@ public sealed class MapTile
         _explored = explored;
         _colors = colors;
         _heightShades = heightShades;
+        _seasons = seasons;
     }
 
     public int TileX { get; }
@@ -80,6 +106,7 @@ public sealed class MapTile
         {
             SetPixelCore(pixelIndex, color);
             _heightShades[pixelIndex] = color.A == 0 ? (byte)0 : heightShade;
+            _seasons[pixelIndex] = 0;
             _version++;
         }
     }
@@ -101,6 +128,21 @@ public sealed class MapTile
         int height,
         ReadOnlySpan<Rgba32> colors,
         ReadOnlySpan<byte> heightShades)
+    {
+        SetRegion(x, z, width, height, colors, heightShades, ReadOnlySpan<byte>.Empty);
+    }
+
+    /// <param name="seasons">
+    /// One <see cref="MapSeasonCode"/> per pixel, or empty for pixels the seasons do not affect.
+    /// </param>
+    public void SetRegion(
+        int x,
+        int z,
+        int width,
+        int height,
+        ReadOnlySpan<Rgba32> colors,
+        ReadOnlySpan<byte> heightShades,
+        ReadOnlySpan<byte> seasons)
     {
         if ((uint)x >= Size)
         {
@@ -149,6 +191,13 @@ public sealed class MapTile
                 nameof(heightShades));
         }
 
+        if (!seasons.IsEmpty && seasons.Length != pixelCount)
+        {
+            throw new ArgumentException(
+                $"Region seasons must contain exactly {pixelCount} values.",
+                nameof(seasons));
+        }
+
         lock (_sync)
         {
             for (var localZ = 0; localZ < height; localZ++)
@@ -163,6 +212,9 @@ public sealed class MapTile
                     _heightShades[pixelIndex] = color.A == 0 || heightShades.IsEmpty
                         ? (byte)0
                         : heightShades[sourceRowStart + localX];
+                    _seasons[pixelIndex] = color.A == 0 || seasons.IsEmpty
+                        ? (byte)0
+                        : seasons[sourceRowStart + localX];
                 }
             }
 
@@ -188,6 +240,7 @@ public sealed class MapTile
                 _explored,
                 _colors,
                 _heightShades,
+                _seasons,
                 pixelIndex,
                 out pixel);
         }
@@ -237,6 +290,30 @@ public sealed class MapTile
         }
     }
 
+    /// <summary>True when every explored pixel of the region was recorded with season data.</summary>
+    public bool IsRegionFullySeasonTracked(int x, int z, int width, int height)
+    {
+        ValidateRegion(x, z, width, height);
+
+        lock (_sync)
+        {
+            for (var localZ = 0; localZ < height; localZ++)
+            {
+                var rowStart = ((z + localZ) * Size) + x;
+                for (var localX = 0; localX < width; localX++)
+                {
+                    if (_seasons[rowStart + localX] == 0
+                        && TryGetPixelCore(_explored, _colors, rowStart + localX, out _))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+    }
+
     internal static void ValidateRegion(int x, int z, int width, int height)
     {
         if ((uint)x >= Size)
@@ -271,7 +348,8 @@ public sealed class MapTile
                     TileZ,
                     (byte[])_explored.Clone(),
                     (byte[])_colors.Clone(),
-                    (byte[])_heightShades.Clone()));
+                    (byte[])_heightShades.Clone(),
+                    (byte[])_seasons.Clone()));
         }
     }
 
@@ -299,6 +377,14 @@ public sealed class MapTile
         }
     }
 
+    internal void CopySeasonsTo(Span<byte> destination)
+    {
+        lock (_sync)
+        {
+            _seasons.CopyTo(destination);
+        }
+    }
+
     internal MapTile CreateSnapshot()
     {
         lock (_sync)
@@ -308,7 +394,8 @@ public sealed class MapTile
                 TileZ,
                 (byte[])_explored.Clone(),
                 (byte[])_colors.Clone(),
-                (byte[])_heightShades.Clone());
+                (byte[])_heightShades.Clone(),
+                (byte[])_seasons.Clone());
         }
     }
 
@@ -343,6 +430,7 @@ public sealed class MapTile
         byte[] explored,
         byte[] colors,
         byte[] heightShades,
+        byte[] seasons,
         int pixelIndex,
         out MapTerrainPixel pixel)
     {
@@ -352,7 +440,10 @@ public sealed class MapTile
             return false;
         }
 
-        pixel = new MapTerrainPixel(color, heightShades[pixelIndex]);
+        pixel = new MapTerrainPixel(
+            color,
+            heightShades[pixelIndex],
+            MapSeasonCode.ToSample(seasons[pixelIndex]));
         return true;
     }
 
@@ -396,6 +487,7 @@ public sealed class MapTileSnapshot
     private readonly byte[] _explored;
     private readonly byte[] _colors;
     private readonly byte[] _heightShades;
+    private readonly byte[] _seasons;
     private readonly Lazy<RegionSums> _regionSums;
 
     internal MapTileSnapshot(
@@ -404,12 +496,24 @@ public sealed class MapTileSnapshot
         byte[] explored,
         byte[] colors,
         byte[] heightShades)
+        : this(tileX, tileZ, explored, colors, heightShades, new byte[MapTile.SeasonByteCount])
+    {
+    }
+
+    internal MapTileSnapshot(
+        int tileX,
+        int tileZ,
+        byte[] explored,
+        byte[] colors,
+        byte[] heightShades,
+        byte[] seasons)
     {
         TileX = tileX;
         TileZ = tileZ;
         _explored = explored;
         _colors = colors;
         _heightShades = heightShades;
+        _seasons = seasons;
         _regionSums = new Lazy<RegionSums>(CreateRegionSums, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
@@ -448,6 +552,7 @@ public sealed class MapTileSnapshot
             _explored,
             _colors,
             _heightShades,
+            _seasons,
             (z * MapTile.Size) + x,
             out pixel);
     }
@@ -520,7 +625,8 @@ public sealed class MapTileSnapshot
                 Average(RegionSum(sums.Alpha, x, z, endX, endZ), exploredCount)),
             shadeCount == 0
                 ? (byte)0
-                : Average(RegionSum(sums.HeightShade, x, z, endX, endZ), shadeCount));
+                : Average(RegionSum(sums.HeightShade, x, z, endX, endZ), shadeCount),
+            sums.HasSeasons ? AverageSeason(sums, x, z, endX, endZ, exploredCount) : default);
         return true;
     }
 
@@ -547,8 +653,87 @@ public sealed class MapTileSnapshot
             }
         }
 
+        if (HasAnySeason())
+        {
+            sums.AllocateSeasons();
+            for (var z = 0; z < MapTile.Size; z++)
+            {
+                for (var x = 0; x < MapTile.Size; x++)
+                {
+                    var index = (z * MapTile.Size) + x;
+                    var code = MapTile.TryGetPixelCore(_explored, _colors, index, out _)
+                        ? _seasons[index]
+                        : (byte)0;
+                    var kind = MapSeasonCode.GetKind(code);
+                    var frozen = MapSeasonCode.WasObservedFrozen(code) ? 1 : 0;
+                    var limit = kind == MapSeasonKind.None
+                        ? 0
+                        : MapSeasonCode.GetLimit(code) - MapSeasonCode.MinimumLimit;
+                    var isLand = kind == MapSeasonKind.Land;
+                    var isWater = kind == MapSeasonKind.Water;
+
+                    // Counts never exceed 4096 per tile, so a count and its frozen sub-count share
+                    // one integral (low and high 16 bits) without carrying into each other.
+                    SetIntegralValue(sums.Land!, x, z, isLand ? 1 | (frozen << 16) : 0);
+                    SetIntegralValue(sums.Water!, x, z, isWater ? 1 | (frozen << 16) : 0);
+                    SetIntegralValue(sums.LandLimit!, x, z, isLand ? limit : 0);
+                    SetIntegralValue(sums.WaterLimit!, x, z, isWater ? limit : 0);
+                }
+            }
+        }
+
         return sums;
     }
+
+    private bool HasAnySeason()
+    {
+        foreach (var code in _seasons)
+        {
+            if (code != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Region average of the season data. Each kind freezes as a whole at its mean limit, so when
+    /// zoomed out a texel's snow line moves in steps of whole texels rather than blending.
+    /// </summary>
+    private static MapSeasonSample AverageSeason(
+        RegionSums sums,
+        int x,
+        int z,
+        int endX,
+        int endZ,
+        int exploredCount)
+    {
+        var landPacked = RegionSum(sums.Land!, x, z, endX, endZ);
+        var waterPacked = RegionSum(sums.Water!, x, z, endX, endZ);
+        var land = landPacked & 0xFFFF;
+        var water = waterPacked & 0xFFFF;
+        if (land == 0 && water == 0)
+        {
+            return default;
+        }
+
+        return new MapSeasonSample(
+            Share(land, exploredCount),
+            Share(landPacked >> 16, exploredCount),
+            Share(water, exploredCount),
+            Share(waterPacked >> 16, exploredCount),
+            land == 0 ? (sbyte)0 : MeanLimit(RegionSum(sums.LandLimit!, x, z, endX, endZ), land),
+            water == 0 ? (sbyte)0 : MeanLimit(RegionSum(sums.WaterLimit!, x, z, endX, endZ), water));
+    }
+
+    private static byte Share(int count, int total) =>
+        (byte)(((count * byte.MaxValue) + (total / 2)) / total);
+
+    private static sbyte MeanLimit(int offsetSum, int count) =>
+        (sbyte)(Math.Round(offsetSum / (double)count, MidpointRounding.AwayFromZero)
+            + MapSeasonCode.MinimumLimit);
 
     private static void SetIntegralValue(int[] integral, int x, int z, int value)
     {
@@ -582,6 +767,22 @@ public sealed class MapTileSnapshot
         public int[] Alpha { get; } = new int[ElementCount];
         public int[] HeightShade { get; } = new int[ElementCount];
         public int[] HeightShadeCount { get; } = new int[ElementCount];
+        // Season integrals exist only for tiles that carry season data (recorded since seasons
+        // were tracked); Land/Water hold count | frozenCount << 16, limits are offset to >= 0.
+        public int[]? Land { get; private set; }
+        public int[]? Water { get; private set; }
+        public int[]? LandLimit { get; private set; }
+        public int[]? WaterLimit { get; private set; }
+
+        public bool HasSeasons => Land is not null;
+
+        public void AllocateSeasons()
+        {
+            Land = new int[ElementCount];
+            Water = new int[ElementCount];
+            LandLimit = new int[ElementCount];
+            WaterLimit = new int[ElementCount];
+        }
     }
 }
 

@@ -10,13 +10,17 @@ public static class TileCodec
 {
     private const byte LegacyPaletteVersion = 1;
     private const byte PaletteOnlyVersion = 2;
-    private const byte CurrentVersion = 3;
+    private const byte HeightShadeVersion = 3;
+
+    // Version 4 appends one MapSeasonCode per pixel after the height shades.
+    private const byte CurrentVersion = 4;
     private const int MagicLength = 4;
     private const int HeaderLength = MagicLength + 1 + sizeof(int) + sizeof(int);
     private const int ChecksumLength = 32;
     private const int PaletteOnlyPayloadLength =
         HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount + ChecksumLength;
-    private const int CurrentPayloadLength = PaletteOnlyPayloadLength + MapTile.HeightShadeByteCount;
+    private const int HeightShadePayloadLength = PaletteOnlyPayloadLength + MapTile.HeightShadeByteCount;
+    private const int CurrentPayloadLength = HeightShadePayloadLength + MapTile.SeasonByteCount;
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SCTM");
 
     public static void Write(Stream destination, MapTile tile)
@@ -34,6 +38,9 @@ public static class TileCodec
         tile.CopyHeightShadesTo(payload.AsSpan(
             HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount,
             MapTile.HeightShadeByteCount));
+        tile.CopySeasonsTo(payload.AsSpan(
+            HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount + MapTile.HeightShadeByteCount,
+            MapTile.SeasonByteCount));
 
         var checksumOffset = CurrentPayloadLength - ChecksumLength;
         SHA256.HashData(payload.AsSpan(MagicLength, checksumOffset - MagicLength), payload.AsSpan(checksumOffset));
@@ -79,14 +86,20 @@ public static class TileCodec
         }
 
         var version = payload[MagicLength];
-        if (version is not LegacyPaletteVersion and not PaletteOnlyVersion and not CurrentVersion)
+        if (version is not LegacyPaletteVersion
+            and not PaletteOnlyVersion
+            and not HeightShadeVersion
+            and not CurrentVersion)
         {
             throw new InvalidDataException($"Unsupported tile version {version}.");
         }
 
-        var expectedPayloadLength = version == CurrentVersion
-            ? CurrentPayloadLength
-            : PaletteOnlyPayloadLength;
+        var expectedPayloadLength = version switch
+        {
+            CurrentVersion => CurrentPayloadLength,
+            HeightShadeVersion => HeightShadePayloadLength,
+            _ => PaletteOnlyPayloadLength,
+        };
         if (payloadLength != expectedPayloadLength)
         {
             throw new InvalidDataException("Tile payload has an invalid length.");
@@ -111,12 +124,20 @@ public static class TileCodec
             LegacyTerrainPaletteMigration.UpgradeExploredColors(explored, colors);
         }
 
-        var heightShades = version == CurrentVersion
+        var heightShades = version >= HeightShadeVersion
             ? payload.AsSpan(
                 HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount,
                 MapTile.HeightShadeByteCount).ToArray()
             : new byte[MapTile.HeightShadeByteCount];
 
-        return new MapTile(tileX, tileZ, explored, colors, heightShades);
+        // Tiles written before seasons were tracked keep their recorded colours year-round until
+        // the player passes by again and the area is re-recorded.
+        var seasons = version == CurrentVersion
+            ? payload.AsSpan(
+                HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount + MapTile.HeightShadeByteCount,
+                MapTile.SeasonByteCount).ToArray()
+            : new byte[MapTile.SeasonByteCount];
+
+        return new MapTile(tileX, tileZ, explored, colors, heightShades, seasons);
     }
 }

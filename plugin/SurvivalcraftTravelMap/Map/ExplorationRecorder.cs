@@ -34,6 +34,15 @@ public sealed class ExplorationRecorder(
                 coordinate.LocalX,
                 coordinate.LocalZ,
                 TerrainChunkCoordinate.Size,
+                TerrainChunkCoordinate.Size)
+            // Areas recorded before the map tracked seasons are recorded once more when the player
+            // is near, so they too follow the seasons from then on.
+            && _tileStore.IsRegionFullySeasonTracked(
+                coordinate.TileX,
+                coordinate.TileZ,
+                coordinate.LocalX,
+                coordinate.LocalZ,
+                TerrainChunkCoordinate.Size,
                 TerrainChunkCoordinate.Size);
     }
 
@@ -49,7 +58,8 @@ public sealed class ExplorationRecorder(
 
         Span<Rgba32> colors = stackalloc Rgba32[TerrainChunkCoordinate.PixelCount];
         Span<byte> heightShades = stackalloc byte[TerrainChunkCoordinate.PixelCount];
-        if (!_sampler.TrySampleChunk(chunk, colors, heightShades))
+        Span<byte> seasons = stackalloc byte[TerrainChunkCoordinate.PixelCount];
+        if (!_sampler.TrySampleChunk(chunk, colors, heightShades, seasons))
         {
             return ExplorationRecordResult.NotReady;
         }
@@ -70,7 +80,8 @@ public sealed class ExplorationRecorder(
                 TerrainChunkCoordinate.Size,
                 TerrainChunkCoordinate.Size,
                 colors,
-                heightShades);
+                heightShades,
+                seasons);
         }
 
         return ExplorationRecordResult.Recorded;

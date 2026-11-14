@@ -90,7 +90,10 @@ public sealed class TileCodecTests
         inflater.CopyTo(payloadStream);
         const int checksumLength = 32;
         var currentPayload = payloadStream.ToArray();
-        var payload = new byte[currentPayload.Length - MapTile.HeightShadeByteCount];
+        var stripped = version >= 3
+            ? MapTile.SeasonByteCount
+            : MapTile.HeightShadeByteCount + MapTile.SeasonByteCount;
+        var payload = new byte[currentPayload.Length - stripped];
         var checksumOffset = payload.Length - checksumLength;
         currentPayload.AsSpan(0, checksumOffset).CopyTo(payload);
         payload[4] = version;

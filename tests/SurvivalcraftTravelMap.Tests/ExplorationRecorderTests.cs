@@ -228,7 +228,7 @@ public sealed class ExplorationRecorderTests
         var targetState = CaptureState(target);
         var diagnostics = store.Diagnostics;
         var pressure = store.IsUnderPressure;
-        var path = Path.Combine(directory.Path, "0_0.sctm");
+        var path = Path.Combine(directory.Path, "0_0.v4.sctm");
         var persistedBytes = File.ReadAllBytes(path);
         var writes = writer.WriteCount;
         var source = new FakeTerrainMapSource(defaultContent: content, isReady: isReady);
@@ -260,7 +260,7 @@ public sealed class ExplorationRecorderTests
         seedStore.MarkDirty(seededTarget);
         await seedStore.FlushAsync(TestContext.Current.CancellationToken);
         var targetVersion = seededTarget.Version;
-        var targetPath = Path.Combine(directory.Path, "0_0.sctm");
+        var targetPath = Path.Combine(directory.Path, "0_0.v4.sctm");
         var targetBytes = File.ReadAllBytes(targetPath);
 
         var writer = new TileWriterProbe();
@@ -297,7 +297,7 @@ public sealed class ExplorationRecorderTests
 
         await store.FlushAsync(TestContext.Current.CancellationToken);
 
-        Assert.Equal(["9_9.sctm"], writer.WrittenFileNames);
+        Assert.Equal(["9_9.v4.sctm"], writer.WrittenFileNames);
         Assert.False(store.IsUnderPressure);
         Assert.Equal(targetBytes, File.ReadAllBytes(targetPath));
         var reloadedTarget = new ExplorationTileStore(directory.Path).GetOrLoad(0, 0);
@@ -489,7 +489,7 @@ public sealed class ExplorationRecorderTests
         await store.FlushAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(
-            ["0_0.sctm", "0_1.sctm", "1_0.sctm", "1_1.sctm"],
+            ["0_0.v4.sctm", "0_1.v4.sctm", "1_0.v4.sctm", "1_1.v4.sctm"],
             Directory.GetFiles(directory.Path, "*.sctm")
                 .Select(path => Path.GetFileName(path)!)
                 .Order()

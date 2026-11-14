@@ -214,6 +214,12 @@ internal sealed class MiniMapTerrainTextureModel
     private bool _rebuildInFlight;
     private bool _backgroundFillBroken;
     private bool _contentInvalidationRequested;
+    private bool _repaintRequested;
+    private MapSeason _season;
+
+    // The season a fill batch paints with. Written on the render thread only while no batch is in
+    // flight, so a background batch always sees one consistent value.
+    private MapSeason _fillSeason;
     private Rgba32[] _presentedPixels = [];
     private int _presentedTextureSize;
     private int _presentedTexelBlocks;
@@ -367,6 +373,19 @@ internal sealed class MiniMapTerrainTextureModel
         {
             return false;
         }
+
+        // Colours depend on the season (snow and ice come and go with it), so a season step
+        // repaints what is painted — keeping it on screen until each cell is redone, the same way
+        // a changed tile is refreshed. No tile is re-read from disk for this beyond what the
+        // ordinary budgeted refill does.
+        var season = SeasonSource();
+        if (season != _season)
+        {
+            _season = season;
+            MarkPaintedCellsForRepaint();
+        }
+
+        _fillSeason = _season;
 
         var viewport = transform.ViewportSize;
         if (!float.IsFinite(viewport.X)
@@ -614,6 +633,12 @@ internal sealed class MiniMapTerrainTextureModel
 
     private void ApplyRequestedContentInvalidation()
     {
+        if (_repaintRequested)
+        {
+            _repaintRequested = false;
+            MarkPaintedCellsForRepaint();
+        }
+
         if (!_contentInvalidationRequested)
         {
             return;
@@ -621,6 +646,31 @@ internal sealed class MiniMapTerrainTextureModel
 
         _contentInvalidationRequested = false;
         ClearContent();
+    }
+
+    /// <summary>Where map colours get the season from; the widget's default is the live world.</summary>
+    internal Func<MapSeason> SeasonSource { get; set; } = static () => MapSeason.Current;
+
+    private void MarkPaintedCellsForRepaint()
+    {
+        if (_fillTask is not null)
+        {
+            _repaintRequested = true;
+            return;
+        }
+
+        if (_textureSize <= 0)
+        {
+            return;
+        }
+
+        for (var index = 0; index < _cellDetails.Length; index++)
+        {
+            if (_cellDetails[index] == CellDetail.Complete)
+            {
+                _cellDetails[index] = CellDetail.Provisional;
+            }
+        }
     }
 
     /// <summary>
@@ -1206,7 +1256,11 @@ internal sealed class MiniMapTerrainTextureModel
                 // Bake relief shading at full brightness; the day/night tint is applied per frame
                 // by the widget as a vertex color, so light changes never invalidate this cache.
                 _pixels[rowIndex + x] = found
-                    ? TerrainHeightShading.Apply(pixel.Color, pixel.HeightShade, strength, 1f)
+                    ? TerrainHeightShading.Apply(
+                        SeasonalTerrainColor.Resolve(pixel.Color, pixel.Season, _fillSeason),
+                        pixel.HeightShade,
+                        strength,
+                        1f)
                     : default;
             }
         }
@@ -1243,7 +1297,11 @@ internal sealed class MiniMapTerrainTextureModel
             {
                 var worldX = (int)(cellWorldX + ((long)blockX * texelBlocks));
                 var color = session.TryGetExploredTerrainPixel(worldX, worldZ, out var pixel)
-                    ? TerrainHeightShading.Apply(pixel.Color, pixel.HeightShade, strength, 1f)
+                    ? TerrainHeightShading.Apply(
+                        SeasonalTerrainColor.Resolve(pixel.Color, pixel.Season, _fillSeason),
+                        pixel.HeightShade,
+                        strength,
+                        1f)
                     : default;
                 for (var z = 0; z < CoarseFactor; z++)
                 {

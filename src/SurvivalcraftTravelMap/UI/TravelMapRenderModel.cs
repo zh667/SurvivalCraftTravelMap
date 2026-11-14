@@ -855,7 +855,7 @@ public static class TravelMapRenderModel
                     transform.WorldToScreen(new Vector2(right, bottom)),
                     transform.WorldToScreen(new Vector2(x, bottom)),
                     TerrainHeightShading.Apply(
-                        pixel.Color,
+                        SeasonalTerrainColor.Resolve(pixel.Color, pixel.Season, MapSeason.Current),
                         pixel.HeightShade,
                         heightShadingStrength,
                         tint)));
@@ -1044,7 +1044,7 @@ public static class TravelMapRenderModel
                         transform.WorldToScreen(new Vector2(right, bottom)),
                         transform.WorldToScreen(new Vector2(x, bottom)),
                         TerrainHeightShading.Apply(
-                            pixel.Color,
+                            SeasonalTerrainColor.Resolve(pixel.Color, pixel.Season, MapSeason.Current),
                             pixel.HeightShade,
                             heightShadingStrength,
                             tint)));
