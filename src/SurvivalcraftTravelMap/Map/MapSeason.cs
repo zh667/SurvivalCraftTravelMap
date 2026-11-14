@@ -12,9 +12,12 @@ namespace SurvivalcraftTravelMap.Map;
 /// decided by <c>IsPlaceFrozen(base temperature + season temperature, surface height)</c>. The map
 /// applies that same rule to what it recorded, which is exactly what the player would find there.
 /// </para>
+/// <see cref="SnowFallsOnLoad"/> is whether a frozen place gains snow when it loads: on in the
+/// plugin edition with weather effects; never in the multiplayer edition, whose terrain updater
+/// does not raise ChunkInitialized, so there a frozen place only keeps the snow it had.
 /// The default value shows terrain as it was recorded, with no prediction.
 /// </summary>
-public readonly record struct MapSeason(int Temperature, bool PredictsFreezing, bool WeatherEffects)
+public readonly record struct MapSeason(int Temperature, bool PredictsFreezing, bool SnowFallsOnLoad)
 {
     private static long s_current;
 
@@ -28,7 +31,7 @@ public readonly record struct MapSeason(int Temperature, bool PredictsFreezing, 
     private static long Pack(MapSeason season) =>
         ((long)(uint)season.Temperature << 2)
         | (season.PredictsFreezing ? 1L : 0L)
-        | (season.WeatherEffects ? 2L : 0L);
+        | (season.SnowFallsOnLoad ? 2L : 0L);
 
     private static MapSeason Unpack(long packed) => new(
         (int)(uint)(packed >> 2),
@@ -137,10 +140,10 @@ public static class SeasonalTerrainColor
         int water;
         if (season.PredictsFreezing)
         {
-            // Snow is only deposited on load when weather effects are on; without them a frozen
-            // place merely keeps whatever snow it had.
+            // Snow is deposited on load only where SnowFallsOnLoad; otherwise a frozen place
+            // merely keeps whatever snow it had.
             land = season.Temperature <= sample.LandLimit
-                ? (season.WeatherEffects ? sample.Land : sample.LandFrozen)
+                ? (season.SnowFallsOnLoad ? sample.Land : sample.LandFrozen)
                 : 0;
             // Ice is predicted to melt, never to form where it was not seen: the game freezes water
             // on load in random order with a second 66% pass, and in the isolated runs only about

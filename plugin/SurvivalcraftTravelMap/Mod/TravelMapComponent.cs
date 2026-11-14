@@ -946,7 +946,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
             : new MapSeason(
                 Terrain.Terrain.SeasonTemperature,
                 PredictsFreezing: settings.EnvironmentBehaviorMode == EnvironmentBehaviorMode.Living,
-                WeatherEffects: settings.AreWeatherEffectsEnabled);
+                // SubsystemWeather freezes and snows every chunk as it loads (ChunkInitialized), snow
+                // forced only when weather effects are on.
+                SnowFallsOnLoad: settings.AreWeatherEffectsEnabled);
     }
 
     private void UpdateExploration(float dt)

@@ -4,7 +4,11 @@ using System.Text.Json;
 using Engine;
 using Engine.Input;
 using Game;
+#if TM_NET
+using Game.NetWork;
+#else
 using HarmonyLib;
+#endif
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Persistence;
@@ -12,7 +16,8 @@ using SurvivalcraftTravelMap.UI;
 
 namespace TravelMapLab;
 
-// Isolated in-game checks for the travel map (plugin edition). Installed only into an isolated runtime by
+// Isolated in-game checks for the travel map: plugin edition (SCAPI) and, built with -p:TmFlavor=net, the multiplayer
+// edition (SurvivalcraftNet 2.4, run as a local game). Installed only into an isolated runtime by
 // tools/isolated/run_isolated.py, never shipped. Mode in lab-mode.txt next to the exe:
 //   "season": record a region in winter, leave until it unloads, switch to summer, compare the map's prediction with the
 //             terrain the game actually produces on return; then the same from summer to winter. Frame times around each
@@ -37,8 +42,12 @@ public class Lab : ModLoader
 
     public override void __ModInitialize()
     {
+#if !TM_NET
         new Harmony("local.sctmlab").PatchAll(typeof(Lab).Assembly);
+#endif
+#if !TM_NET
         SettingsManager.FileAssociationEnabled = false;
+#endif
         var m = Path.Combine(AppContext.BaseDirectory, "lab-mode.txt");
         if (File.Exists(m)) mode = File.ReadAllText(m).Trim();
     }
@@ -71,7 +80,17 @@ public class Lab : ModLoader
             if (now - began > 900) throw new TimeoutException("lab timed out");
             script ??= (mode == "touch" ? Touch() : Season()).GetEnumerator();
             if (!script.MoveNext())
+            {
                 Finish(new { passed = true, mode, checks, metrics, notes });
+                return;
+            }
+
+#if TM_NET
+            // No Harmony here: hand the touches to the engine's dispatcher from another thread, which queues them for
+            // the next frame's Dispatcher.BeforeFrame — before any widget updates, like real touch events.
+            if (PendingTouches.Count > 0)
+                Task.Run(() => Dispatcher.Dispatch(DrainTouches)).Wait();
+#endif
         }
         catch (Exception e)
         {
@@ -99,9 +118,19 @@ public class Lab : ModLoader
         }
     }
 
+    internal static void DrainTouches()
+    {
+        while (PendingTouches.Count > 0) PendingTouches.Dequeue()();
+    }
+
     static IEnumerable<bool> EnterWorld(float timeOfYear)
     {
         while (ScreensManager.CurrentScreen is not MainMenuScreen) yield return true;
+#if TM_NET
+        // Switching screens during the menu's entry animation lands back on the menu; also close the update notice.
+        foreach (var x in Seconds(3)) yield return x;
+        DialogsManager.HideAllDialogs();
+#endif
         SettingsManager.VisibilityRange = 64;
         SettingsManager.SoundsVolume = 0;
         SettingsManager.MusicVolume = 0;
@@ -117,11 +146,30 @@ public class Lab : ModLoader
             AreSeasonsChanging = false,
             TimeOfYear = timeOfYear,
         });
+#if TM_NET
+        CommonLib.Net.StartLocal();   // normally done by the loading screen, which the lab skips
+#endif
         GameManager.LoadProject(world, Games);
         data = new PlayerData(GameManager.Project) { Name = "Lab", InputDevice = WidgetInputDevice.All };
+#if TM_NET
+        data.SetMain();
+#endif
         GameManager.Project.FindSubsystem<SubsystemPlayers>(true).AddPlayerData(data);
         ScreensManager.SwitchScreen("Game");
-        foreach (var x in Until(() => data.IsReadyForPlaying, 120, "player ready")) yield return x;
+        var entered = Time.RealTime;
+        while (!data.IsReadyForPlaying)
+        {
+            if (Time.RealTime - entered > 120) throw new TimeoutException("player ready");
+            if (ScreensManager.CurrentScreen is MainMenuScreen && Time.RealTime - entered > 3)
+            {
+                DialogsManager.HideAllDialogs();
+                ScreensManager.SwitchScreen("Game");
+                entered = Time.RealTime;
+                notes.Add("retried entering the game");
+            }
+
+            yield return true;
+        }
         var l = data.ComponentPlayer.ComponentLocomotion;
         l.IsCreativeFlyEnabled = true;
         foreach (var x in Seconds(3)) yield return x;
@@ -431,7 +479,8 @@ public class Lab : ModLoader
     /// </summary>
     static void Inject(int id, Vector2 p, TouchLocationState state)
     {
-        var list = (List<TouchLocation>)typeof(Engine.Input.Touch).GetField("m_touchLocations", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        var list = (List<TouchLocation>)typeof(Engine.Input.Touch)
+            .GetField("m_touchLocations", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!.GetValue(null)!;
         var index = list.FindIndex(t => t.Id == id);
         if (index < 0)
         {
@@ -443,9 +492,13 @@ public class Lab : ModLoader
         var current = list[index];
         list[index] = state switch
         {
+#if TM_NET
+            TouchLocationState.Released => new TouchLocation { Id = id, Position = p, State = TouchLocationState.Released },
+#else
             TouchLocationState.Released => current.State == TouchLocationState.Pressed
                 ? new TouchLocation { Id = id, Position = p, State = TouchLocationState.Pressed, ReleaseQueued = true }
                 : new TouchLocation { Id = id, Position = p, State = TouchLocationState.Released },
+#endif
             _ => current.State == TouchLocationState.Moved
                 ? new TouchLocation { Id = id, Position = p, State = TouchLocationState.Moved }
                 : current,
@@ -453,6 +506,7 @@ public class Lab : ModLoader
     }
 }
 
+#if !TM_NET
 [HarmonyPatch(typeof(Engine.Input.Touch), "BeforeFrame")]
 public static class InjectTouchesAtFrameStart
 {
@@ -468,3 +522,4 @@ public static class KeepCursorFree { public static void Prefix() => Engine.Input
 
 [HarmonyPatch(typeof(Engine.Input.Mouse), "AfterFrame")]
 public static class KeepCursorFreeAfter { public static void Prefix() => Engine.Input.Mouse.IsMouseVisible = true; }
+#endif

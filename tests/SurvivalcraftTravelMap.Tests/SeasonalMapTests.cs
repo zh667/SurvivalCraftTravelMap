@@ -9,8 +9,8 @@ namespace SurvivalcraftTravelMap.Tests;
 public sealed class SeasonalMapTests : IDisposable
 {
     private static readonly Rgba32 Grass = new(52, 150, 37, 255);
-    private static readonly MapSeason Summer = new(0, PredictsFreezing: true, WeatherEffects: true);
-    private static readonly MapSeason DeepWinter = new(-24, PredictsFreezing: true, WeatherEffects: true);
+    private static readonly MapSeason Summer = new(0, PredictsFreezing: true, SnowFallsOnLoad: true);
+    private static readonly MapSeason DeepWinter = new(-24, PredictsFreezing: true, SnowFallsOnLoad: true);
     private readonly string _directory = Path.Combine(
         Path.GetTempPath(),
         "SurvivalcraftTravelMap.Tests",
@@ -50,7 +50,7 @@ public sealed class SeasonalMapTests : IDisposable
     [Fact]
     public void Without_weather_effects_frozen_land_only_keeps_snow_it_already_had()
     {
-        var noWeather = DeepWinter with { WeatherEffects = false };
+        var noWeather = DeepWinter with { SnowFallsOnLoad = false };
         var bare = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Land, false, 0));
         var snowy = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Land, true, 0));
 
@@ -61,7 +61,7 @@ public sealed class SeasonalMapTests : IDisposable
     [Fact]
     public void Static_environment_shows_terrain_as_recorded()
     {
-        var staticWorld = new MapSeason(-24, PredictsFreezing: false, WeatherEffects: true);
+        var staticWorld = new MapSeason(-24, PredictsFreezing: false, SnowFallsOnLoad: true);
         var bare = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Land, false, 0));
         var snowy = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Land, true, -30));
 
@@ -103,8 +103,8 @@ public sealed class SeasonalMapTests : IDisposable
         var previous = MapSeason.Current;
         try
         {
-            MapSeason.Current = DeepWinter with { WeatherEffects = false };
-            Assert.Equal(DeepWinter with { WeatherEffects = false }, MapSeason.Current);
+            MapSeason.Current = DeepWinter with { SnowFallsOnLoad = false };
+            Assert.Equal(DeepWinter with { SnowFallsOnLoad = false }, MapSeason.Current);
         }
         finally
         {

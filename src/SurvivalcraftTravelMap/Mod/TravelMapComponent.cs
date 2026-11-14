@@ -1323,7 +1323,12 @@ public sealed class TravelMapComponent : Component, IUpdateable
             : new MapSeason(
                 Terrain.Terrain.SeasonTemperature,
                 PredictsFreezing: settings.EnvironmentBehaviorMode == EnvironmentBehaviorMode.Living,
-                WeatherEffects: settings.AreWeatherEffectsEnabled);
+                // This edition declares TerrainUpdater.ChunkInitialized but never raises it (decompiled
+                // x26.07.01.01; the isolated run saw no snow land on load in winter), so nothing
+                // freezes or snows when a chunk loads: only the blocks scanner thaws loaded chunks and
+                // snow falls only while it snows. The map therefore keeps snow it saw and melts it,
+                // and never predicts new snow.
+                SnowFallsOnLoad: false);
     }
 
     private void UpdateExploration(float dt)
