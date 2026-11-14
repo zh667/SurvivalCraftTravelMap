@@ -338,7 +338,10 @@ public class Lab : ModLoader
     {
         for (var z = center.Y - radius; z <= center.Y + radius; z += 16)
         for (var x = center.X - radius; x <= center.X + radius; x += 16)
-            if (terrain.Terrain.GetChunkAtCell(x, z) is not { State: TerrainChunkState.Valid }) return false;
+            // Freezing and snowing happen when the chunk initialises, long before it is fully lit; on 1.9.5.1 some chunks
+            // under a player hovering high up stayed short of Valid for minutes, so wait only until the surface is readable
+            // (the threshold the map itself records at).
+            if (terrain.Terrain.GetChunkAtCell(x, z) is not { } chunk || chunk.State < TerrainChunkState.InvalidPropagatedLight) return false;
         return true;
     }
 
@@ -351,7 +354,7 @@ public class Lab : ModLoader
         foreach (var p in pixels)
         {
             // The square's corners lie past the 64-block view range; only loaded columns can be checked.
-            if (terrain.GetChunkAtCell(p.X, p.Z) is not { State: TerrainChunkState.Valid }) { skipped++; continue; }
+            if (terrain.GetChunkAtCell(p.X, p.Z) is not { } chunk || chunk.State < TerrainChunkState.InvalidPropagatedLight) { skipped++; continue; }
             var top = terrain.GetTopHeight(p.X, p.Z);
             var content = terrain.GetCellContents(p.X, top, p.Z);
             var actual = content is 61 or 62;
