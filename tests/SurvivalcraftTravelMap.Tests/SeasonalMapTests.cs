@@ -70,14 +70,18 @@ public sealed class SeasonalMapTests : IDisposable
     }
 
     [Fact]
-    public void Water_ices_over_and_melts_and_fixed_pixels_never_change()
+    public void Seen_ice_melts_open_water_is_never_guessed_frozen_and_fixed_pixels_never_change()
     {
         var water = new Rgba32(0, 40, 85, 255);
-        var shore = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Water, false, -12));
+        var seenIced = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Water, true, -12));
+        var seenOpen = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Water, false, -12));
         var rock = MapSeasonCode.ToSample(MapSeasonCode.Create(MapSeasonKind.Fixed, false, 0));
 
-        Assert.Equal(SeasonalTerrainColor.Ice, SeasonalTerrainColor.Resolve(water, shore, DeepWinter));
-        Assert.Equal(water, SeasonalTerrainColor.Resolve(water, shore, Summer));
+        Assert.Equal(SeasonalTerrainColor.Ice, SeasonalTerrainColor.Resolve(water, seenIced, DeepWinter));
+        Assert.Equal(water, SeasonalTerrainColor.Resolve(water, seenIced, Summer));
+
+        // Freezing on load is random (about half the water in the isolated runs): never guessed.
+        Assert.Equal(water, SeasonalTerrainColor.Resolve(water, seenOpen, DeepWinter));
         Assert.Equal(water, SeasonalTerrainColor.Resolve(water, rock, DeepWinter));
     }
 

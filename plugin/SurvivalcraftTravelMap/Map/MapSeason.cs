@@ -45,7 +45,7 @@ public enum MapSeasonKind : byte
     /// <summary>A surface that takes snow when frozen and loses it when thawed.</summary>
     Land = 1,
 
-    /// <summary>Water at a shore (or seen frozen) that ices over when frozen and melts when thawed.</summary>
+    /// <summary>Water short of the open sea: ice seen on it melts when the place thaws.</summary>
     Water = 2,
 
     /// <summary>Recorded with season tracking and unaffected by it (rock, buildings, open water).</summary>
@@ -142,7 +142,11 @@ public static class SeasonalTerrainColor
             land = season.Temperature <= sample.LandLimit
                 ? (season.WeatherEffects ? sample.Land : sample.LandFrozen)
                 : 0;
-            water = season.Temperature <= sample.WaterLimit ? sample.Water : 0;
+            // Ice is predicted to melt, never to form where it was not seen: the game freezes water
+            // on load in random order with a second 66% pass, and in the isolated runs only about
+            // half of the freezable water iced over, so any "it will freeze" guess is a coin flip.
+            // Melting is certain (every bit of ice goes once the place thaws).
+            water = season.Temperature <= sample.WaterLimit ? sample.WaterFrozen : 0;
         }
         else
         {

@@ -193,7 +193,7 @@ public class Lab : ModLoader
         // Informational only: chunks around spawn were generated before the terrain updater first published the
         // winter temperature (it does so once a second), so they carry no snow yet although the map, rightly, predicts
         // what they will look like the next time they load.
-        Agreement(region, MapSeason.Current, out var agreeHere);
+        Agreement(region, MapSeason.Current, out var agreeHere, out _);
         metrics["winter_on_site_first_load"] = agreeHere;
 
         foreach (var phase in new[] { (Summer, 0, "summer"), (Winter, -24, "winter") })
@@ -239,9 +239,14 @@ public class Lab : ModLoader
             Teleport(new Vector3(home.X + 0.5f, 150, home.Y + 0.5f));
             foreach (var x in Until(() => ColumnsReady(terrain, home, 40), 120, "region reloaded")) yield return x;
             foreach (var x in Seconds(4)) yield return x;
-            var agreement = Agreement(predicted, MapSeason.Current, out var detail);
+            var agreement = Agreement(predicted, MapSeason.Current, out var detail, out var land);
             metrics[$"{phase.Item3}_agreement"] = detail;
-            Check(agreement >= 0.95, $"{phase.Item3}: map predicted from afar matches the terrain on return ({detail})");
+            Check(land >= 0.99, $"{phase.Item3}: snow on land predicted from afar matches the terrain on return ({detail})");
+
+            // Water: melting is certain, freezing on load is random (about half), so the map never guesses new ice and
+            // only the summer comparison covers water.
+            if (phase.Item3 == "summer")
+                Check(agreement >= 0.99, $"summer: everything predicted from afar, water included, matches on return ({detail})");
             OpenLargeMap(new Vector2(home.X, home.Y));
             foreach (var x in Seconds(3)) yield return x;
             Shot($"largemap_on_site_{phase.Item3}");
@@ -289,7 +294,7 @@ public class Lab : ModLoader
         return true;
     }
 
-    static double Agreement(List<RegionPixel> pixels, MapSeason season, out string detail)
+    static double Agreement(List<RegionPixel> pixels, MapSeason season, out string detail, out double landRatio)
     {
         var terrain = GameManager.Project.FindSubsystem<SubsystemTerrain>(true).Terrain;
         int agree = 0, total = 0, mapOnly = 0, terrainOnly = 0, landTotal = 0, landAgree = 0, waterTotal = 0, waterAgree = 0;
@@ -315,6 +320,7 @@ public class Lab : ModLoader
 
         detail = $"{agree}/{total} agree; map-only frozen {mapOnly}, terrain-only frozen {terrainOnly}; land {landAgree}/{landTotal}, shore water {waterAgree}/{waterTotal}";
         notes.Add("mismatch groups: " + string.Join(" | ", groups.OrderByDescending(g => g.Value).Take(14).Select(g => $"{g.Value}x {g.Key}")));
+        landRatio = landTotal == 0 ? 0 : landAgree / (double)landTotal;
         return total == 0 ? 0 : agree / (double)total;
     }
 

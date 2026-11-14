@@ -134,6 +134,12 @@ public sealed class TerrainMapSampler
         var topHeight = _terrain.GetTopHeight(x, z);
         var content = _terrain.GetContent(x, topHeight, z);
 
+        // The game tests IsPlaceFrozen at the column's top as it stands: the snow layer when there
+        // is snow (deciding whether it melts), the bare surface when there is none (deciding whether
+        // snow falls) — one block apart, which matters on mountains (seen in the isolated run). The
+        // column stays as recorded while unloaded, so that is the height to judge it by.
+        var freezeTestHeight = topHeight;
+
         // Record the bare surface and how the seasons change it, not the snow or ice lying on it:
         // the map then shows each season the way the game will have it when the player arrives.
         var seasonKind = MapSeasonKind.Fixed;
@@ -168,7 +174,7 @@ public sealed class TerrainMapSampler
             : MapSeasonCode.Create(
                 seasonKind,
                 observedFrozen,
-                FindFreezeLimit(x, z, topHeight));
+                FindFreezeLimit(x, z, freezeTestHeight));
         var sample = SampleSurface(x, z, topHeight, content);
         return sample with { Season = season };
     }
