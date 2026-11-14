@@ -145,20 +145,24 @@ public sealed class SeasonalMapTests : IDisposable
     }
 
     [Fact]
-    public void Shore_water_and_seen_ice_freeze_but_open_water_does_not()
+    public void Lake_and_coastal_water_freeze_but_the_open_sea_does_not()
     {
-        var source = new SeasonTerrain { BaseTemperature = 2, DefaultContent = TerrainMapSampler.WaterContent };
+        var source = new SeasonTerrain
+        {
+            BaseTemperature = 2,
+            DefaultContent = TerrainMapSampler.WaterContent,
+            ShoreDistance = (x, z) => x >= 8 ? -40f : -10f,
+        };
         source.Top[(0, 0)] = (64, TerrainMapSampler.WaterContent);
-        source.Cells[(1, 64, 0)] = 1; // rock beside it
-        source.Top[(5, 5)] = (64, TerrainMapSampler.WaterContent);
-        source.Top[(9, 9)] = (64, TerrainMapSampler.IceContent);
+        source.Top[(9, 5)] = (64, TerrainMapSampler.WaterContent);
+        source.Top[(3, 9)] = (64, TerrainMapSampler.IceContent);
 
-        var (_, shore) = SampleOne(source, 0, 0);
-        var (_, open) = SampleOne(source, 5, 5);
-        var (iceColor, ice) = SampleOne(source, 9, 9);
+        var (_, lake) = SampleOne(source, 0, 0);
+        var (_, sea) = SampleOne(source, 9, 5);
+        var (iceColor, ice) = SampleOne(source, 3, 9);
 
-        Assert.Equal(MapSeasonKind.Water, MapSeasonCode.GetKind(shore));
-        Assert.Equal(MapSeasonKind.Fixed, MapSeasonCode.GetKind(open));
+        Assert.Equal(MapSeasonKind.Water, MapSeasonCode.GetKind(lake));
+        Assert.Equal(MapSeasonKind.Fixed, MapSeasonCode.GetKind(sea));
         Assert.Equal(MapSeasonKind.Water, MapSeasonCode.GetKind(ice));
         Assert.True(MapSeasonCode.WasObservedFrozen(ice));
         Assert.Equal(new Rgba32(0, 40, 85, 255), iceColor);
@@ -370,6 +374,10 @@ public sealed class SeasonalMapTests : IDisposable
         public int DefaultContent { get; init; } = 1;
 
         public Func<int, int, int, bool>? FreezeRule { get; init; }
+
+        public Func<int, int, float> ShoreDistance { get; init; } = (_, _) => 0f;
+
+        public float GetOceanShoreDistance(int x, int z) => ShoreDistance(x, z);
 
         public bool IsColumnReady(int x, int z) => true;
 

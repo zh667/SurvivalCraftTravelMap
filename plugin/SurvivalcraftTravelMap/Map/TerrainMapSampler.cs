@@ -53,6 +53,12 @@ public interface ITerrainMapSource
     /// <c>SubsystemSnowBlockBehavior.CanSupportSnow</c> / <c>CanBeReplacedBySnow</c>.
     /// </summary>
     bool CanHoldSnow(int x, int y, int z) => false;
+
+    /// <summary>
+    /// The terrain generator's distance to the ocean shore (negative out at sea); the game only
+    /// ices water where it is above -35. A source that cannot tell treats all water as open sea.
+    /// </summary>
+    float GetOceanShoreDistance(int x, int z) => float.NegativeInfinity;
 }
 
 public sealed class TerrainMapSampler
@@ -147,7 +153,7 @@ public sealed class TerrainMapSampler
         }
         else if (content is WaterContent or 226 or 229 or 232 or 233)
         {
-            if (IsShoreWater(x, topHeight, z))
+            if (CanIceOver(x, z))
             {
                 seasonKind = MapSeasonKind.Water;
             }
@@ -168,21 +174,12 @@ public sealed class TerrainMapSampler
     }
 
     /// <summary>
-    /// Water freezes on chunk load only where it touches a solid block (the game spreads ice
-    /// further only while the chunk stays loaded), so open water keeps its colour year-round.
+    /// Water ices over when its place freezes unless it lies far out at sea. The game freezes a
+    /// water cell next to anything solid, but it visits a chunk's columns in random order and new
+    /// ice counts as solid, so in one load the ice runs from the shore across whole lakes and bays
+    /// (measured in the isolated game run: a shore-only rule missed 759 of 6561 cells in winter).
     /// </summary>
-    private bool IsShoreWater(int x, int y, int z) =>
-        IsSolidNeighbour(x + 1, y, z)
-        || IsSolidNeighbour(x - 1, y, z)
-        || IsSolidNeighbour(x, y, z + 1)
-        || IsSolidNeighbour(x, y, z - 1);
-
-    private bool IsSolidNeighbour(int x, int y, int z)
-    {
-        var content = _terrain.GetContent(x, y, z);
-        return content is not (0 or WaterContent or IceContent or 226 or 229 or 232 or 233)
-            && !_terrain.IsFluidCell(x, y, z);
-    }
+    private bool CanIceOver(int x, int z) => _terrain.GetOceanShoreDistance(x, z) > -35f;
 
     /// <summary>
     /// The highest season temperature at which this place counts as frozen, found with the game's
