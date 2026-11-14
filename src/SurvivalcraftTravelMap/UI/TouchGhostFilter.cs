@@ -5,8 +5,8 @@ namespace SurvivalcraftTravelMap.UI;
 internal readonly record struct RawMapTouch(int Id, Vector2 Position, MiniMapTouchPhase Phase);
 
 /// <summary>
-/// Keeps only the fingers the large map actually saw go down, so a touch the engine never
-/// released cannot take over the map's gestures.
+/// Keeps only the fingers the large map actually saw go down on the map itself, so a touch the
+/// engine never released cannot take over the map's gestures.
 /// <para>
 /// The engine drops a touch release whenever the window is inactive or the on-screen keyboard is
 /// up (<c>Engine.Input.Touch.ProcessTouchReleased</c> returns early), which leaves that touch in
@@ -15,6 +15,11 @@ internal readonly record struct RawMapTouch(int Id, Vector2 Position, MiniMapTou
 /// the player used one: long-press teleport never fired (it needs exactly one), a drag turned into
 /// a pinch against the ghost, and once the real finger lifted the pinch waited forever for "all
 /// fingers up" — zoom and pan stayed dead until the touch list was cleared by leaving the world.
+/// </para>
+/// <para>
+/// That ghost went down on a top-bar button while the map was open, so seeing the press is not
+/// enough: a finger takes part only if it went down on the map surface (<c>acceptPress</c>).
+/// Verified in the isolated game run (tools/isolated, touch mode), which a press-only rule failed.
 /// </para>
 /// </summary>
 internal sealed class TouchGhostFilter
@@ -55,7 +60,8 @@ internal sealed class TouchGhostFilter
         IReadOnlyList<RawMapTouch> raw,
         double time,
         bool windowActive,
-        List<RawMapTouch> result)
+        List<RawMapTouch> result,
+        Func<Vector2, bool>? acceptPress = null)
     {
         ArgumentNullException.ThrowIfNull(raw);
         ArgumentNullException.ThrowIfNull(result);
@@ -124,14 +130,15 @@ internal sealed class TouchGhostFilter
                 continue;
             }
 
-            if (touch.Phase == MiniMapTouchPhase.Pressed)
+            if (touch.Phase == MiniMapTouchPhase.Pressed
+                && (acceptPress is null || acceptPress(touch.Position)))
             {
                 _tracked[touch.Id] = new TrackedTouch(touch.Position, time);
                 result.Add(touch);
             }
 
-            // Anything else is a finger that went down before the map was looking (the tap that
-            // opened it, a ghost from an earlier screen) — never adopt it mid-stream.
+            // Anything else went down before the map was looking (the tap that opened it, a ghost
+            // from an earlier screen) or off the map (a toolbar button) — never adopt it.
         }
     }
 

@@ -86,6 +86,37 @@ public sealed class TouchGhostFilterTests
     }
 
     [Fact]
+    public void Ghost_pressed_on_a_toolbar_button_while_the_map_is_open_is_never_adopted()
+    {
+        // The real case: "save current position" opens the keyboard, so the release of the finger
+        // that pressed it is dropped. The map saw that press, but not on the map surface.
+        var filter = new TouchGhostFilter();
+        var live = new List<RawMapTouch>();
+        static bool OnMap(Vector2 point) => point.Y > 60f;
+        var time = 0.0;
+
+        filter.Filter([Touch(7, Ghost.X, Ghost.Y, MiniMapTouchPhase.Pressed)], time += 0.016, true, live, OnMap);
+        Assert.Empty(live);
+        for (var frame = 0; frame < 30; frame++)
+        {
+            filter.Filter([Touch(7, Ghost.X, Ghost.Y, MiniMapTouchPhase.Moved)], time += 0.016, true, live, OnMap);
+        }
+
+        filter.Filter(
+            [
+                Touch(7, Ghost.X, Ghost.Y, MiniMapTouchPhase.Moved),
+                Touch(2, 300, 300, MiniMapTouchPhase.Pressed),
+                Touch(3, 500, 300, MiniMapTouchPhase.Pressed),
+            ],
+            time += 0.016,
+            true,
+            live,
+            OnMap);
+
+        Assert.Equal([2, 3], live.Select(touch => touch.Id).ToArray());
+    }
+
+    [Fact]
     public void Single_real_finger_beside_a_ghost_counts_as_one_touch_for_long_press()
     {
         var filter = new TouchGhostFilter();

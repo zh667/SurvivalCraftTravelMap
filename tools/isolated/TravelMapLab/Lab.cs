@@ -187,8 +187,8 @@ public class Lab : ModLoader
         foreach (var x in Until(() => RecordedCount(home, 40) > 0.9 * 81 * 81, 120, "winter recording around spawn")) yield return x;
         foreach (var x in Seconds(5)) yield return x;
         var region = RegionPixels(home, 40);
-        notes.Add($"region pixels {region.Count}, land {region.Count(p => p.Kind == MapSeasonKind.Land)}, water {region.Count(p => p.Kind == MapSeasonKind.Water)}, fixed {region.Count(p => p.Kind == MapSeasonKind.Fixed)}, legacy {region.Count(p => p.Kind == MapSeasonKind.None)}");
-        Check(region.Count(p => p.Kind is MapSeasonKind.Land or MapSeasonKind.Water) > region.Count / 4, "winter: most of the recorded neighbourhood is seasonal (land or shore water)");
+        notes.Add($"region pixels {region.Count}, land {region.Count(p => p.Kind == (int)MapSeasonKind.Land)}, water {region.Count(p => p.Kind == (int)MapSeasonKind.Water)}, fixed {region.Count(p => p.Kind == (int)MapSeasonKind.Fixed)}, legacy {region.Count(p => p.Kind == (int)MapSeasonKind.None)}");
+        Check(region.Count(p => p.Kind is (int)MapSeasonKind.Land or (int)MapSeasonKind.Water) > region.Count / 4, "winter: most of the recorded neighbourhood is seasonal (land or shore water)");
         metrics["winterSnowObserved"] = region.Count(p => p.ObservedFrozen);
         Check(Agreement(region, MapSeason.Current, out var agreeHere) >= 0.97, $"winter, on site: prediction matches the terrain ({agreeHere})");
 
@@ -249,7 +249,9 @@ public class Lab : ModLoader
             "more of the region shows frozen in winter than in summer");
     }
 
-    readonly record struct RegionPixel(int X, int Z, MapSeasonKind Kind, bool ObservedFrozen, MapTerrainPixel Pixel);
+    // Kind is a MapSeasonKind stored as int: the game enumerates every type of this assembly, and a field typed with a
+    // 2.8-only enum would stop the lab loading next to the 2.7.1 package (the touch negative control).
+    readonly record struct RegionPixel(int X, int Z, int Kind, bool ObservedFrozen, MapTerrainPixel Pixel);
 
     static ExplorationTileStore Store => Field<ExplorationTileStore>(Map, "_tileStore");
 
@@ -266,7 +268,7 @@ public class Lab : ModLoader
             if (!store.GetOrLoad(c.TileX, c.TileZ).TryGetTerrainPixel(c.LocalX, c.LocalZ, out var p)) continue;
             var s = p.Season;
             var kind = s.Land != 0 ? MapSeasonKind.Land : s.Water != 0 ? MapSeasonKind.Water : (s.IsSeasonal ? MapSeasonKind.None : MapSeasonKind.Fixed);
-            list.Add(new RegionPixel(x, z, kind, s.LandFrozen != 0 || s.WaterFrozen != 0, p));
+            list.Add(new RegionPixel(x, z, (int)kind, s.LandFrozen != 0 || s.WaterFrozen != 0, p));
         }
 
         return list;
@@ -297,8 +299,8 @@ public class Lab : ModLoader
             if (actual == shown) agree++;
             else if (shown) mapOnly++;
             else terrainOnly++;
-            if (p.Kind == MapSeasonKind.Land) { landTotal++; if (actual == shown) landAgree++; }
-            if (p.Kind == MapSeasonKind.Water) { waterTotal++; if (actual == shown) waterAgree++; }
+            if (p.Kind == (int)MapSeasonKind.Land) { landTotal++; if (actual == shown) landAgree++; }
+            if (p.Kind == (int)MapSeasonKind.Water) { waterTotal++; if (actual == shown) waterAgree++; }
         }
 
         detail = $"{agree}/{total} agree; map-only frozen {mapOnly}, terrain-only frozen {terrainOnly}; land {landAgree}/{landTotal}, shore water {waterAgree}/{waterTotal}";
@@ -340,7 +342,19 @@ public class Lab : ModLoader
         var zoom0 = Zoom();
         Press(2, Screen(.45f, .5f)); Press(3, Screen(.55f, .5f));
         yield return true; yield return true;
-        for (var i = 1; i <= 10; i++) { Move(2, Screen(.45f - (i * .02f), .5f)); Move(3, Screen(.55f + (i * .02f), .5f)); yield return true; }
+        var trace = new List<string>();
+        void Trace(string tag)
+        {
+            var gesture = FieldOrNull(dialog, "_touchGesture");
+            var mode = gesture?.GetType().GetProperty("Mode")?.GetValue(gesture);
+            var live = FieldOrNull(dialog, "_liveTouches") is System.Collections.ICollection c ? c.Count : -1;
+            var engine = string.Join(",", Engine.Input.Touch.TouchLocations.Select(t => $"{t.Id}:{t.State}"));
+            trace.Add($"{tag} mode={mode} live={live} engine=[{engine}] zoom={Zoom()}");
+        }
+
+        Trace("pressed-queued");
+        for (var i = 1; i <= 10; i++) { Move(2, Screen(.45f - (i * .02f), .5f)); Move(3, Screen(.55f + (i * .02f), .5f)); yield return true; Trace("move" + i); }
+        metrics["pinch_trace"] = trace;
         Release(2, Screen(.25f, .5f)); Release(3, Screen(.75f, .5f));
         foreach (var x in Seconds(0.3)) yield return x;
         var zoomed = Zoom() < zoom0 * 0.8f;
@@ -356,11 +370,15 @@ public class Lab : ModLoader
         var pannedAgain = Center() != center1;
         metrics["drag_after_pinch_panned"] = pannedAgain;
 
-        // A long press opens the teleport menu.
-        Press(5, Screen(.5f, .5f));
-        foreach (var x in Seconds(0.9, () => Move(5, Screen(.5f, .5f)))) yield return x;
+        // A long press on explored ground (back over the player: the drags and the zoom left unexplored land in the
+        // middle, where a long press only says "not explored yet") opens the teleport menu.
+        dialog.GetType().GetMethod("ResetToPlayer")!.Invoke(dialog, null);
+        foreach (var x in Seconds(0.5)) yield return x;
+        var ground = Screen(.5f, .5f) + new Vector2(24, 0);
+        Press(5, ground);
+        foreach (var x in Seconds(0.9, () => Move(5, ground))) yield return x;
         var menu = FieldOrNull(dialog, "_activeMenu") is not null;
-        Release(5, Screen(.5f, .5f));
+        Release(5, ground);
         metrics["long_press_menu"] = menu;
         Shot("touch_after_gestures");
         yield return true;
@@ -371,9 +389,16 @@ public class Lab : ModLoader
         Check(menu, "with a ghost touch present: long press opens the teleport menu");
     }
 
-    static void Press(int id, Vector2 p) => Inject(id, p, TouchLocationState.Pressed);
-    static void Move(int id, Vector2 p) => Inject(id, p, TouchLocationState.Moved);
-    static void Release(int id, Vector2 p) => Inject(id, p, TouchLocationState.Released);
+    static void Press(int id, Vector2 p) => PendingTouches.Enqueue(() => Inject(id, p, TouchLocationState.Pressed));
+    static void Move(int id, Vector2 p) => PendingTouches.Enqueue(() => Inject(id, p, TouchLocationState.Moved));
+    static void Release(int id, Vector2 p) => PendingTouches.Enqueue(() => Inject(id, p, TouchLocationState.Released));
+
+    /// <summary>
+    /// Applied at the start of the next frame (Touch.BeforeFrame), where the OS delivers real touch events — before any
+    /// widget updates. Injecting from Window.Frame instead runs after the game's own update in that frame, so the engine
+    /// turns "pressed" into "moved" before a widget ever sees the press.
+    /// </summary>
+    internal static readonly Queue<Action> PendingTouches = new();
 
     /// <summary>
     /// Writes the engine's touch list the way Touch.ProcessTouch* would (those return early while the window is not
@@ -400,6 +425,15 @@ public class Lab : ModLoader
                 ? new TouchLocation { Id = id, Position = p, State = TouchLocationState.Moved }
                 : current,
         };
+    }
+}
+
+[HarmonyPatch(typeof(Engine.Input.Touch), "BeforeFrame")]
+public static class InjectTouchesAtFrameStart
+{
+    public static void Prefix()
+    {
+        while (Lab.PendingTouches.Count > 0) Lab.PendingTouches.Dequeue()();
     }
 }
 

@@ -41,6 +41,9 @@ def main():
     build.mkdir()
     with zipfile.ZipFile(package) as z:
         info = json.loads(z.read('modinfo.json').decode('utf-8-sig'))
+    # The lab always compiles against the current package; an older package under test (the negative control) only
+    # runs the touch mode, which touches nothing that 2.7.x lacks.
+    with zipfile.ZipFile(ROOT / 'pkg' / 'SurvivalcraftTravelMap.scmod') as z:
         (build / 'SurvivalcraftTravelMap.dll').write_bytes(z.read('SurvivalcraftTravelMap.dll'))
     print('package', package, 'version', info['Version'])
     p = subprocess.run(['dotnet', 'build', str(ROOT / 'TravelMapLab' / 'TravelMapLab.csproj'), '-c', 'Release', '--nologo', '-v', 'q',

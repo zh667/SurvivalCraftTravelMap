@@ -746,7 +746,16 @@ public sealed class TravelMapDialog : Dialog
                 }));
         }
 
-        _touchFilter.Filter(_rawTouches, Time.RealTime, Window.IsActive, _liveTouches);
+        _touchFilter.Filter(
+            _rawTouches,
+            Time.RealTime,
+            Window.IsActive,
+            _liveTouches,
+            screen =>
+            {
+                var local = _surface.ScreenToWidget(new Vector2(screen.X, screen.Y));
+                return _surface.ContainsLocalPoint(new NVector2(local.X, local.Y));
+            });
         var singleTouch = _liveTouches.Count == 1;
         if (!singleTouch || _activeMenu is not null)
         {
