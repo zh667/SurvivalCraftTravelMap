@@ -16,6 +16,8 @@
     "showCoordinates": "显示 X / Y / Z 坐标",
     "showGameTime": "显示游戏时间",
     "showCreatureMarkers": "显示生物标记",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "显示上次死亡地点",
     "northUp": "固定北方朝上",
     "compassDirections": "显示罗盘方向",
