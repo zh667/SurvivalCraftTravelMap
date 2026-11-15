@@ -84,16 +84,19 @@ public static class CreatureMarkerClassifier
 
     public static CreatureMapMarkerKind Classify(CreatureMarkerTraits traits)
     {
+        // Known allies first: CS teammates carry the game's chase behaviour to fight enemies, which
+        // would otherwise read as hostile (seen in the isolated run). One that turns on the player
+        // still shows as hostile while it chases them.
+        if (HasAny(traits.ComponentTypeNames, AllyComponents))
+        {
+            return CreatureMapMarkerKind.Ally;
+        }
+
         if (HasAny(traits.ComponentTypeNames, HostileComponents)
             || traits.ChasesPlayer
             || traits.IsPredator)
         {
             return CreatureMapMarkerKind.Hostile;
-        }
-
-        if (HasAny(traits.ComponentTypeNames, AllyComponents))
-        {
-            return CreatureMapMarkerKind.Ally;
         }
 
         if (traits.IsAquatic)

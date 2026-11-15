@@ -150,6 +150,10 @@ public class Lab : ModLoader
 #if TM_NET
         CommonLib.Net.StartLocal();   // normally done by the loading screen, which the lab skips
 #endif
+        // Also normally set by the loading screen: the Ghoul mod reads the world from it while its subsystems load.
+        if (ScreensManager.FindScreen<Screen>("GameLoading") is { } loading
+            && loading.GetType().GetField("m_worldInfo", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) is { } worldField)
+            worldField.SetValue(loading, world);
         GameManager.LoadProject(world, Games);
         data = new PlayerData(GameManager.Project) { Name = "Lab", InputDevice = WidgetInputDevice.All };
 #if TM_NET
