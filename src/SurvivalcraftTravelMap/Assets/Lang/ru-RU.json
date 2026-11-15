@@ -16,6 +16,8 @@
     "showCoordinates": "Показывать координаты X / Y / Z",
     "showGameTime": "Показывать игровое время",
     "showCreatureMarkers": "Показывать существ",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "Показывать место последней смерти",
     "northUp": "Север всегда сверху",
     "compassDirections": "Направления компаса",
