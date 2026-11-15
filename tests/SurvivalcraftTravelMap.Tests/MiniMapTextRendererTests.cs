@@ -273,9 +273,11 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Theory]
-    [InlineData(CreatureMapMarkerKind.Predator, 255, 60, 60)]
+    [InlineData(CreatureMapMarkerKind.Hostile, 255, 60, 60)]
+    [InlineData(CreatureMapMarkerKind.Ally, 70, 140, 255)]
+    [InlineData(CreatureMapMarkerKind.Animal, 60, 220, 80)]
     [InlineData(CreatureMapMarkerKind.Bird, 255, 220, 60)]
-    [InlineData(CreatureMapMarkerKind.Other, 60, 220, 80)]
+    [InlineData(CreatureMapMarkerKind.Fish, 60, 210, 230)]
     public void Creature_marker_palette_matches_the_reference_categories(
         CreatureMapMarkerKind kind,
         byte red,
@@ -292,7 +294,7 @@ public sealed class MiniMapTextRendererTests
     {
         using var widget = CreateSurface(
         [
-            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Predator),
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Animal),
         ]);
         var queue = new RecordingMapSurfacePrimitiveQueue();
         widget.PlayerArrowSize = 18f;
@@ -311,7 +313,7 @@ public sealed class MiniMapTextRendererTests
             },
             fill =>
             {
-                Assert.Equal(CreatureMapMarkerStyle.PredatorColor, fill.Color);
+                Assert.Equal(CreatureMapMarkerStyle.AnimalColor, fill.Color);
                 Assert.Equal(5f, fill.Size);
             });
         Assert.True(
@@ -324,7 +326,7 @@ public sealed class MiniMapTextRendererTests
     {
         using var widget = CreateSurface(
         [
-            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Other),
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Animal),
         ],
         showCreatures: false);
         var queue = new RecordingMapSurfacePrimitiveQueue();
@@ -385,17 +387,84 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Theory]
-    [InlineData(CreatureCategory.LandPredator, CreatureMapMarkerKind.Predator)]
-    [InlineData(CreatureCategory.WaterPredator, CreatureMapMarkerKind.Predator)]
-    [InlineData(CreatureCategory.Bird, CreatureMapMarkerKind.Bird)]
-    [InlineData(CreatureCategory.LandOther, CreatureMapMarkerKind.Other)]
-    [InlineData(CreatureCategory.WaterOther, CreatureMapMarkerKind.Other)]
-    public void Game_creature_categories_map_to_stable_marker_kinds(
-        CreatureCategory category,
+    [InlineData(CreatureMapMarkerKind.Hostile, 6.25f)]
+    [InlineData(CreatureMapMarkerKind.Animal, 5f)]
+    [InlineData(CreatureMapMarkerKind.Ally, 5f)]
+    [InlineData(CreatureMapMarkerKind.Bird, 3f)]
+    [InlineData(CreatureMapMarkerKind.Fish, 3f)]
+    public void Threats_draw_larger_and_birds_and_fish_smaller(CreatureMapMarkerKind kind, float fillSize)
+    {
+        using var widget = CreateSurface([new CreatureMapMarker(new Vector3(8f, 64f, 0f), kind)]);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var fill = queue.Primitives.Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.Creature).Last();
+        Assert.Equal(CreatureMapMarkerStyle.ColorFor(kind), fill.Color);
+        Assert.Equal(fillSize, fill.Size, 3);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void Bird_and_fish_settings_hide_only_their_own_markers(bool showBirds, bool showFish)
+    {
+        using var widget = CreateSurface(
+        [
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Bird),
+            new CreatureMapMarker(new Vector3(-8f, 64f, 0f), CreatureMapMarkerKind.Fish),
+            new CreatureMapMarker(new Vector3(0f, 64f, 8f), CreatureMapMarkerKind.Hostile),
+        ],
+        showBirds: showBirds,
+        showFish: showFish);
+        var queue = new RecordingMapSurfacePrimitiveQueue();
+
+        widget.Draw(new MapSurfaceDrawContext(new Vector2(192f), queue));
+
+        var colors = queue.Primitives
+            .Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.Creature)
+            .Select(primitive => primitive.Color)
+            .ToArray();
+        Assert.Equal(showBirds, colors.Contains(CreatureMapMarkerStyle.BirdColor));
+        Assert.Equal(showFish, colors.Contains(CreatureMapMarkerStyle.FishColor));
+        Assert.Contains(CreatureMapMarkerStyle.HostileColor, colors);
+    }
+
+    public static TheoryData<string, CreatureMarkerTraits, CreatureMapMarkerKind> ModCreatures => new()
+    {
+        // Categories as the mods declare them (scanned from the user's Mods folders, 2026-11-14).
+        { "wolf", Traits(predator: true, chases: true), CreatureMapMarkerKind.Hostile },
+        { "ghoul registered as a bird, chasing", Traits(chases: true), CreatureMapMarkerKind.Hostile },
+        { "ghoul corpse head registered as a bird", Traits(names: ["ComponentCorpsificeHead"], chases: true), CreatureMapMarkerKind.Hostile },
+        { "CS bandit (LandOther)", Traits(names: ["ComponentTacticalEnemy"]), CreatureMapMarkerKind.Hostile },
+        { "Mech Defense robot", Traits(predator: true, names: ["ComponentMDRobot"], flies: true), CreatureMapMarkerKind.Hostile },
+        { "CS teammate / hostage (LandOther)", Traits(names: ["ComponentTacticalCompanion"]), CreatureMapMarkerKind.Ally },
+        { "shark", Traits(predator: true, aquatic: true, chases: true), CreatureMapMarkerKind.Hostile },
+        { "bass", Traits(aquatic: true), CreatureMapMarkerKind.Fish },
+        { "pigeon", Traits(flies: true), CreatureMapMarkerKind.Bird },
+        { "butterfly registered as a bird", Traits(flies: true), CreatureMapMarkerKind.Bird },
+        { "ghoul dog registered as a bird, not chasing, not flying", Traits(), CreatureMapMarkerKind.Animal },
+        { "cow", Traits(), CreatureMapMarkerKind.Animal },
+    };
+
+    [Theory]
+    [MemberData(nameof(ModCreatures))]
+    public void Creatures_are_classified_by_behaviour_not_only_category(
+        string name,
+        CreatureMarkerTraits traits,
         CreatureMapMarkerKind expected)
     {
-        Assert.Equal(expected, TravelMapComponent.ToCreatureMarkerKind(category));
+        Assert.False(string.IsNullOrEmpty(name));
+        Assert.Equal(expected, CreatureMarkerClassifier.Classify(traits));
     }
+
+    private static CreatureMarkerTraits Traits(
+        bool predator = false,
+        bool aquatic = false,
+        bool chases = false,
+        bool flies = false,
+        string[]? names = null) =>
+        new(predator, aquatic, chases, flies, names ?? []);
 
     [Fact]
     public void Native_player_death_history_selects_current_and_previous_records_for_the_map()
@@ -769,7 +838,9 @@ public sealed class MiniMapTextRendererTests
         bool showCoordinates = false,
         DeathMapMarker? lastDeath = null,
         bool showLastDeath = true,
-        DeathMapMarker? previousDeath = null)
+        DeathMapMarker? previousDeath = null,
+        bool showBirds = true,
+        bool showFish = true)
     {
         var font = (BitmapFont)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
             typeof(BitmapFont));
@@ -779,6 +850,8 @@ public sealed class MiniMapTextRendererTests
             {
                 ShowCoordinates = showCoordinates,
                 ShowCreatureMarkers = showCreatures,
+                ShowBirdMarkers = showBirds,
+                ShowFishMarkers = showFish,
                 ShowLastDeathMarker = showLastDeath,
                 MiniMapOrientation = orientation,
                 MiniMapShape = mapShape,

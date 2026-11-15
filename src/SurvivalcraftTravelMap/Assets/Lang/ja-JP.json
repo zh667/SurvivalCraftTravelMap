@@ -16,6 +16,8 @@
     "showCoordinates": "座標X/Y/Zを表示します",
     "showGameTime": "ショーゲームタイム",
     "showCreatureMarkers": "クリーチャーマーカーを表示",
+    "showBirdMarkers": "  鳥を表示",
+    "showFishMarkers": "  魚を表示",
     "showLastDeathMarker": "最後の死亡場所を表示",
     "northUp": "北を上に保つ",
     "compassDirections": "方位の方位",

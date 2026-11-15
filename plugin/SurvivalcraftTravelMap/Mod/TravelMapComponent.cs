@@ -1689,7 +1689,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
             markers.Add(new CreatureMapMarker(
                 new Vector3(position.X, position.Y, position.Z),
-                ToCreatureMarkerKind(creature.Category)));
+                GetCreatureMarkerKind(creature)));
         }
 
         return markers;
@@ -1703,16 +1703,59 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 .ToArray()
             : _waypoints;
 
-    internal static CreatureMapMarkerKind ToCreatureMarkerKind(CreatureCategory category)
+    // A creature's kind is read once from its entity (components never change after creation);
+    // only "is it chasing the player right now" is checked every frame.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<ComponentCreature, CreatureKindEntry>
+        _creatureKinds = new();
+
+    private sealed class CreatureKindEntry(CreatureMapMarkerKind kind, ComponentChaseBehavior? chase)
     {
-        if ((category & (CreatureCategory.LandPredator | CreatureCategory.WaterPredator)) != 0)
+        public CreatureMapMarkerKind Kind { get; } = kind;
+
+        public ComponentChaseBehavior? Chase { get; } = chase;
+    }
+
+    private CreatureMapMarkerKind GetCreatureMarkerKind(ComponentCreature creature)
+    {
+        var entry = _creatureKinds.GetValue(creature, static creature =>
         {
-            return CreatureMapMarkerKind.Predator;
+            var chase = creature.Entity.FindComponent<ComponentChaseBehavior>();
+            return new CreatureKindEntry(
+                CreatureMarkerClassifier.Classify(ReadCreatureMarkerTraits(creature, chase)),
+                chase);
+        });
+
+        // Anything currently chasing the player is a threat whatever it normally is (a bull that
+        // was hit, a tamed animal turned on its owner).
+        return entry.Kind != CreatureMapMarkerKind.Hostile
+            && entry.Chase is { Target: { } target }
+            && ReferenceEquals(target, Player)
+                ? CreatureMapMarkerKind.Hostile
+                : entry.Kind;
+    }
+
+    internal static CreatureMarkerTraits ReadCreatureMarkerTraits(
+        ComponentCreature creature,
+        ComponentChaseBehavior? chase)
+    {
+        var names = new List<string>();
+        foreach (var component in creature.Entity.Components)
+        {
+            names.Add(component.GetType().Name);
         }
 
-        return (category & CreatureCategory.Bird) != 0
-            ? CreatureMapMarkerKind.Bird
-            : CreatureMapMarkerKind.Other;
+        // The game's chase behaviour comes after the player when it may attack players and has a
+        // chase range; mods' own chasers (ghouls, the horror mod's beasts) use it too.
+        var chasesPlayer = chase is not null
+            && chase.AttacksPlayer
+            && MathF.Max(chase.m_dayChaseRange, chase.m_nightChaseRange) > 0f;
+        var category = creature.Category;
+        return new CreatureMarkerTraits(
+            IsPredator: (category & (CreatureCategory.LandPredator | CreatureCategory.WaterPredator)) != 0,
+            IsAquatic: (category & (CreatureCategory.WaterPredator | CreatureCategory.WaterOther)) != 0,
+            ChasesPlayer: chasesPlayer,
+            Flies: creature.Entity.FindComponent<ComponentLocomotion>() is { FlySpeed: > 0f },
+            ComponentTypeNames: names);
     }
 
     private float GetTerrainBrightness() => _settings is { UseDayNightTint: true }

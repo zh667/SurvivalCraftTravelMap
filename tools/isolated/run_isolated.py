@@ -54,7 +54,7 @@ NO_WINDOW = 0x08000000
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--mode', choices=['season', 'touch'], required=True)
+    ap.add_argument('--mode', choices=['season', 'touch', 'markers'], required=True)
     ap.add_argument('--source', choices=SOURCES, default='1.9.3.1')
     ap.add_argument('--package')
     ap.add_argument('--label', default='')

@@ -108,6 +108,14 @@ public sealed class TravelMapSettingsWidget : CanvasWidget
             () => settings.ShowCreatureMarkers,
             value => settings.ShowCreatureMarkers = value));
         settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("showBirdMarkers", "  显示鸟类"),
+            () => settings.ShowBirdMarkers,
+            value => settings.ShowBirdMarkers = value));
+        settingsStack.Children.Add(CreateToggle(
+            TravelMapText.Get("showFishMarkers", "  显示鱼类"),
+            () => settings.ShowFishMarkers,
+            value => settings.ShowFishMarkers = value));
+        settingsStack.Children.Add(CreateToggle(
             TravelMapText.Get("showLastDeathMarker", "显示上次死亡地点"),
             () => settings.ShowLastDeathMarker,
             value => settings.ShowLastDeathMarker = value));

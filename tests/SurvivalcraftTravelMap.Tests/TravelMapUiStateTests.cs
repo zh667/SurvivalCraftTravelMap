@@ -782,6 +782,30 @@ public sealed class TravelMapSettingsStoreTests
         Assert.False(result.Settings.ShowLastDeathMarker);
     }
 
+    [Fact]
+    public async Task Bird_and_fish_markers_default_on_for_older_settings_and_round_trip_when_off()
+    {
+        using var directory = new UiTemporaryDirectory();
+        var store = new TravelMapSettingsStore(directory.Path);
+        await File.WriteAllTextAsync(
+            store.SettingsPath,
+            "{\"schemaVersion\":3,\"ShowCreatureMarkers\":true}",
+            TestContext.Current.CancellationToken);
+
+        var older = await store.LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+        Assert.True(older.Settings.ShowBirdMarkers);
+        Assert.True(older.Settings.ShowFishMarkers);
+
+        older.Settings.ShowBirdMarkers = false;
+        older.Settings.ShowFishMarkers = false;
+        await store.SaveAsync(older.Settings, TestContext.Current.CancellationToken);
+        var reloaded = await new TravelMapSettingsStore(directory.Path)
+            .LoadWithOutcomeAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(reloaded.Settings.ShowBirdMarkers);
+        Assert.False(reloaded.Settings.ShowFishMarkers);
+    }
+
     [Theory]
     [InlineData("Circle", MapShape.Circle)]
     [InlineData("Square", MapShape.Square)]

@@ -12,6 +12,7 @@ using HarmonyLib;
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Persistence;
+using GameEntitySystem;
 using SurvivalcraftTravelMap.UI;
 
 namespace TravelMapLab;
@@ -78,7 +79,7 @@ public class Lab : ModLoader
             if (frameLog is not null && lastFrame > 0) frameLog.Add((now - lastFrame) * 1000.0);
             lastFrame = now;
             if (now - began > 900) throw new TimeoutException("lab timed out");
-            script ??= (mode == "touch" ? Touch() : Season()).GetEnumerator();
+            script ??= (mode switch { "touch" => Touch(), "markers" => Markers(), _ => Season() }).GetEnumerator();
             if (!script.MoveNext())
             {
                 Finish(new { passed = true, mode, checks, metrics, notes });
@@ -376,6 +377,70 @@ public class Lab : ModLoader
         notes.Add("mismatch groups: " + string.Join(" | ", groups.OrderByDescending(g => g.Value).Take(14).Select(g => $"{g.Value}x {g.Key}")));
         landRatio = landTotal == 0 ? 0 : landAgree / (double)landTotal;
         return total == 0 ? 0 : agree / (double)total;
+    }
+
+    // ---- markers ---------------------------------------------------------------------------
+
+    // Template, expected marker kind. Mod templates are only checked when their mod is installed.
+    static readonly (string Template, string Expected)[] MarkerCases =
+    [
+        ("Wolf_Gray", "Hostile"),
+        ("Cow_Brown", "Animal"),
+        ("Pigeon", "Bird"),
+        ("Bass_Freshwater", "Fish"),
+        ("Shark_Bull", "Hostile"),
+        ("SAGhoul_Weak_01", "Hostile"),        // Ghoul mod: registered as a bird
+        ("SAG_CorpsificeHead", "Hostile"),     // Ghoul mod: the shooting head, registered as a bird
+        ("ScTacticalEnemy", "Hostile"),        // CS weapons: bandit, registered as LandOther
+        ("ScTacticalCT", "Ally"),              // CS weapons: teammate, registered as LandOther
+        ("ScTacticalHostage", "Ally"),
+    ];
+
+    static IEnumerable<bool> Markers()
+    {
+        foreach (var x in EnterWorld(Summer)) yield return x;
+        var origin = data.ComponentPlayer.ComponentBody.Position;
+        var spawned = new List<(string Template, string Expected, Vector3 Position)>();
+        var missing = new List<string>();
+        for (var i = 0; i < MarkerCases.Length; i++)
+        {
+            var (template, expected) = MarkerCases[i];
+            Entity? entity = null;
+            try { entity = DatabaseManager.CreateEntity(GameManager.Project, template, false); }
+            catch (Exception e) { notes.Add($"{template}: {e.GetType().Name} {e.Message}"); }
+            if (entity is null) { missing.Add(template); continue; }
+            var position = origin + new Vector3(6f + (i % 5) * 7f, 2f, (i / 5) * 9f - 4f);
+            entity.FindComponent<ComponentBody>(true).Position = position;
+            if (entity.FindComponent<ComponentSpawn>() is { } spawn) spawn.SpawnDuration = 0f;
+            GameManager.Project.AddEntity(entity);
+            spawned.Add((template, expected, position));
+        }
+
+        notes.Add("not installed: " + string.Join(", ", missing));
+        foreach (var x in Seconds(1.5)) yield return x;
+
+        var method = typeof(TravelMapComponent).GetMethod("GetCreatureMarkers", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var markers = ((System.Collections.IEnumerable)method.Invoke(Map, null)!).Cast<CreatureMapMarker>().ToArray();
+        var results = new Dictionary<string, string>();
+        foreach (var (template, expected, position) in spawned)
+        {
+            // Nearest marker to where it was placed (it may have moved a little in 1.5 s).
+            var nearest = markers
+                .OrderBy(m => Vector2.Distance(new Vector2(m.Position.X, m.Position.Z), new Vector2(position.X, position.Z)))
+                .FirstOrDefault();
+            var kind = nearest.Kind.ToString();
+            results[template] = kind;
+            Check(kind == expected, $"{template} shows as {kind} (expected {expected})");
+        }
+
+        metrics["kinds"] = results;
+        OpenLargeMap(new Vector2(origin.X + 18f, origin.Z));
+        var dialog = Field<Dialog>(Map, "_largeMapDialog");
+        var settings = FieldOrNull(dialog, "_settings")!;
+        settings.GetType().GetProperty("LargeMapBlocksPerPixel")!.SetValue(settings, 0.25f);
+        foreach (var x in Seconds(2)) yield return x;
+        Shot("markers_large_map");
+        yield return true;
     }
 
     // ---- touch -----------------------------------------------------------------------------

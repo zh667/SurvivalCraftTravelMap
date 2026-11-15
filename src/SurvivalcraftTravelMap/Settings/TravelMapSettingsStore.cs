@@ -522,6 +522,10 @@ public sealed class TravelMapSettingsStore
 
         public bool ShowCreatureMarkers { get; set; } = true;
 
+        public bool ShowBirdMarkers { get; set; } = true;
+
+        public bool ShowFishMarkers { get; set; } = true;
+
         public bool ShowLastDeathMarker { get; set; } = true;
 
         public float CreatureMarkerSize { get; set; } = 5f;
@@ -578,6 +582,8 @@ public sealed class TravelMapSettingsStore
                 HeightShadingStyle = ParseHeightShadingStyle(HeightShadingStyle, UseHeightShading),
                 AcceptTeleportInvitations = AcceptTeleportInvitations,
                 ShowCreatureMarkers = ShowCreatureMarkers,
+                ShowBirdMarkers = ShowBirdMarkers,
+                ShowFishMarkers = ShowFishMarkers,
                 ShowLastDeathMarker = ShowLastDeathMarker,
                 CreatureMarkerSize = CreatureMarkerSize,
                 MiniMapOrientation = ParseMiniMapOrientation(MiniMapOrientation),
@@ -611,6 +617,8 @@ public sealed class TravelMapSettingsStore
                 != global::SurvivalcraftTravelMap.Settings.HeightShadingStyle.Off,
             AcceptTeleportInvitations = settings.AcceptTeleportInvitations,
             ShowCreatureMarkers = settings.ShowCreatureMarkers,
+            ShowBirdMarkers = settings.ShowBirdMarkers,
+            ShowFishMarkers = settings.ShowFishMarkers,
             ShowLastDeathMarker = settings.ShowLastDeathMarker,
             CreatureMarkerSize = settings.CreatureMarkerSize,
             MiniMapOrientation = settings.MiniMapOrientation.ToString(),
