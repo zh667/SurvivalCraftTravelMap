@@ -290,7 +290,25 @@ public class Lab : ModLoader
             CloseLargeMap();
 
             Teleport(new Vector3(home.X + 0.5f, 150, home.Y + 0.5f));
-            foreach (var x in Until(() => ColumnsReady(terrain, home, 40), 180, "region reloaded")) yield return x;
+            var reloadStarted = Time.RealTime;
+            while (!ColumnsReady(terrain, home, 40))
+            {
+                if (Time.RealTime - reloadStarted > 180)
+                {
+                    var states = new Dictionary<string, int>();
+                    for (var z = home.Y - 40; z <= home.Y + 40; z += 16)
+                    for (var x = home.X - 40; x <= home.X + 40; x += 16)
+                    {
+                        var key = terrain.Terrain.GetChunkAtCell(x, z) is { } c ? c.State.ToString() : "null";
+                        states[key] = states.GetValueOrDefault(key) + 1;
+                    }
+
+                    throw new TimeoutException($"region reloaded: player at {data.ComponentPlayer.ComponentBody.Position}, home {home}, chunk states "
+                        + string.Join(", ", states.Select(kv => $"{kv.Key}={kv.Value}")));
+                }
+
+                yield return true;
+            }
             foreach (var x in Seconds(4)) yield return x;
             var agreement = Agreement(predicted, MapSeason.Current, out var detail, out var land);
             metrics[$"{phase.Item3}_agreement"] = detail;
@@ -404,7 +422,7 @@ public class Lab : ModLoader
     {
         foreach (var x in EnterWorld(Summer)) yield return x;
         var origin = data.ComponentPlayer.ComponentBody.Position;
-        var spawned = new List<(string Template, string Expected, Vector3 Position)>();
+        var spawned = new List<(string Template, string Expected, Entity Entity)>();
         var missing = new List<string>();
         for (var i = 0; i < MarkerCases.Length; i++)
         {
@@ -417,26 +435,33 @@ public class Lab : ModLoader
             entity.FindComponent<ComponentBody>(true).Position = position;
             if (entity.FindComponent<ComponentSpawn>() is { } spawn) spawn.SpawnDuration = 0f;
             GameManager.Project.AddEntity(entity);
-            spawned.Add((template, expected, position));
+            spawned.Add((template, expected, entity));
         }
 
         notes.Add("not installed: " + string.Join(", ", missing));
         foreach (var x in Seconds(1.5)) yield return x;
 
-        var method = typeof(TravelMapComponent).GetMethod("GetCreatureMarkers", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var markers = ((System.Collections.IEnumerable)method.Invoke(Map, null)!).Cast<CreatureMapMarker>().ToArray();
+        // Ask the map for each spawned entity's kind directly (matching markers by position mixed up creatures that had
+        // already walked towards each other), and record what the classifier saw.
+        var kindOf = typeof(TravelMapComponent).GetMethod("GetCreatureMarkerKind", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var traitsOf = typeof(TravelMapComponent).GetMethod("ReadCreatureMarkerTraits", BindingFlags.Static | BindingFlags.NonPublic)!;
         var results = new Dictionary<string, string>();
-        foreach (var (template, expected, position) in spawned)
+        var why = new Dictionary<string, string>();
+        foreach (var (template, expected, entity) in spawned)
         {
-            // Nearest marker to where it was placed (it may have moved a little in 1.5 s).
-            var nearest = markers
-                .OrderBy(m => Vector2.Distance(new Vector2(m.Position.X, m.Position.Z), new Vector2(position.X, position.Z)))
-                .FirstOrDefault();
-            var kind = nearest.Kind.ToString();
+            var creature = entity.FindComponent<ComponentCreature>(true);
+            var chase = entity.FindComponent<ComponentChaseBehavior>();
+            var kind = kindOf.Invoke(Map, [creature])!.ToString()!;
+            var traits = (CreatureMarkerTraits)traitsOf.Invoke(null, [creature, chase])!;
             results[template] = kind;
-            Check(kind == expected, $"{template} shows as {kind} (expected {expected})");
+            why[template] = $"predator={traits.IsPredator} aquatic={traits.IsAquatic} chases={traits.ChasesPlayer} flies={traits.Flies} "
+                + $"target={(chase?.Target is { } t ? (ReferenceEquals(t, data.ComponentPlayer) ? "player" : "other creature") : "-")} "
+                + $"components={string.Join(",", traits.ComponentTypeNames.Where(n => n.Contains("Tactical") || n.Contains("Chase") || n.Contains("MD")))}";
         }
 
+        metrics["why"] = why;
+        foreach (var (template, expected, _) in spawned)
+            Check(results[template] == expected, $"{template} shows as {results[template]} (expected {expected})");
         metrics["kinds"] = results;
         OpenLargeMap(new Vector2(origin.X + 18f, origin.Z));
         var dialog = Field<Dialog>(Map, "_largeMapDialog");
