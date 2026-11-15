@@ -16,6 +16,8 @@
     "showCoordinates": "X/Y/Z निर्देशांक दिखाएँ",
     "showGameTime": "खेल का समय दिखाएं",
     "showCreatureMarkers": "प्राणी मार्कर दिखाएं",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "अंतिम मृत्यु स्थान दिखाएं",
     "northUp": "उत्तर को शीर्ष पर रखें",
     "compassDirections": "कम्पास निर्देश",
