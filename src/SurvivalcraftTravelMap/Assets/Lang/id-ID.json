@@ -16,6 +16,8 @@
     "showCoordinates": "Tampilkan koordinat X / Y / Z",
     "showGameTime": "Tampilkan waktu permainan",
     "showCreatureMarkers": "Tampilkan penanda makhluk",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "Tampilkan lokasi kematian terakhir",
     "northUp": "Tetap ke utara di atas",
     "compassDirections": "Arah kompas",
