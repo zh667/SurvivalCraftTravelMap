@@ -16,6 +16,8 @@
     "showCoordinates": "X / Y / Z 좌표 표시",
     "showGameTime": "쇼 게임 타임",
     "showCreatureMarkers": "생물 표시 표시",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "마지막 사망 위치 표시",
     "northUp": "북쪽을 꼭대기에 두세요",
     "compassDirections": "나침반 방각",
