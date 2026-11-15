@@ -16,6 +16,8 @@
     "showCoordinates": "แสดงพิกัด X / Y / Z",
     "showGameTime": "แสดงเวลาเล่นเกม",
     "showCreatureMarkers": "แสดงเครื่องหมายสิ่งมีชีวิต",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "แสดงสถานที่เสียชีวิตครั้งสุดท้าย",
     "northUp": "ให้ทิศเหนืออยู่ด้านบน",
     "compassDirections": "ทิศทางเข็มทิศ",
