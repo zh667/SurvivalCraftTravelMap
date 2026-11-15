@@ -16,6 +16,8 @@
     "showCoordinates": "Hiển thị tọa độ X/Y/Z",
     "showGameTime": "Hiển thị thời gian trò chơi",
     "showCreatureMarkers": "Hiển thị điểm đánh dấu sinh vật",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "Hiển thị vị trí chết cuối cùng",
     "northUp": "Giữ hướng bắc ở trên cùng",
     "compassDirections": "Chỉ đường la bàn",
