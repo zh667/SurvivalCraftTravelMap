@@ -74,6 +74,10 @@ public sealed class TravelMapSettings
 
     public bool ShowCreatureMarkers { get; set; } = true;
 
+    public bool ShowBirdMarkers { get; set; } = true;
+
+    public bool ShowFishMarkers { get; set; } = true;
+
     public bool ShowLastDeathMarker { get; set; } = true;
 
     public float CreatureMarkerSize { get; set; } = 5f;
@@ -121,6 +125,8 @@ public sealed class TravelMapSettings
         UseDayNightTint = defaults.UseDayNightTint;
         HeightShadingStyle = defaults.HeightShadingStyle;
         ShowCreatureMarkers = defaults.ShowCreatureMarkers;
+        ShowBirdMarkers = defaults.ShowBirdMarkers;
+        ShowFishMarkers = defaults.ShowFishMarkers;
         ShowLastDeathMarker = defaults.ShowLastDeathMarker;
         CreatureMarkerSize = defaults.CreatureMarkerSize;
         MiniMapOrientation = defaults.MiniMapOrientation;

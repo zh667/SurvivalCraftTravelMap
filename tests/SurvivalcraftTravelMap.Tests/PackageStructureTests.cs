@@ -225,7 +225,7 @@ public sealed class PackageStructureTests
         AssertCodeContains(component, "Project.FindSubsystem<SubsystemCreatureSpawn>(false)");
         AssertCodeContains(snapshot, "ReferenceEquals(creature, Player)");
         AssertCodeContains(snapshot, "creature.ComponentHealth is { Health: <= 0f }");
-        AssertCodeContains(snapshot, "ToCreatureMarkerKind(creature.Category)");
+        AssertCodeContains(snapshot, "GetCreatureMarkerKind(creature)");
         Assert.Equal(2, attach.Split("GetCreatureMarkers", StringSplitOptions.None).Length - 1);
     }
 

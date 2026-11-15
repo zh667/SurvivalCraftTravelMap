@@ -16,6 +16,8 @@
     "showCoordinates": "عرض إحداثيات X / Y / Z",
     "showGameTime": "وقت مباراة العرض",
     "showCreatureMarkers": "علامات المخلوقات العرضية",
+    "showBirdMarkers": "  إظهار الطيور",
+    "showFishMarkers": "  إظهار الأسماك",
     "showLastDeathMarker": "عرض موقع الوفاة الأخير",
     "northUp": "حافظ على الشمال في القمة",
     "compassDirections": "اتجاهات البوصلة",

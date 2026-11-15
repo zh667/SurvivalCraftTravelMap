@@ -342,6 +342,46 @@ public sealed class ExplorationTileStore
         return tile.IsRegionFullyHeightShaded(x, z, width, height);
     }
 
+    public bool IsRegionFullySeasonTracked(
+        int tileX,
+        int tileZ,
+        int x,
+        int z,
+        int width,
+        int height)
+    {
+        MapTile.ValidateRegion(x, z, width, height);
+        var key = new TileKey(tileX, tileZ);
+        MapTile tile;
+        lock (_sync)
+        {
+            if (!_knownTiles.Contains(key))
+            {
+                return false;
+            }
+
+            if (_cache.TryGetValue(key, out var cached))
+            {
+                Touch(cached);
+                tile = cached.Tile;
+            }
+            else
+            {
+                if (!MakeRoomForNewEntry())
+                {
+                    return false;
+                }
+
+                tile = Load(key);
+                var node = _lru.AddFirst(key);
+                _cache.Add(key, new CacheEntry(tile, node));
+                TrimCleanEntries();
+            }
+        }
+
+        return tile.IsRegionFullySeasonTracked(x, z, width, height);
+    }
+
     public MapTile GetOrLoad(int tileX, int tileZ)
     {
         var key = new TileKey(tileX, tileZ);
@@ -549,7 +589,13 @@ public sealed class ExplorationTileStore
         var path = GetPath(key);
         if (!File.Exists(path))
         {
-            return new MapTile(key.X, key.Z);
+            // Not rewritten since the season-aware format: fall back to the pre-2.8 file, which
+            // stays on disk untouched so a downgrade still finds the map it had.
+            path = GetLegacyPath(key);
+            if (!File.Exists(path))
+            {
+                return new MapTile(key.X, key.Z);
+            }
         }
 
         try
@@ -577,6 +623,11 @@ public sealed class ExplorationTileStore
         foreach (var path in Directory.EnumerateFiles(_directory, "*.sctm", SearchOption.TopDirectoryOnly))
         {
             var name = Path.GetFileNameWithoutExtension(path);
+            if (name.EndsWith(CurrentFormatSuffix, StringComparison.Ordinal))
+            {
+                name = name[..^CurrentFormatSuffix.Length];
+            }
+
             var separator = name.IndexOf('_');
             if (separator <= 0 || separator == name.Length - 1 || name.IndexOf('_', separator + 1) >= 0)
             {
@@ -591,7 +642,18 @@ public sealed class ExplorationTileStore
         }
     }
 
-    private string GetPath(TileKey key) => Path.Combine(_directory, $"{key.X}_{key.Z}.sctm");
+    /// <summary>
+    /// Tiles carrying season data (codec version 4) are written as <c>x_z.v4.sctm</c>. Versions up
+    /// to 2.7.x read only <c>x_z.sctm</c> and would quarantine a version they do not know as
+    /// corrupt, so the new format never replaces that file: an older build simply does not see
+    /// the newer files (their name does not parse as tile coordinates there).
+    /// </summary>
+    private const string CurrentFormatSuffix = ".v4";
+
+    private string GetPath(TileKey key) =>
+        Path.Combine(_directory, $"{key.X}_{key.Z}{CurrentFormatSuffix}.sctm");
+
+    private string GetLegacyPath(TileKey key) => Path.Combine(_directory, $"{key.X}_{key.Z}.sctm");
 
     private void Touch(CacheEntry entry)
     {

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Isolated in-game checks for the plugin edition; built and run on Windows by run_isolated.py, never shipped. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ScInstall Condition="'$(ScInstall)' == ''">D:\下载\[Windows]SurvivalcraftAPI_1.9.3.1</ScInstall>
+    <TravelMapDll Condition="'$(TravelMapDll)' == ''">$(MSBuildThisFileDirectory)..\pkg\SurvivalcraftTravelMap.dll</TravelMapDll>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TmFlavor)' == 'net'">
+    <DefineConstants>$(DefineConstants);TM_NET</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="SurvivalcraftTravelMap" HintPath="$(TravelMapDll)" Private="false" />
+    <Reference Include="Survivalcraft" HintPath="$(ScInstall)\Survivalcraft.dll" Private="false" />
+    <Reference Include="Engine" HintPath="$(ScInstall)\Engine.dll" Private="false" />
+    <Reference Include="EntitySystem" HintPath="$(ScInstall)\EntitySystem.dll" Private="false" />
+    <Reference Include="0Harmony" HintPath="$(ScInstall)\0Harmony.dll" Private="false" Condition="'$(TmFlavor)' != 'net'" />
+  </ItemGroup>
+</Project>

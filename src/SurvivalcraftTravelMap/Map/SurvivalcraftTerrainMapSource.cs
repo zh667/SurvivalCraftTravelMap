@@ -64,6 +64,25 @@ public sealed class SurvivalcraftTerrainMapSource(SubsystemTerrain terrain) : IT
 
     public int GetSeasonalHumidity(int x, int z) => _terrain.Terrain.GetSeasonalHumidity(x, z);
 
+    // Same as Terrain.GetSeasonalTemperature in this edition: base + season, unclamped.
+    public bool IsPlaceFrozenAtSeason(int x, int z, int y, int seasonTemperature) =>
+        SubsystemWeather.IsPlaceFrozen(_terrain.Terrain.GetTemperature(x, z) + seasonTemperature, y);
+
+    public float GetOceanShoreDistance(int x, int z) =>
+        _terrain.TerrainContentsGenerator?.CalculateOceanShoreDistance(x, z) ?? 0f;
+
+    public bool CanHoldSnow(int x, int y, int z)
+    {
+        if (!_terrain.Terrain.IsCellValid(x, y, z))
+        {
+            return false;
+        }
+
+        var value = _terrain.Terrain.GetCellValue(x, y, z);
+        return SubsystemSnowBlockBehavior.CanSupportSnow(value)
+            || SubsystemSnowBlockBehavior.CanBeReplacedBySnow(value);
+    }
+
     public bool IsCrossPlant(int content) =>
         (uint)content < (uint)BlocksManager.Blocks.Length
         && BlocksManager.Blocks[content] is CrossBlock;

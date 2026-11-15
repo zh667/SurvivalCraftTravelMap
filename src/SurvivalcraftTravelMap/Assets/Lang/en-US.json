@@ -16,6 +16,8 @@
     "showCoordinates": "Show X / Y / Z coordinates",
     "showGameTime": "Show game time",
     "showCreatureMarkers": "Show creature markers",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "Show last death location",
     "northUp": "Keep north at top",
     "compassDirections": "Compass directions",

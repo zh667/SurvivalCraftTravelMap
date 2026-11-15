@@ -229,6 +229,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         UpdateMiniMapPlacement();
         UpdateInvitationUi(hudState);
         UpdateOpenMapButton();
+        UpdateMapSeason();
         UpdateExploration(dt);
         if (_miniMapPlacementSession is null)
         {
@@ -1301,6 +1302,35 @@ public sealed class TravelMapComponent : Component, IUpdateable
         CommonLib.Net.QueuePackage(new LegacyGpsPackage(message));
     }
 
+    private SubsystemGameInfo? _seasonGameInfo;
+
+    /// <summary>
+    /// Publishes the world's season to every map surface. Reading two fields a frame is cheaper
+    /// than any throttling; the surfaces only repaint when the value actually changes (about every
+    /// 1/48 of a year, when the rounded season temperature moves by one degree).
+    /// </summary>
+    private void UpdateMapSeason()
+    {
+        if (!RuntimeContext.IsMainPlayer)
+        {
+            return;
+        }
+
+        _seasonGameInfo ??= Project.FindSubsystem<SubsystemGameInfo>(false);
+        var settings = _seasonGameInfo?.WorldSettings;
+        MapSeason.Current = settings is null
+            ? default
+            : new MapSeason(
+                Terrain.Terrain.SeasonTemperature,
+                PredictsFreezing: settings.EnvironmentBehaviorMode == EnvironmentBehaviorMode.Living,
+                // This edition declares TerrainUpdater.ChunkInitialized but never raises it (decompiled
+                // x26.07.01.01; the isolated run saw no snow land on load in winter), so nothing
+                // freezes or snows when a chunk loads: only the blocks scanner thaws loaded chunks and
+                // snow falls only while it snows. The map therefore keeps snow it saw and melts it,
+                // and never predicts new snow.
+                SnowFallsOnLoad: false);
+    }
+
     private void UpdateExploration(float dt)
     {
         if (_explorationRecorder is null || _explorationCoverageProbe is null)
@@ -2040,7 +2070,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
             markers.Add(new CreatureMapMarker(
                 new Vector3(position.X, position.Y, position.Z),
-                ToCreatureMarkerKind(creature.Category)));
+                GetCreatureMarkerKind(creature)));
         }
 
         return markers;
@@ -2054,16 +2084,58 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 .ToArray()
             : _waypoints;
 
-    internal static CreatureMapMarkerKind ToCreatureMarkerKind(CreatureCategory category)
+    // A creature's kind is read once from its entity (components never change after creation);
+    // only "is it chasing the player right now" is checked every frame.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<ComponentCreature, CreatureKindEntry>
+        _creatureKinds = new();
+
+    private sealed class CreatureKindEntry(CreatureMapMarkerKind kind, ComponentChaseBehavior? chase)
     {
-        if ((category & (CreatureCategory.LandPredator | CreatureCategory.WaterPredator)) != 0)
+        public CreatureMapMarkerKind Kind { get; } = kind;
+
+        public ComponentChaseBehavior? Chase { get; } = chase;
+    }
+
+    private CreatureMapMarkerKind GetCreatureMarkerKind(ComponentCreature creature)
+    {
+        var entry = _creatureKinds.GetValue(creature, static creature =>
         {
-            return CreatureMapMarkerKind.Predator;
+            var chase = creature.Entity.FindComponent<ComponentChaseBehavior>();
+            return new CreatureKindEntry(
+                CreatureMarkerClassifier.Classify(ReadCreatureMarkerTraits(creature, chase)),
+                chase);
+        });
+
+        // Anything currently chasing the player is a threat whatever it normally is (a bull that
+        // was hit, a tamed animal turned on its owner).
+        return entry.Kind != CreatureMapMarkerKind.Hostile
+            && entry.Chase is { Target: { } target }
+            && ReferenceEquals(target, Player)
+                ? CreatureMapMarkerKind.Hostile
+                : entry.Kind;
+    }
+
+    internal static CreatureMarkerTraits ReadCreatureMarkerTraits(
+        ComponentCreature creature,
+        ComponentChaseBehavior? chase)
+    {
+        var names = new List<string>();
+        foreach (var component in creature.Entity.Components)
+        {
+            names.Add(component.GetType().Name);
         }
 
-        return (category & CreatureCategory.Bird) != 0
-            ? CreatureMapMarkerKind.Bird
-            : CreatureMapMarkerKind.Other;
+        // The game's chase behaviour comes after the player when it may attack players and has a
+        // chase range; mods' own chasers (ghouls, the horror mod's beasts) use it too.
+        var chasesPlayer = chase is not null
+            && MathF.Max(chase.m_dayChaseRange, chase.m_nightChaseRange) > 0f;
+        var category = creature.Category;
+        return new CreatureMarkerTraits(
+            IsPredator: (category & (CreatureCategory.LandPredator | CreatureCategory.WaterPredator)) != 0,
+            IsAquatic: (category & (CreatureCategory.WaterPredator | CreatureCategory.WaterOther)) != 0,
+            ChasesPlayer: chasesPlayer,
+            Flies: creature.Entity.FindComponent<ComponentLocomotion>() is { FlySpeed: > 0f },
+            ComponentTypeNames: names);
     }
 
     private float GetTerrainBrightness() => _settings is { UseDayNightTint: true }

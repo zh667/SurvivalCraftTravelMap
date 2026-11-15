@@ -85,6 +85,9 @@ public sealed class TravelMapDialog : Dialog
         new TravelMapNoticeController(TimeSpan.FromSeconds(2.5));
     private readonly LargeMapFollowState _followState = new();
     private readonly TouchMapGestureState _touchGesture = new();
+    private readonly TouchGhostFilter _touchFilter = new();
+    private readonly List<RawMapTouch> _rawTouches = new(4);
+    private readonly List<RawMapTouch> _liveTouches = new(4);
     private readonly MiniMapTouchTapState _deathTouchTap = new();
     private readonly TouchMapLongPressState _touchLongPress = new();
     private readonly CanvasWidget _noticeHost;
@@ -726,24 +729,45 @@ public sealed class TravelMapDialog : Dialog
         // A press-and-hold with a single finger stands in for a right-click, opening the
         // teleport menu. It is only meaningful while exactly one finger is down and no menu
         // is already showing; a second finger (pinch) or an open menu cancels the tracker.
-        var singleTouch = Input.TouchLocations.Count == 1;
+        // Only fingers this map saw go down take part: the engine can leave a touch whose release
+        // it dropped (keyboard up, window inactive) in TouchLocations for good. See TouchGhostFilter.
+        _rawTouches.Clear();
+        for (var index = 0; index < Input.TouchLocations.Count; index++)
+        {
+            var location = Input.TouchLocations[index];
+            _rawTouches.Add(new RawMapTouch(
+                location.Id,
+                new NVector2(location.Position.X, location.Position.Y),
+                location.State switch
+                {
+                    TouchLocationState.Pressed => MiniMapTouchPhase.Pressed,
+                    TouchLocationState.Released => MiniMapTouchPhase.Released,
+                    _ => MiniMapTouchPhase.Moved,
+                }));
+        }
+
+        _touchFilter.Filter(
+            _rawTouches,
+            Time.RealTime,
+            Window.IsActive,
+            _liveTouches,
+            screen =>
+            {
+                var local = _surface.ScreenToWidget(new Vector2(screen.X, screen.Y));
+                return _surface.ContainsLocalPoint(new NVector2(local.X, local.Y));
+            });
+        var singleTouch = _liveTouches.Count == 1;
         if (!singleTouch || _activeMenu is not null)
         {
             _touchLongPress.Reset();
         }
 
         var touches = new List<TouchMapPoint>(2);
-        for (var index = 0; index < Input.TouchLocations.Count; index++)
+        foreach (var touch in _liveTouches)
         {
-            var touch = Input.TouchLocations[index];
-            var localEngine = _surface.ScreenToWidget(touch.Position);
+            var localEngine = _surface.ScreenToWidget(new Vector2(touch.Position.X, touch.Position.Y));
             var local = new NVector2(localEngine.X, localEngine.Y);
-            var phase = touch.State switch
-            {
-                TouchLocationState.Pressed => MiniMapTouchPhase.Pressed,
-                TouchLocationState.Released => MiniMapTouchPhase.Released,
-                _ => MiniMapTouchPhase.Moved,
-            };
+            var phase = touch.Phase;
             var deathTap = _deathTouchTap.Update(
                 touch.Id,
                 local,
@@ -775,13 +799,13 @@ public sealed class TravelMapDialog : Dialog
                     // upcoming release doesn't fire a "locate death" that dismisses the menu we just
                     // opened by long-pressing that marker.
                     _deathTouchTap.Reset();
-                    OpenTeleportMenuAt(local, touch.Position);
+                    OpenTeleportMenuAt(local, new Vector2(touch.Position.X, touch.Position.Y));
                     Input.Clear();
                     return true;
                 }
             }
 
-            if (touch.State == TouchLocationState.Released)
+            if (phase == MiniMapTouchPhase.Released)
             {
                 continue;
             }

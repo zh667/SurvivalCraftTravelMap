@@ -1021,11 +1021,17 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
             return;
         }
 
-        var markerSize = _settings.CreatureMarkerSize;
-        var fillRadius = markerSize * 0.5f;
-        var outlineRadius = fillRadius + MathF.Max(1.5f, markerSize * 0.1f);
         foreach (var creature in _creatures())
         {
+            if ((creature.Kind == CreatureMapMarkerKind.Bird && !_settings.ShowBirdMarkers)
+                || (creature.Kind == CreatureMapMarkerKind.Fish && !_settings.ShowFishMarkers))
+            {
+                continue;
+            }
+
+            var markerSize = _settings.CreatureMarkerSize * CreatureMapMarkerStyle.SizeFactorFor(creature.Kind);
+            var fillRadius = markerSize * 0.5f;
+            var outlineRadius = fillRadius + MathF.Max(1.5f, markerSize * 0.1f);
             var center = _drawMapTransform.WorldToScreen(
                 new NVector2(creature.Position.X, creature.Position.Z));
             if (!IsInsideViewport(center, outlineRadius))

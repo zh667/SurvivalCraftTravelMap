@@ -50,7 +50,7 @@ public sealed class TravelMapLocalizationTests
             var entries = travelMap.EnumerateObject().ToArray();
             var keys = entries.Select(entry => entry.Name).Order(StringComparer.Ordinal).ToArray();
 
-            Assert.Equal(137, keys.Length);
+            Assert.Equal(139, keys.Length);
             Assert.All(entries, entry =>
             {
                 Assert.Equal(JsonValueKind.String, entry.Value.ValueKind);

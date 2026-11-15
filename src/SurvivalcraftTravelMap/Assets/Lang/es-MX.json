@@ -16,6 +16,8 @@
     "showCoordinates": "Mostrar coordenadas X / Y / Z",
     "showGameTime": "Mostrar hora del juego",
     "showCreatureMarkers": "Mostrar criaturas",
+    "showBirdMarkers": "  Mostrar aves",
+    "showFishMarkers": "  Mostrar peces",
     "showLastDeathMarker": "Mostrar el último lugar de muerte",
     "northUp": "Mantener el norte arriba",
     "compassDirections": "Direcciones de la brújula",
