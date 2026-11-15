@@ -16,6 +16,8 @@
     "showCoordinates": "Göster X / Y / Z koordinatları",
     "showGameTime": "Program maç zamanı",
     "showCreatureMarkers": "Yaratık işaretleyicilerini göster",
+    "showBirdMarkers": "  Show birds",
+    "showFishMarkers": "  Show fish",
     "showLastDeathMarker": "Son ölüm yerini göster",
     "northUp": "Kuzeyi en üstte tutun",
     "compassDirections": "Pusula yönleri",
