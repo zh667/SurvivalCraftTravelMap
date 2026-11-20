@@ -6,9 +6,8 @@ using Engine.Input;
 using Game;
 #if TM_NET
 using Game.NetWork;
-#else
-using HarmonyLib;
 #endif
+using HarmonyLib;
 using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Persistence;
@@ -42,17 +41,34 @@ public class Lab : ModLoader
     static double lastFrame;
     static List<double>? frameLog;
 
+    static string packageVersion = "";
+
     public override void __ModInitialize()
     {
-#if !TM_NET
-        new Harmony("local.sctmlab").PatchAll(typeof(Lab).Assembly);
+#if TM_NET
+        // The multiplayer edition ships no Harmony: run_isolated.py puts the plugin edition's Harmony and MonoMod
+        // assemblies in labdeps/. Resolve them before any method that uses Harmony is compiled.
+        AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "labdeps", new System.Reflection.AssemblyName(args.Name).Name + ".dll");
+            return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+        };
 #endif
+        ApplyPatches();
+        var v = Path.Combine(AppContext.BaseDirectory, "lab-package-version.txt");
+        if (File.Exists(v)) packageVersion = File.ReadAllText(v).Trim();
 #if !TM_NET
         SettingsManager.FileAssociationEnabled = false;
 #endif
         var m = Path.Combine(AppContext.BaseDirectory, "lab-mode.txt");
         if (File.Exists(m)) mode = File.ReadAllText(m).Trim();
     }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void ApplyPatches() => new Harmony("local.sctmlab").PatchAll(typeof(Lab).Assembly);
+
+    // The package under test predates 2.9.0 (upgrade-old with the 2.8.0 package).
+    static bool OlderPackage => packageVersion.Length > 0 && packageVersion != "2.9.0";
 
     public override void OnLoadingFinished(List<Action> actions) =>
         actions.Add(() => { began = Time.RealTime; Window.Frame += Frame; });
@@ -87,6 +103,7 @@ public class Lab : ModLoader
                 "shading" => Shading(),
                 "upgrade-old" => UpgradeOld(),
                 "upgrade-new" => UpgradeNew(),
+                "attack" => Attack(),
                 _ => Season(),
             }).GetEnumerator();
             if (!script.MoveNext())
@@ -136,7 +153,8 @@ public class Lab : ModLoader
     static IEnumerable<bool> EnterWorld(
         float timeOfYear,
         TerrainGenerationMode generation = TerrainGenerationMode.Continent,
-        bool existing = false)
+        bool existing = false,
+        GameMode gameMode = GameMode.Creative)
     {
         while (ScreensManager.CurrentScreen is not MainMenuScreen) yield return true;
 #if TM_NET
@@ -161,7 +179,7 @@ public class Lab : ModLoader
             {
                 Name = WorldName,
                 Seed = "20261114",
-                GameMode = GameMode.Creative,
+                GameMode = gameMode,
                 TerrainGenerationMode = generation,
                 EnvironmentBehaviorMode = EnvironmentBehaviorMode.Living,
                 AreWeatherEffectsEnabled = true,
@@ -642,7 +660,8 @@ public class Lab : ModLoader
         foreach (var x in VisitSite(terrain, home)) yield return x;
 
         // The bug being fixed: the older package lights relief from the screen's bottom-right.
-        foreach (var x in LookAtSite("upgrade_old_large_map", expectTopLeftLight: false, "older package")) yield return x;
+        // (Run with the current package too, on the multiplayer edition, where the lab cannot load next to 2.8.0.)
+        foreach (var x in LookAtSite("upgrade_old_large_map", expectTopLeftLight: !OlderPackage, OlderPackage ? "older package" : "current package")) yield return x;
 
         // Save with the player far away, so the site is neither loaded nor on the mini map when the world reopens.
         Teleport(new Vector3(home.X + 400.5f, 150, home.Y + 0.5f));
@@ -657,6 +676,9 @@ public class Lab : ModLoader
             pit = new[] { pit.X, pit.Y },
             home = new[] { home.X, home.Y },
             shades = ReadSamples().ToDictionary(kv => kv.Key, kv => (int)kv.Value.HeightShade),
+            legacy = OlderPackage,
+            tiles = directory,
+            worldDirectory = GameManager.Project.FindSubsystem<SubsystemGameInfo>(true).DirectoryName,
             files = Directory.GetFiles(directory, "*.sctm").ToDictionary(Path.GetFileName, f => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(f)))),
         }));
         metrics["tileFiles"] = Directory.GetFiles(directory, "*.sctm").Select(Path.GetFileName).ToArray();
@@ -669,12 +691,53 @@ public class Lab : ModLoader
         pit = new Point2(site.GetProperty("pit")[0].GetInt32(), site.GetProperty("pit")[1].GetInt32());
         var oldShades = site.GetProperty("shades").EnumerateObject().ToDictionary(p => p.Name, p => (byte)p.Value.GetInt32());
         var oldFiles = site.GetProperty("files").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString());
+        var legacy = site.GetProperty("legacy").GetBoolean();
+        var oldTiles = site.GetProperty("tiles").GetString()!;
+
+        // Where the map cache lived before it was keyed by the world's full path. A 2.8.0 run left it there already;
+        // a current-package run (multiplayer edition) wrote it under the new key, so move it back to the old one.
+        var playerDirectory = Path.GetDirectoryName(oldTiles)!;
+        var mapsDirectory = Path.GetDirectoryName(Path.GetDirectoryName(playerDirectory)!)!;
+        var legacyKey = WorldKey.ForLocal(site.GetProperty("worldDirectory").GetString()!);
+        var legacyPlayerDirectory = Path.Combine(mapsDirectory, legacyKey, Path.GetFileName(playerDirectory));
+        if (!string.Equals(Path.GetFullPath(playerDirectory), Path.GetFullPath(legacyPlayerDirectory), StringComparison.OrdinalIgnoreCase))
+        {
+            Check(!Directory.Exists(Path.Combine(mapsDirectory, legacyKey)), "no old-key cache before the move");
+            Directory.Move(Path.GetDirectoryName(playerDirectory)!, Path.Combine(mapsDirectory, legacyKey));
+            notes.Add($"moved the current-key cache to the old key {legacyKey} to stand in for an older build's");
+        }
+
+        var legacyTiles = Path.Combine(legacyPlayerDirectory, "tiles");
+        Check(oldFiles.All(f => File.Exists(Path.Combine(legacyTiles, f.Key))), "the old-key cache holds the recorded tiles");
 
         foreach (var x in EnterWorld(Summer, existing: true)) yield return x;
         NoteDataRoot();
         var terrain = GameManager.Project.FindSubsystem<SubsystemTerrain>(true);
         foreach (var x in Seconds(3)) yield return x;
         notes.Add($"player at {data.ComponentPlayer.ComponentBody.Position}");
+
+        // The cache was found under the new, path-based key: copied from the old key, which stays as it was.
+        var newTiles = Field<string>(Store, "_directory");
+        Check(!string.Equals(Path.GetFullPath(newTiles), Path.GetFullPath(legacyTiles), StringComparison.OrdinalIgnoreCase),
+            $"the map now lives under a new key ({Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(newTiles)!)!)})");
+        foreach (var (file, hash) in oldFiles)
+            Check(File.Exists(Path.Combine(newTiles, file)) && Hash(Path.Combine(newTiles, file)) == hash, $"{file} was copied to the new key unchanged");
+        metrics["cacheKeys"] = new { legacy = legacyTiles, current = newTiles };
+
+        if (!legacy)
+        {
+            // Data already in the current format: the far-away site must be on the map straight away (it was not
+            // recorded again: the player is 400 blocks away), with the shades it had.
+            var shown = ReadSamples();
+            foreach (var (name, cell) in SampleCells())
+                Check(shown[name].HeightShade == oldShades[name], $"{name}: migrated map shows shade {shown[name].HeightShade} as recorded");
+            Check(ShadeCurrent(platform) && ShadeCurrent(pit), "current-format chunks are not flagged for re-recording");
+            foreach (var x in LookAtSite("cachekey_migrated", expectTopLeftLight: true, "current package, migrated cache")) yield return x;
+            foreach (var x in Seconds(8)) yield return x;
+            foreach (var (file, hash) in oldFiles)
+                Check(File.Exists(Path.Combine(legacyTiles, file)) && Hash(Path.Combine(legacyTiles, file)) == hash, $"old-key file {file} is still there, unchanged");
+            yield break;
+        }
 
         // Before the player comes near: mirrored old shades, chunks flagged.
         var before = ReadSamples();
@@ -705,9 +768,10 @@ public class Lab : ModLoader
         var directory = Field<string>(Store, "_directory");
         foreach (var (file, hash) in oldFiles)
         {
-            var path = Path.Combine(directory, file);
-            Check(File.Exists(path) && Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))) == hash,
-                $"2.8.0 file {file} is still there, unchanged");
+            Check(File.Exists(Path.Combine(directory, file)) && Hash(Path.Combine(directory, file)) == hash,
+                $"2.8.0 file {file} (copied to the new key) is still there, unchanged");
+            Check(File.Exists(Path.Combine(legacyTiles, file)) && Hash(Path.Combine(legacyTiles, file)) == hash,
+                $"2.8.0 file {file} under the old key is still there, unchanged");
         }
 
         var v5 = Directory.GetFiles(directory, "*.v5.sctm").Select(Path.GetFileName).ToArray();
@@ -719,6 +783,8 @@ public class Lab : ModLoader
         }
     }
 
+    static string Hash(string path) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+
     static byte Mirror(byte shade) => shade == 0 ? (byte)0 : (byte)Math.Clamp(256 - shade, 1, 255);
 
     // 2.9.0-only API, kept out of the methods the older package runs.
@@ -726,6 +792,118 @@ public class Lab : ModLoader
     {
         var c = TileCoordinate.FromWorld(site.X, site.Y);
         return Store.IsChunkShadeCurrent(c.TileX, c.TileZ, c.LocalX, c.LocalZ);
+    }
+
+    // ---- attack ----------------------------------------------------------------------------
+    //   "attack": a challenging-mode world. (1) A cow, green by the marker rules, is provoked through the game's own chase
+    //             behaviour and hits the player; (2) an arrow fired with a camel as its owner hits the player (projectiles
+    //             must lead back to whoever fired them). Each attacker must show red right after the hit, its template must
+    //             be remembered in hostile-templates.txt in the world's map cache, and another of its kind far away, not
+    //             chasing, must show yellow instead of green.
+
+    static readonly List<string> attackers = [];
+
+    static void NoteAttacker(ComponentCreature? attacker) =>
+        attackers.Add(attacker is null ? "-" : attacker.Entity.ValuesDictionary.DatabaseObject.Name);
+
+    static Entity? SpawnAt(string template, Vector3 position)
+    {
+        Entity? entity;
+        try { entity = DatabaseManager.CreateEntity(GameManager.Project, template, false); }
+        catch (Exception e) { notes.Add($"{template}: {e.GetType().Name} {e.Message}"); return null; }
+        entity.FindComponent<ComponentBody>(true).Position = position;
+        if (entity.FindComponent<ComponentSpawn>() is { } spawn) spawn.SpawnDuration = 0f;
+        GameManager.Project.AddEntity(entity);
+        return entity;
+    }
+
+    static string KindOf(ComponentCreature creature) =>
+        typeof(TravelMapComponent).GetMethod("GetCreatureMarkerKind", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(Map, [creature])!.ToString()!;
+
+    static IEnumerable<bool> Attack()
+    {
+        foreach (var x in EnterWorld(Summer, gameMode: GameMode.Challenging)) yield return x;
+        NoteDataRoot();
+        var player = data.ComponentPlayer;
+        var health = player.ComponentHealth;
+#if TM_NET
+        health.Attacked += NoteAttacker;
+#else
+        health.Injured += injury => NoteAttacker(injury.Attacker);
+#endif
+        var terrain = GameManager.Project.FindSubsystem<SubsystemTerrain>(true);
+        var time = GameManager.Project.FindSubsystem<SubsystemTime>(true);
+        var at = player.ComponentBody.Position;
+        var ground = terrain.Terrain.GetTopHeight((int)MathF.Floor(at.X), (int)MathF.Floor(at.Z)) + 1;
+        player.ComponentLocomotion.IsCreativeFlyEnabled = false;
+        var stand = new Vector3(MathF.Floor(at.X) + 0.5f, ground + 0.1f, MathF.Floor(at.Z) + 0.5f);
+        Teleport(stand);
+        void KeepAlive() { health.Health = 1f; }
+        foreach (var x in Seconds(2, KeepAlive)) yield return x;
+        var hostility = Field<CreatureHostilityMemory>(Map, "_hostility");
+        var file = Path.Combine(Path.GetDirectoryName(Field<string>(Store, "_directory"))!, CreatureHostilityMemory.FileName);
+
+        foreach (var (template, how) in new[] { ("Cow_Brown", "melee"), ("Camel", "arrow") })
+        {
+            var entity = SpawnAt(template, stand + new Vector3(3f, 0.5f, 0f));
+            Check(entity is not null, $"{template} spawned");
+            var creature = entity!.FindComponent<ComponentCreature>(true);
+            foreach (var x in Seconds(1, KeepAlive)) yield return x;
+            var before = KindOf(creature);
+            metrics[$"{template}_beforeHit"] = before;
+            Check(before == "Passive/Land", $"{template} starts green ({before})");
+
+            double hitAt = 0;
+            var kindAtHit = "";
+            var until = Time.RealTime + 60;
+            var lastShot = 0.0;
+            while (Time.RealTime < until)
+            {
+                KeepAlive();
+                if (how == "melee")
+                {
+                    // Provoke it as hitting it would (the game's chase behaviour, "chase when attacked").
+                    var chase = entity.FindComponent<ComponentChaseBehavior>(true);
+                    if (chase.Target is null) chase.Attack(player, 30f, 60f, true);
+                }
+                else if (Time.RealTime - lastShot > 1.5)
+                {
+                    // An arrow owned by the camel, fired from just beside the player at its chest.
+                    lastShot = Time.RealTime;
+                    var from = player.ComponentBody.Position + new Vector3(1.5f, 1.2f, 0f);
+                    var to = player.ComponentBody.Position + new Vector3(0f, 1.0f, 0f);
+                    GameManager.Project.FindSubsystem<SubsystemProjectiles>(true)
+                        .FireProjectile(Terrain.MakeBlockValue(192, 0, 2), from, Vector3.Normalize(to - from) * 30f, Vector3.Zero, creature);
+                }
+
+                if (hostility.IsRecentAttacker(creature, time.GameTime))
+                {
+                    hitAt = time.GameTime;
+                    kindAtHit = KindOf(creature);
+                    break;
+                }
+
+                yield return true;
+            }
+
+            metrics[$"{template}_attackersSeen"] = attackers.Distinct().ToArray();
+            Check(hitAt > 0, $"{template} ({how}) hit the player and the map took it as the attacker (injuries came from: {string.Join(", ", attackers.Distinct())})");
+            Check(kindAtHit.StartsWith("Chasing/"), $"{template} shows red right after the hit ({kindAtHit})");
+            Check(hostility.IsAttackerTemplate(template), $"{template} is remembered as a template that attacks");
+            Check(File.Exists(file) && File.ReadAllLines(file).Contains(template), $"{CreatureHostilityMemory.FileName} in the world's map cache names {template}");
+
+            GameManager.Project.RemoveEntity(entity, true);
+            var far = SpawnAt(template, stand + new Vector3(40f, 0.5f, 40f));
+            Check(far is not null, $"second {template} spawned far away");
+            foreach (var x in Seconds(2, KeepAlive)) yield return x;
+            var farKind = KindOf(far!.FindComponent<ComponentCreature>(true));
+            metrics[$"{template}_anotherOfItsKind"] = farKind;
+            Check(farKind == "Provokable/Land", $"another {template}, far away and not chasing, shows yellow ({farKind})");
+            GameManager.Project.RemoveEntity(far, true);
+        }
+
+        metrics["rememberedTemplates"] = File.ReadAllLines(file);
     }
 
     // ---- markers ---------------------------------------------------------------------------
@@ -747,7 +925,8 @@ public class Lab : ModLoader
         ("SAGhoul_Weak_01", "Provokable/Land|Chasing/Land"),        // Ghoul mod: registered as a bird
         // Ghoul mod: the shooting head, registered as a bird. It has no chase behaviour and no component the map knows
         // (only ComponentCorpsificeHead), so the 2.9.0 rules make it green; see the plan's execution record.
-        ("SAG_CorpsificeHead", "Passive/Land"),
+        // Since it may aim at the player when spawned, red is accepted too; the attack mode checks what happens after a hit.
+        ("SAG_CorpsificeHead", "Passive/Land|Chasing/Land"),
         ("ScTacticalEnemy", "Chasing/Land"),        // CS weapons: bandit, registered as LandOther
         ("ScTacticalCT", "Friendly/Land"),          // CS weapons: teammate, registered as LandOther
         ("ScTacticalHostage", "Friendly/Land"),
@@ -950,9 +1129,17 @@ public static class InjectTouchesAtFrameStart
     }
 }
 
+// The test game runs while the user keeps working: keep the system cursor free (see MechDefense's isolated tests).
+[HarmonyPatch(typeof(Engine.Input.Mouse), "BeforeFrame")]
+public static class KeepCursorFree { public static void Prefix() => Engine.Input.Mouse.IsMouseVisible = true; }
+
+[HarmonyPatch(typeof(Engine.Input.Mouse), "AfterFrame")]
+public static class KeepCursorFreeAfter { public static void Prefix() => Engine.Input.Mouse.IsMouseVisible = true; }
+#endif
+
 // data:/ is %LOCALAPPDATA%/Survivalcraft, shared with the user's own games: the travel map keeps its settings and every
 // world's map there. Point it at a folder inside the isolated runtime instead (run_isolated.py clears it per run, except
-// for upgrade-new, which reopens what upgrade-old left). Not available on the multiplayer edition (no Harmony there).
+// for upgrade-new, which reopens what upgrade-old left). Both editions (the multiplayer one through labdeps/).
 [HarmonyPatch(typeof(Engine.Storage), "GetDataDirectory")]
 public static class IsolatedDataDirectory
 {
@@ -963,11 +1150,3 @@ public static class IsolatedDataDirectory
         return false;
     }
 }
-
-// The test game runs while the user keeps working: keep the system cursor free (see MechDefense's isolated tests).
-[HarmonyPatch(typeof(Engine.Input.Mouse), "BeforeFrame")]
-public static class KeepCursorFree { public static void Prefix() => Engine.Input.Mouse.IsMouseVisible = true; }
-
-[HarmonyPatch(typeof(Engine.Input.Mouse), "AfterFrame")]
-public static class KeepCursorFreeAfter { public static void Prefix() => Engine.Input.Mouse.IsMouseVisible = true; }
-#endif

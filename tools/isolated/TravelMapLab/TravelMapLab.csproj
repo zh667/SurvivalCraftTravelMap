@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ScInstall Condition="'$(ScInstall)' == ''">D:\下载\[Windows]SurvivalcraftAPI_1.9.3.1</ScInstall>
+    <HarmonyDir Condition="'$(HarmonyDir)' == ''">D:\下载\[Windows]SurvivalcraftAPI_1.9.3.1</HarmonyDir>
     <TravelMapDll Condition="'$(TravelMapDll)' == ''">$(MSBuildThisFileDirectory)..\pkg\SurvivalcraftTravelMap.dll</TravelMapDll>
   </PropertyGroup>
   <PropertyGroup Condition="'$(TmFlavor)' == 'net'">
@@ -15,6 +16,8 @@
     <Reference Include="Survivalcraft" HintPath="$(ScInstall)\Survivalcraft.dll" Private="false" />
     <Reference Include="Engine" HintPath="$(ScInstall)\Engine.dll" Private="false" />
     <Reference Include="EntitySystem" HintPath="$(ScInstall)\EntitySystem.dll" Private="false" />
-    <Reference Include="0Harmony" HintPath="$(ScInstall)\0Harmony.dll" Private="false" Condition="'$(TmFlavor)' != 'net'" />
+    <!-- The multiplayer edition has no Harmony of its own: compile against the plugin edition's (run_isolated.py copies it
+         and its MonoMod dependencies into the runtime's labdeps/). -->
+    <Reference Include="0Harmony" HintPath="$(HarmonyDir)\0Harmony.dll" Private="false" />
   </ItemGroup>
 </Project>

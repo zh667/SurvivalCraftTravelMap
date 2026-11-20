@@ -4,8 +4,13 @@ python run_isolated.py --mode season|touch|markers|shading|upgrade-old|upgrade-n
                        [--package <scmod|netmod>] [--label <name>] [--extra <mod> ...]
 
 shading: relief light direction on the large map, in the map data and in the screenshot pixels (checked here).
-upgrade-old / upgrade-new (plugin edition only): run upgrade-old with an older package (--package 2.8.0), then
-upgrade-new with the current one; both use runtime-upgrade-<source>, and upgrade-new reopens the world upgrade-old saved.
+upgrade-old / upgrade-new: run upgrade-old (plugin edition: with an older package, --package 2.8.0; multiplayer edition:
+with the current package, the lab cannot load next to an older build there), then upgrade-new with the current one; both
+use the same runtime, and upgrade-new reopens the world upgrade-old saved. upgrade-new also checks that the map cache moved
+from the old directory-name key to the path key (the multiplayer run moves its cache to the old key first).
+attack: a creature hits the player in a challenging world (the Ghoul mod's corpse head with --extra <ghoul>, else a wolf).
+Every run lists %LOCALAPPDATA%/Survivalcraft/SurvivalcraftTravelMap (read-only) before and after and fails on any change:
+the lab redirects data:/ into the runtime (isolated-data/) on both editions.
 Screenshots of every run are kept in shots/<runtime>-<mode>/ next to this script.
 
 --source net runs the multiplayer edition (SurvivalcraftNet 2.4, x26.07.01.01) as a local game, in one fixed folder
@@ -152,9 +157,27 @@ def check_pixels(result, shots_dir, keep_dir):
     return failures
 
 
+USER_DATA = Path(os.environ.get('LOCALAPPDATA', '')) / 'Survivalcraft' / 'SurvivalcraftTravelMap'
+
+
+def snapshot_user_data():
+    """Read-only listing (relative path -> size, mtime) of the travel map's per-user folder the real games use."""
+    result = {}
+    if USER_DATA.is_dir():
+        for root, _, files in os.walk(USER_DATA):
+            for name in files:
+                p = Path(root) / name
+                try:
+                    st = p.stat()
+                    result[str(p.relative_to(USER_DATA))] = (st.st_size, st.st_mtime_ns)
+                except OSError:
+                    pass
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--mode', choices=['season', 'touch', 'markers', 'shading', 'upgrade-old', 'upgrade-new'], required=True)
+    ap.add_argument('--mode', choices=['season', 'touch', 'markers', 'shading', 'upgrade-old', 'upgrade-new', 'attack'], required=True)
     ap.add_argument('--source', choices=SOURCES, default='1.9.3.1')
     ap.add_argument('--package')
     ap.add_argument('--label', default='')
@@ -165,12 +188,10 @@ def main():
     current = ROOT / 'pkg' / ('SurvivalcraftTravelMap.netmod' if net else 'SurvivalcraftTravelMap.scmod')
     source, package = SOURCES[a.source], Path(a.package) if a.package else current
     upgrade = a.mode.startswith('upgrade')
-    if net and upgrade:
-        sys.exit('upgrade modes run the plugin edition only (the multiplayer edition loads the lab only against its own build)')
     if net:
         runtime = ROOT / 'runtime-net'
-        if runtime.exists():
-            shutil.rmtree(runtime)   # fresh worlds and settings every run
+        if runtime.exists() and a.mode != 'upgrade-new':
+            shutil.rmtree(runtime)   # fresh worlds and settings every run (upgrade-new reopens upgrade-old's world)
     else:
         kind = 'upgrade' if upgrade else a.mode
         runtime = ROOT / f"runtime-{kind}-{a.source}{'-' + a.label if a.label else ''}"
@@ -187,6 +208,12 @@ def main():
         text = (source / 'Settings.xml').read_text(encoding='utf-8-sig')
         text = re.sub(r'(Name="(?:SoundsVolume|MusicVolume)"[^>]*?Value=")[^"]*"', r'\g<1>0"', text)
         (runtime / 'Settings.xml').write_text(text, encoding='utf-8')
+    if net:   # Harmony and its MonoMod dependencies for the lab (the multiplayer edition ships none)
+        deps = runtime / 'labdeps'
+        deps.mkdir(exist_ok=True)
+        for f in SOURCES['1.9.3.1'].iterdir():
+            if f.suffix.lower() == '.dll' and (f.name == '0Harmony.dll' or f.name.startswith(('MonoMod.', 'Mono.Cecil'))):
+                shutil.copy2(f, deps / f.name)
     print('runtime', runtime, 'from', source)
 
     # Build the lab against the DLL inside the package under test.
@@ -225,6 +252,7 @@ def main():
         z.write(build / 'out' / 'TravelMapLab.dll', 'TravelMapLab.dll')
         z.writestr('modinfo.json', json.dumps(lab_info))
     (runtime / 'lab-mode.txt').write_text(a.mode, encoding='ascii')
+    (runtime / 'lab-package-version.txt').write_text(info['Version'], encoding='ascii')
     worlds = runtime / 'doc' / 'Worlds'
     assert ROOT in worlds.parents
     if worlds.exists() and not net and a.mode != 'upgrade-new': shutil.rmtree(worlds)
@@ -237,6 +265,7 @@ def main():
     shots = runtime / 'ScreenCapture'
     if shots.exists(): shutil.rmtree(shots)
 
+    user_before = snapshot_user_data()
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 0   # hidden window
     proc = subprocess.Popen([str(runtime / 'Survivalcraft.exe')], cwd=runtime, startupinfo=si)
     t0 = time.time()
@@ -283,7 +312,13 @@ def main():
         passed = False
     if pixel_failures:
         print('PIXEL CHECK FAILED:', '; '.join(pixel_failures))
-    if not passed or pixel_failures:
+    user_after = snapshot_user_data()
+    user_changes = sorted(set(user_before.items()) ^ set(user_after.items()))
+    if user_changes:
+        print('USER DATA CHANGED:', [k for k, _ in user_changes][:20])
+    else:
+        print('user data untouched:', len(user_after), 'files under', USER_DATA)
+    if not passed or pixel_failures or user_changes:
         sys.exit(f'{a.mode} {a.source}: FAILED')
 
 
