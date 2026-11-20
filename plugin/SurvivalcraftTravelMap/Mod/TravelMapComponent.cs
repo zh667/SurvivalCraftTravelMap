@@ -509,6 +509,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 .GetAwaiter()
                 .GetResult();
             _waypoints = _waypointRepository.GetAll();
+            LoadCreatureHostility(storage.Directory);
             _dismissedDeathStore = new DismissedDeathStore(storage.Directory);
             _dismissedDeathStore.LoadAsync(_lifetimeCancellation.Token)
                 .GetAwaiter()
@@ -1708,28 +1709,128 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<ComponentCreature, CreatureKindEntry>
         _creatureKinds = new();
 
-    private sealed class CreatureKindEntry(CreatureMapMarkerKind kind, ComponentChaseBehavior? chase)
+    private sealed class CreatureKindEntry(
+        CreatureMapMarkerKind kind,
+        string templateName,
+        IReadOnlyList<CreatureTargetSlot> targetSlots)
     {
         public CreatureMapMarkerKind Kind { get; } = kind;
 
-        public ComponentChaseBehavior? Chase { get; } = chase;
+        public string TemplateName { get; } = templateName;
+
+        public IReadOnlyList<CreatureTargetSlot> TargetSlots { get; } = targetSlots;
     }
+
+    // Reads fields that hold a creature or body under a target-like name (target, prey, victim):
+    // the chase behaviour's m_target, and mod components' own. The game's other behaviours keep
+    // the player in m_target too while avoiding, staring at or following it, so they are skipped.
+    private static readonly CreatureTargetProbe TargetProbe = new(
+        [typeof(ComponentCreature), typeof(ComponentBody)],
+        typeof(ComponentCreature).Assembly,
+        [typeof(ComponentChaseBehavior)]);
+
+    private CreatureHostilityMemory _hostility = CreatureHostilityMemory.Load(directory: null);
+    private ComponentHealth? _attackWatchedHealth;
+    private SubsystemTime? _creatureClock;
 
     private CreatureMapMarkerKind GetCreatureMarkerKind(ComponentCreature creature)
     {
         var entry = _creatureKinds.GetValue(creature, static creature =>
         {
             var chase = creature.Entity.FindComponent<ComponentChaseBehavior>();
+            var components = new List<object>();
+            foreach (var component in creature.Entity.Components)
+            {
+                components.Add(component);
+            }
+
             return new CreatureKindEntry(
                 CreatureMarkerClassifier.Classify(ReadCreatureMarkerTraits(creature, chase)),
-                chase);
+                ReadTemplateName(creature),
+                TargetProbe.CollectSlots(components));
         });
 
-        // Anything currently chasing the player is a threat whatever it normally is (a bull that
-        // was hit, a tamed animal turned on its owner).
+        // Anything after the player right now is a threat whatever it normally is (a bull that was
+        // hit, a tamed animal turned on its owner, a mod creature aiming at the player), and so is
+        // whatever hit the player in the last seconds. A kind that has hit the player before is
+        // at least yellow.
+        var now = CreatureClockNow();
+        var chasing = CreatureTargetProbe.IsAnyTargeting(entry.TargetSlots, Player, Player?.ComponentBody)
+            || _hostility.IsRecentAttacker(creature, now);
         return CreatureMarkerClassifier.ForFrame(
             entry.Kind,
-            entry.Chase is { Target: { } target } && ReferenceEquals(target, Player));
+            chasing,
+            _hostility.IsAttackerTemplate(entry.TemplateName));
+    }
+
+    // The plugin edition reports every injury through ComponentHealth.Injured; Injury.Attacker
+    // resolves the attacking entity of the attack (projectiles carry their owner).
+    private void WatchPlayerAttacks()
+    {
+        UnwatchPlayerAttacks();
+        if (Player?.ComponentHealth is { } health)
+        {
+            health.Injured += OnPlayerInjured;
+            _attackWatchedHealth = health;
+        }
+    }
+
+    private void UnwatchPlayerAttacks()
+    {
+        if (_attackWatchedHealth is { } health)
+        {
+            health.Injured -= OnPlayerInjured;
+        }
+
+        _attackWatchedHealth = null;
+    }
+
+    private void OnPlayerInjured(Injury injury)
+    {
+        ComponentCreature? attacker = null;
+        try
+        {
+            attacker = injury?.Attacker;
+        }
+        catch (Exception)
+        {
+        }
+
+        RememberPlayerAttacker(attacker);
+    }
+
+    private double CreatureClockNow()
+    {
+        _creatureClock ??= Project.FindSubsystem<SubsystemTime>(false);
+        return _creatureClock?.GameTime ?? 0d;
+    }
+
+    private void LoadCreatureHostility(string storageDirectory)
+    {
+        _hostility = CreatureHostilityMemory.Load(storageDirectory);
+        WatchPlayerAttacks();
+    }
+
+    private void RememberPlayerAttacker(ComponentCreature? attacker)
+    {
+        if (attacker is null
+            || ReferenceEquals(attacker, Player)
+            || attacker.Entity.FindComponent<ComponentPlayer>() is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_hostility.RecordAttack(attacker, ReadTemplateName(attacker), CreatureClockNow()))
+            {
+                Engine.Log.Information($"[TravelMap] Remembered {ReadTemplateName(attacker)} as a creature that attacks the player.");
+            }
+        }
+        catch (Exception exception)
+        {
+            Engine.Log.Warning($"[TravelMap] Could not note a creature attack: {exception.Message}");
+        }
     }
 
     internal static CreatureMarkerTraits ReadCreatureMarkerTraits(
@@ -1837,6 +1938,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         RunCleanupStep(() => _lifetimeCancellation.Cancel());
         RunCleanupStep(() => _chunkLoader?.Dispose());
         RunCleanupStep(CleanupUi);
+        RunCleanupStep(UnwatchPlayerAttacks);
         RunCleanupStep(() => _dispatcher?.Dispose());
         _chunkLoader = null;
         _dispatcher = null;

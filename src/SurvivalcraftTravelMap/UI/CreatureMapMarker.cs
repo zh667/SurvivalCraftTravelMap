@@ -163,9 +163,25 @@ public static class CreatureMarkerClassifier
         return traits.Flies ? CreatureMarkerBody.Bird : CreatureMarkerBody.Land;
     }
 
-    /// <summary>The marker for this frame: anything chasing the player shows red, allies included.</summary>
-    public static CreatureMapMarkerKind ForFrame(CreatureMapMarkerKind kind, bool isChasingPlayer) =>
-        isChasingPlayer ? kind with { Attitude = CreatureMarkerAttitude.Chasing } : kind;
+    /// <summary>
+    /// The marker for this frame: anything chasing the player (holding it as its target, or having
+    /// hit it in the last seconds) shows red, allies included; a creature whose kind has hit the
+    /// player before (<paramref name="isAttackerTemplate"/>) is at least yellow instead of green.
+    /// </summary>
+    public static CreatureMapMarkerKind ForFrame(
+        CreatureMapMarkerKind kind,
+        bool isChasingPlayer,
+        bool isAttackerTemplate = false)
+    {
+        if (isChasingPlayer)
+        {
+            return kind with { Attitude = CreatureMarkerAttitude.Chasing };
+        }
+
+        return isAttackerTemplate && kind.Attitude == CreatureMarkerAttitude.Passive
+            ? kind with { Attitude = CreatureMarkerAttitude.Provokable }
+            : kind;
+    }
 
     private static bool HasAny(IReadOnlyCollection<string> names, string[] wanted)
     {
