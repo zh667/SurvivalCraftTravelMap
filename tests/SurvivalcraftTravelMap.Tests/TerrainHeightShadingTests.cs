@@ -19,11 +19,77 @@ public sealed class TerrainHeightShadingTests
     [Fact]
     public void Light_facing_slope_is_brighter_than_the_opposite_slope()
     {
-        var facing = TerrainHeightShading.Calculate(60, 60, 68, 68, 64);
-        var away = TerrainHeightShading.Calculate(68, 68, 60, 60, 64);
+        // Light comes from world +X / +Z (screen top-left): a slope that rises toward -X / -Z
+        // faces it.
+        var facing = TerrainHeightShading.Calculate(68, 68, 60, 60, 64);
+        var away = TerrainHeightShading.Calculate(60, 60, 68, 68, 64);
 
         Assert.True(facing > TerrainHeightShading.Neutral);
         Assert.True(away < TerrainHeightShading.Neutral);
+    }
+
+    // The map plane is rotated 180 degrees from raw world (X, Z) (see MapTransform), so the
+    // light direction must be judged on screen, not in world coordinates: people read relief
+    // as lit from the screen's top-left, and the 2.8.0 shading lit it from the bottom-right,
+    // which made pits look like mounds (player report 2026-11-19).
+    [Fact]
+    public void Raised_block_is_lit_from_the_screen_top_left_in_north_up_view()
+    {
+        var shades = ShadeOnScreenAroundSquare(heightDelta: 3);
+
+        var left = shades[(8, 10)];
+        var right = shades[(12, 10)];
+        var top = shades[(10, 8)];
+        var bottom = shades[(10, 12)];
+
+        Assert.True(left > right, $"screen-left neighbour {left} should be brighter than screen-right {right}");
+        Assert.True(top > bottom, $"screen-top neighbour {top} should be brighter than screen-bottom {bottom}");
+        Assert.True(left > TerrainHeightShading.Neutral);
+        Assert.True(bottom < TerrainHeightShading.Neutral);
+    }
+
+    [Fact]
+    public void Pit_inner_wall_on_the_screen_top_left_is_darker_in_north_up_view()
+    {
+        var shades = ShadeOnScreenAroundSquare(heightDelta: -3);
+
+        var leftWall = shades[(9, 10)];
+        var rightWall = shades[(11, 10)];
+        var topWall = shades[(10, 9)];
+        var bottomWall = shades[(10, 11)];
+
+        Assert.True(leftWall < rightWall, $"screen-left inner wall {leftWall} should be darker than screen-right {rightWall}");
+        Assert.True(topWall < bottomWall, $"screen-top inner wall {topWall} should be darker than screen-bottom {bottomWall}");
+    }
+
+    /// <summary>
+    /// Flat ground at 64 with a 3x3 square (world cells 0..2) raised or lowered by
+    /// <paramref name="heightDelta"/>. Each cell is shaded exactly like TerrainMapSampler does
+    /// (west = x-1, north = z-1, east = x+1, south = z+1) and keyed by its north-up screen
+    /// position. The square's centre lands on screen (10, 10), one block per pixel.
+    /// </summary>
+    private static Dictionary<(int X, int Y), byte> ShadeOnScreenAroundSquare(int heightDelta)
+    {
+        int Height(int x, int z) => x is >= 0 and < 3 && z is >= 0 and < 3 ? 64 + heightDelta : 64;
+
+        var transform = new MapTransform(new Vector2(1.5f, 1.5f), 1f, new Vector2(20f, 20f));
+        var result = new Dictionary<(int X, int Y), byte>();
+        for (var z = -3; z <= 5; z++)
+        {
+            for (var x = -3; x <= 5; x++)
+            {
+                var shade = TerrainHeightShading.Calculate(
+                    Height(x - 1, z),
+                    Height(x, z - 1),
+                    Height(x + 1, z),
+                    Height(x, z + 1),
+                    Height(x, z));
+                var screen = transform.WorldToScreen(new Vector2(x + 0.5f, z + 0.5f));
+                result[((int)MathF.Round(screen.X), (int)MathF.Round(screen.Y))] = shade;
+            }
+        }
+
+        return result;
     }
 
     [Fact]

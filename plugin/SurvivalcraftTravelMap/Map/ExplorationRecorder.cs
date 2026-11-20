@@ -43,7 +43,14 @@ public sealed class ExplorationRecorder(
                 coordinate.LocalX,
                 coordinate.LocalZ,
                 TerrainChunkCoordinate.Size,
-                TerrainChunkCoordinate.Size);
+                TerrainChunkCoordinate.Size)
+            // Areas recorded before 2.9.0 show mirrored relief shading until recorded again with
+            // the light from the screen's top-left.
+            && _tileStore.IsChunkShadeCurrent(
+                coordinate.TileX,
+                coordinate.TileZ,
+                coordinate.LocalX,
+                coordinate.LocalZ);
     }
 
     public ExplorationRecordResult RecordChunk(TerrainChunkCoordinate chunk)

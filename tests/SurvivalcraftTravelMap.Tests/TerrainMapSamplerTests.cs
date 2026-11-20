@@ -80,7 +80,8 @@ public sealed class TerrainMapSamplerTests
         {
             for (var x = 0; x < TerrainChunkCoordinate.Size; x++)
             {
-                source.SetTopHeight(x, z, 60 + x + z);
+                // Rises toward -X / -Z, i.e. faces the light (screen top-left).
+                source.SetTopHeight(x, z, 90 - x - z);
             }
         }
 

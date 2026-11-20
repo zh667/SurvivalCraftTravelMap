@@ -147,9 +147,12 @@ internal sealed class CaveExplorationStore
                 return existing;
             }
 
+            // Cave shades encode floor height, not lit relief, so pre-2.9.0 cave tiles are read
+            // as they are.
             var store = new ExplorationTileStore(
                 Path.Combine(_directory, "projection_v2", $"y_{centerY:D3}"),
-                capacity: LayerTileCapacity);
+                capacity: LayerTileCapacity,
+                mirrorLegacyHeightShades: false);
             var created = new LayerEntry(
                 store,
                 new TileStoreMapPixelSource(store, snapshotCapacity: LayerTileCapacity));

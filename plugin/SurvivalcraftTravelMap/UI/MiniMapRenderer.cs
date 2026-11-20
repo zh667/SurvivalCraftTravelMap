@@ -1029,8 +1029,8 @@ public class MapSurfaceWidget : Widget, ITravelMapRenderSink
 
         foreach (var creature in _creatures())
         {
-            if ((creature.Kind == CreatureMapMarkerKind.Bird && !_settings.ShowBirdMarkers)
-                || (creature.Kind == CreatureMapMarkerKind.Fish && !_settings.ShowFishMarkers))
+            if ((creature.Kind.Body == CreatureMarkerBody.Bird && !_settings.ShowBirdMarkers)
+                || (creature.Kind.Body == CreatureMarkerBody.Fish && !_settings.ShowFishMarkers))
             {
                 continue;
             }

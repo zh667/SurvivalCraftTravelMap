@@ -478,7 +478,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             null,
             null,
             gameInfo.DirectoryName,
-            DeterministicPlayerGuid(Player.PlayerData.PlayerIndex));
+            DeterministicPlayerGuid(Player.PlayerData.PlayerIndex),
+            ResolveWorldSystemPath(gameInfo.DirectoryName));
         if (!TravelMapStorageIdentity.TryResolve(identity, out var storage, out var identityError))
         {
             Engine.Log.Warning($"[TravelMap] Persistence disabled: {identityError}");
@@ -494,6 +495,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             // The game recycles world folder names after a deletion, so a new world can inherit a
             // deleted world's cache directory. Discard it when the stamped seed no longer matches so
             // the previous save's terrain doesn't bleed into this one.
+            MigrateLegacyWorldCache(storage!, gameInfo.WorldSeed);
             if (WorldCacheSeedGuard.Ensure(storage!.Directory, gameInfo.WorldSeed)
                 == WorldCacheSeedGuard.GuardOutcome.Reset)
             {
@@ -509,6 +511,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 .GetAwaiter()
                 .GetResult();
             _waypoints = _waypointRepository.GetAll();
+            LoadCreatureHostility(storage.Directory);
             _dismissedDeathStore = new DismissedDeathStore(storage.Directory);
             _dismissedDeathStore.LoadAsync(_lifetimeCancellation.Token)
                 .GetAwaiter()
@@ -542,6 +545,40 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 "地图与坐标点持久化不可用：{0}",
                 exception.Message));
             throw;
+        }
+    }
+
+    // The world folder's full path, so same-named worlds of different installs get their own map
+    // cache. Null when the game cannot say (the old directory-name key is used then).
+    private static string? ResolveWorldSystemPath(string? worldDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(worldDirectory))
+        {
+            return null;
+        }
+
+        try
+        {
+            var path = Engine.Storage.GetSystemPath(worldDirectory);
+            return string.IsNullOrWhiteSpace(path) ? null : path;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static void MigrateLegacyWorldCache(TravelMapStorageLocation storage, int worldSeed)
+    {
+        var outcome = WorldCacheMigration.Migrate(storage.Directory, storage.LegacyDirectory, worldSeed);
+        if (outcome == WorldCacheMigration.Outcome.Copied)
+        {
+            Engine.Log.Information("[TravelMap] Copied this world's map cache to its per-install location.");
+        }
+        else if (outcome == WorldCacheMigration.Outcome.LegacyBelongsToAnotherWorld)
+        {
+            Engine.Log.Information(
+                "[TravelMap] The old shared map cache belongs to another world with this folder name; left it as it is.");
         }
     }
 
@@ -1708,30 +1745,128 @@ public sealed class TravelMapComponent : Component, IUpdateable
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<ComponentCreature, CreatureKindEntry>
         _creatureKinds = new();
 
-    private sealed class CreatureKindEntry(CreatureMapMarkerKind kind, ComponentChaseBehavior? chase)
+    private sealed class CreatureKindEntry(
+        CreatureMapMarkerKind kind,
+        string templateName,
+        IReadOnlyList<CreatureTargetSlot> targetSlots)
     {
         public CreatureMapMarkerKind Kind { get; } = kind;
 
-        public ComponentChaseBehavior? Chase { get; } = chase;
+        public string TemplateName { get; } = templateName;
+
+        public IReadOnlyList<CreatureTargetSlot> TargetSlots { get; } = targetSlots;
     }
+
+    // Reads fields that hold a creature or body under a target-like name (target, prey, victim):
+    // the chase behaviour's m_target, and mod components' own. The game's other behaviours keep
+    // the player in m_target too while avoiding, staring at or following it, so they are skipped.
+    private static readonly CreatureTargetProbe TargetProbe = new(
+        [typeof(ComponentCreature), typeof(ComponentBody)],
+        typeof(ComponentCreature).Assembly,
+        [typeof(ComponentChaseBehavior)]);
+
+    private CreatureHostilityMemory _hostility = CreatureHostilityMemory.Load(directory: null);
+    private ComponentHealth? _attackWatchedHealth;
+    private SubsystemTime? _creatureClock;
 
     private CreatureMapMarkerKind GetCreatureMarkerKind(ComponentCreature creature)
     {
         var entry = _creatureKinds.GetValue(creature, static creature =>
         {
             var chase = creature.Entity.FindComponent<ComponentChaseBehavior>();
+            var components = new List<object>();
+            foreach (var component in creature.Entity.Components)
+            {
+                components.Add(component);
+            }
+
             return new CreatureKindEntry(
                 CreatureMarkerClassifier.Classify(ReadCreatureMarkerTraits(creature, chase)),
-                chase);
+                ReadTemplateName(creature),
+                TargetProbe.CollectSlots(components));
         });
 
-        // Anything currently chasing the player is a threat whatever it normally is (a bull that
-        // was hit, a tamed animal turned on its owner).
-        return entry.Kind != CreatureMapMarkerKind.Hostile
-            && entry.Chase is { Target: { } target }
-            && ReferenceEquals(target, Player)
-                ? CreatureMapMarkerKind.Hostile
-                : entry.Kind;
+        // Anything after the player right now is a threat whatever it normally is (a bull that was
+        // hit, a tamed animal turned on its owner, a mod creature aiming at the player), and so is
+        // whatever hit the player in the last seconds. A kind that has hit the player before is
+        // at least yellow.
+        var now = CreatureClockNow();
+        var chasing = CreatureTargetProbe.IsAnyTargeting(entry.TargetSlots, Player, Player?.ComponentBody)
+            || _hostility.IsRecentAttacker(creature, now);
+        return CreatureMarkerClassifier.ForFrame(
+            entry.Kind,
+            chasing,
+            _hostility.IsAttackerTemplate(entry.TemplateName));
+    }
+
+    // The plugin edition reports every injury through ComponentHealth.Injured; Injury.Attacker
+    // resolves the attacking entity of the attack (projectiles carry their owner).
+    private void WatchPlayerAttacks()
+    {
+        UnwatchPlayerAttacks();
+        if (Player?.ComponentHealth is { } health)
+        {
+            health.Injured += OnPlayerInjured;
+            _attackWatchedHealth = health;
+        }
+    }
+
+    private void UnwatchPlayerAttacks()
+    {
+        if (_attackWatchedHealth is { } health)
+        {
+            health.Injured -= OnPlayerInjured;
+        }
+
+        _attackWatchedHealth = null;
+    }
+
+    private void OnPlayerInjured(Injury injury)
+    {
+        ComponentCreature? attacker = null;
+        try
+        {
+            attacker = injury?.Attacker;
+        }
+        catch (Exception)
+        {
+        }
+
+        RememberPlayerAttacker(attacker);
+    }
+
+    private double CreatureClockNow()
+    {
+        _creatureClock ??= Project.FindSubsystem<SubsystemTime>(false);
+        return _creatureClock?.GameTime ?? 0d;
+    }
+
+    private void LoadCreatureHostility(string storageDirectory)
+    {
+        _hostility = CreatureHostilityMemory.Load(storageDirectory);
+        WatchPlayerAttacks();
+    }
+
+    private void RememberPlayerAttacker(ComponentCreature? attacker)
+    {
+        if (attacker is null
+            || ReferenceEquals(attacker, Player)
+            || attacker.Entity.FindComponent<ComponentPlayer>() is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_hostility.RecordAttack(attacker, ReadTemplateName(attacker), CreatureClockNow()))
+            {
+                Engine.Log.Information($"[TravelMap] Remembered {ReadTemplateName(attacker)} as a creature that attacks the player.");
+            }
+        }
+        catch (Exception exception)
+        {
+            Engine.Log.Warning($"[TravelMap] Could not note a creature attack: {exception.Message}");
+        }
     }
 
     internal static CreatureMarkerTraits ReadCreatureMarkerTraits(
@@ -1744,18 +1879,33 @@ public sealed class TravelMapComponent : Component, IUpdateable
             names.Add(component.GetType().Name);
         }
 
-        // The game's chase behaviour comes after the player when it may attack players and has a
-        // chase range; mods' own chasers (ghouls, the horror mod's beasts) use it too.
-        var chasesPlayer = chase is not null
-            && chase.AttacksPlayer
-            && MathF.Max(chase.m_dayChaseRange, chase.m_nightChaseRange) > 0f;
+        // The game's chase behaviour (mods' own chasers -- ghouls, the horror mod's beasts -- use
+        // it too). AttacksPlayer is a code-only switch (default true) that mods may turn off.
         var category = creature.Category;
         return new CreatureMarkerTraits(
             IsPredator: (category & (CreatureCategory.LandPredator | CreatureCategory.WaterPredator)) != 0,
             IsAquatic: (category & (CreatureCategory.WaterPredator | CreatureCategory.WaterOther)) != 0,
-            ChasesPlayer: chasesPlayer,
             Flies: creature.Entity.FindComponent<ComponentLocomotion>() is { FlySpeed: > 0f },
-            ComponentTypeNames: names);
+            ComponentTypeNames: names,
+            DayChaseRange: chase?.m_dayChaseRange ?? 0f,
+            NightChaseRange: chase?.m_nightChaseRange ?? 0f,
+            ChaseOnTouchProbability: chase?.m_chaseOnTouchProbability ?? 0f,
+            ChaseWhenAttackedProbability: chase?.m_chaseWhenAttackedProbability ?? 0f,
+            AttacksPlayer: chase?.AttacksPlayer ?? true,
+            TemplateName: ReadTemplateName(creature));
+    }
+
+    // The entity template name, e.g. Horse_Bay_Saddled: the game tells tamed mounts by it.
+    private static string ReadTemplateName(ComponentCreature creature)
+    {
+        try
+        {
+            return creature.Entity.ValuesDictionary?.DatabaseObject?.Name ?? string.Empty;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
     }
 
     private float GetTerrainBrightness() => _settings is { UseDayNightTint: true }
@@ -1824,6 +1974,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
         RunCleanupStep(() => _lifetimeCancellation.Cancel());
         RunCleanupStep(() => _chunkLoader?.Dispose());
         RunCleanupStep(CleanupUi);
+        RunCleanupStep(UnwatchPlayerAttacks);
         RunCleanupStep(() => _dispatcher?.Dispose());
         _chunkLoader = null;
         _dispatcher = null;
