@@ -82,31 +82,6 @@ public sealed class TileCodecTests
         Assert.False(loaded.IsRegionFullyHeightShaded(5, 6, 1, 1));
     }
 
-    private static MemoryStream ConvertCurrentTileToPaletteOnly(byte[] compressed, byte version)
-    {
-        using var input = new MemoryStream(compressed);
-        using var inflater = new DeflateStream(input, CompressionMode.Decompress);
-        using var payloadStream = new MemoryStream();
-        inflater.CopyTo(payloadStream);
-        const int checksumLength = 32;
-        var currentPayload = payloadStream.ToArray();
-        var stripped = version >= 3
-            ? MapTile.SeasonByteCount
-            : MapTile.HeightShadeByteCount + MapTile.SeasonByteCount;
-        var payload = new byte[currentPayload.Length - stripped];
-        var checksumOffset = payload.Length - checksumLength;
-        currentPayload.AsSpan(0, checksumOffset).CopyTo(payload);
-        payload[4] = version;
-        var checksum = SHA256.HashData(payload.AsSpan(4, checksumOffset - 4));
-        checksum.CopyTo(payload, checksumOffset);
-
-        var result = new MemoryStream();
-        using (var deflater = new DeflateStream(result, CompressionLevel.Optimal, leaveOpen: true))
-        {
-            deflater.Write(payload);
-        }
-
-        result.Position = 0;
-        return result;
-    }
+    private static MemoryStream ConvertCurrentTileToPaletteOnly(byte[] compressed, byte version) =>
+        LegacyTileFormat.Convert(compressed, version);
 }

@@ -16,12 +16,21 @@ public sealed class MapTile
     internal const int HeightShadeByteCount = PixelCount;
     internal const int SeasonByteCount = PixelCount;
 
+    /// <summary>Side of one terrain chunk in pixels; a tile holds 4 x 4 chunks.</summary>
+    internal const int ChunkSize = 16;
+    internal const int ChunksPerSide = Size / ChunkSize;
+
     private readonly byte[] _explored;
     private readonly byte[] _colors;
     private readonly byte[] _heightShades;
     private readonly byte[] _seasons;
     private readonly object _sync = new();
     private long _version;
+
+    // One bit per 16x16 chunk (bit = chunkZ * 4 + chunkX): set while the chunk's height shades
+    // are only the approximate mirror of a tile recorded before 2.9.0 lit relief from the
+    // screen's top-left. Re-recording the whole chunk clears its bit.
+    private ushort _staleShadeChunks;
 
     public MapTile(int tileX, int tileZ)
         : this(
@@ -51,6 +60,18 @@ public sealed class MapTile
         byte[] colors,
         byte[] heightShades,
         byte[] seasons)
+        : this(tileX, tileZ, explored, colors, heightShades, seasons, staleShadeChunks: 0)
+    {
+    }
+
+    internal MapTile(
+        int tileX,
+        int tileZ,
+        byte[] explored,
+        byte[] colors,
+        byte[] heightShades,
+        byte[] seasons,
+        ushort staleShadeChunks)
     {
         ArgumentNullException.ThrowIfNull(explored);
         ArgumentNullException.ThrowIfNull(seasons);
@@ -86,6 +107,7 @@ public sealed class MapTile
         _colors = colors;
         _heightShades = heightShades;
         _seasons = seasons;
+        _staleShadeChunks = staleShadeChunks;
     }
 
     public int TileX { get; }
@@ -218,6 +240,7 @@ public sealed class MapTile
                 }
             }
 
+            _staleShadeChunks &= (ushort)~GetFullyCoveredChunkMask(x, z, endX, endZ);
             _version++;
         }
     }
@@ -244,6 +267,65 @@ public sealed class MapTile
                 pixelIndex,
                 out pixel);
         }
+    }
+
+    /// <summary>
+    /// False while the chunk containing local pixel (<paramref name="x"/>, <paramref name="z"/>)
+    /// still shows the mirrored height shades of a pre-2.9.0 tile and should be recorded again.
+    /// </summary>
+    public bool IsChunkShadeCurrent(int x, int z)
+    {
+        var bit = 1 << GetChunkBit(x, z);
+        lock (_sync)
+        {
+            return (_staleShadeChunks & bit) == 0;
+        }
+    }
+
+    internal ushort StaleShadeChunks
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _staleShadeChunks;
+            }
+        }
+    }
+
+    internal static int GetChunkBit(int x, int z)
+    {
+        if ((uint)x >= Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x));
+        }
+
+        if ((uint)z >= Size)
+        {
+            throw new ArgumentOutOfRangeException(nameof(z));
+        }
+
+        return ((z / ChunkSize) * ChunksPerSide) + (x / ChunkSize);
+    }
+
+    private static int GetFullyCoveredChunkMask(int x, int z, int endX, int endZ)
+    {
+        var mask = 0;
+        for (var chunkZ = 0; chunkZ < ChunksPerSide; chunkZ++)
+        {
+            for (var chunkX = 0; chunkX < ChunksPerSide; chunkX++)
+            {
+                var originX = chunkX * ChunkSize;
+                var originZ = chunkZ * ChunkSize;
+                if (originX >= x && originX + ChunkSize <= endX
+                    && originZ >= z && originZ + ChunkSize <= endZ)
+                {
+                    mask |= 1 << ((chunkZ * ChunksPerSide) + chunkX);
+                }
+            }
+        }
+
+        return mask;
     }
 
     public bool IsRegionFullyExplored(int x, int z, int width, int height)
@@ -395,7 +477,8 @@ public sealed class MapTile
                 (byte[])_explored.Clone(),
                 (byte[])_colors.Clone(),
                 (byte[])_heightShades.Clone(),
-                (byte[])_seasons.Clone());
+                (byte[])_seasons.Clone(),
+                _staleShadeChunks);
         }
     }
 

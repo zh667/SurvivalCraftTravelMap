@@ -256,7 +256,7 @@ public sealed class SeasonalMapTests : IDisposable
 
         await store.FlushAsync(TestContext.Current.CancellationToken);
 
-        Assert.True(File.Exists(Path.Combine(_directory, "0_0.v4.sctm")));
+        Assert.True(File.Exists(Path.Combine(_directory, "0_0.v5.sctm")));
         Assert.Equal(legacyBytes, await File.ReadAllBytesAsync(legacyPath, TestContext.Current.CancellationToken));
         var reopened = new ExplorationTileStore(_directory).GetOrLoad(0, 0);
         Assert.True(reopened.TryGetTerrainPixel(0, 0, out var pixel));

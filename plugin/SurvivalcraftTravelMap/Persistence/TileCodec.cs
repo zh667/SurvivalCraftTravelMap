@@ -13,14 +13,24 @@ public static class TileCodec
     private const byte HeightShadeVersion = 3;
 
     // Version 4 appends one MapSeasonCode per pixel after the height shades.
-    private const byte CurrentVersion = 4;
+    private const byte SeasonVersion = 4;
+
+    // Version 5 (2.9.0) appends a 2-byte little-endian mask of chunks whose height shades are
+    // still the mirrored pre-2.9.0 values (see MapTile.IsChunkShadeCurrent). Its shades are lit
+    // from world +X / +Z; versions 1-4 were lit from world -X / -Z.
+    private const byte CurrentVersion = 5;
+    private const int StaleShadeMaskLength = sizeof(ushort);
     private const int MagicLength = 4;
     private const int HeaderLength = MagicLength + 1 + sizeof(int) + sizeof(int);
     private const int ChecksumLength = 32;
     private const int PaletteOnlyPayloadLength =
         HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount + ChecksumLength;
     private const int HeightShadePayloadLength = PaletteOnlyPayloadLength + MapTile.HeightShadeByteCount;
-    private const int CurrentPayloadLength = HeightShadePayloadLength + MapTile.SeasonByteCount;
+    private const int SeasonPayloadLength = HeightShadePayloadLength + MapTile.SeasonByteCount;
+    private const int CurrentPayloadLength = SeasonPayloadLength + StaleShadeMaskLength;
+    private const int SeasonOffset =
+        HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount + MapTile.HeightShadeByteCount;
+    private const int StaleShadeMaskOffset = SeasonOffset + MapTile.SeasonByteCount;
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SCTM");
 
     public static void Write(Stream destination, MapTile tile)
@@ -38,9 +48,10 @@ public static class TileCodec
         tile.CopyHeightShadesTo(payload.AsSpan(
             HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount,
             MapTile.HeightShadeByteCount));
-        tile.CopySeasonsTo(payload.AsSpan(
-            HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount + MapTile.HeightShadeByteCount,
-            MapTile.SeasonByteCount));
+        tile.CopySeasonsTo(payload.AsSpan(SeasonOffset, MapTile.SeasonByteCount));
+        BinaryPrimitives.WriteUInt16LittleEndian(
+            payload.AsSpan(StaleShadeMaskOffset, StaleShadeMaskLength),
+            tile.StaleShadeChunks);
 
         var checksumOffset = CurrentPayloadLength - ChecksumLength;
         SHA256.HashData(payload.AsSpan(MagicLength, checksumOffset - MagicLength), payload.AsSpan(checksumOffset));
@@ -49,7 +60,13 @@ public static class TileCodec
         deflate.Write(payload);
     }
 
-    public static MapTile Read(Stream source)
+    /// <param name="mirrorLegacyHeightShades">
+    /// True for surface tiles: shades written before 2.9.0 are mirrored around neutral (their
+    /// light came from the opposite side) and every chunk holding explored pixels is flagged to be
+    /// recorded again. Cave layers store height factors rather than directional relief, so they
+    /// pass false and keep their shades as they are.
+    /// </param>
+    public static MapTile Read(Stream source, bool mirrorLegacyHeightShades = true)
     {
         ArgumentNullException.ThrowIfNull(source);
 
@@ -89,6 +106,7 @@ public static class TileCodec
         if (version is not LegacyPaletteVersion
             and not PaletteOnlyVersion
             and not HeightShadeVersion
+            and not SeasonVersion
             and not CurrentVersion)
         {
             throw new InvalidDataException($"Unsupported tile version {version}.");
@@ -97,6 +115,7 @@ public static class TileCodec
         var expectedPayloadLength = version switch
         {
             CurrentVersion => CurrentPayloadLength,
+            SeasonVersion => SeasonPayloadLength,
             HeightShadeVersion => HeightShadePayloadLength,
             _ => PaletteOnlyPayloadLength,
         };
@@ -132,12 +151,55 @@ public static class TileCodec
 
         // Tiles written before seasons were tracked keep their recorded colours year-round until
         // the player passes by again and the area is re-recorded.
-        var seasons = version == CurrentVersion
-            ? payload.AsSpan(
-                HeaderLength + MapTile.ExploredByteCount + MapTile.ColorByteCount + MapTile.HeightShadeByteCount,
-                MapTile.SeasonByteCount).ToArray()
+        var seasons = version >= SeasonVersion
+            ? payload.AsSpan(SeasonOffset, MapTile.SeasonByteCount).ToArray()
             : new byte[MapTile.SeasonByteCount];
 
-        return new MapTile(tileX, tileZ, explored, colors, heightShades, seasons);
+        ushort staleShadeChunks = 0;
+        if (version == CurrentVersion)
+        {
+            staleShadeChunks = BinaryPrimitives.ReadUInt16LittleEndian(
+                payload.AsSpan(StaleShadeMaskOffset, StaleShadeMaskLength));
+        }
+        else if (mirrorLegacyHeightShades)
+        {
+            // Until 2.8.0 relief was lit from the screen's bottom-right. The tile keeps no
+            // heights, so the shades are mirrored around neutral as the closest guess, and each
+            // explored chunk is recorded again with the new light when the player is near.
+            MirrorLegacyHeightShades(heightShades);
+            staleShadeChunks = GetExploredChunks(explored, colors);
+        }
+
+        return new MapTile(tileX, tileZ, explored, colors, heightShades, seasons, staleShadeChunks);
+    }
+
+    /// <summary>
+    /// Approximate conversion of a shade lit from the opposite side: brightness b becomes 2 - b
+    /// around neutral (128), so slopes swap their light and dark sides. Unknown (0) stays unknown.
+    /// </summary>
+    internal static byte MirrorLegacyHeightShade(byte shade) => shade == TerrainHeightShading.Unknown
+        ? TerrainHeightShading.Unknown
+        : (byte)Math.Clamp((2 * TerrainHeightShading.Neutral) - shade, 1, byte.MaxValue);
+
+    private static void MirrorLegacyHeightShades(byte[] heightShades)
+    {
+        for (var index = 0; index < heightShades.Length; index++)
+        {
+            heightShades[index] = MirrorLegacyHeightShade(heightShades[index]);
+        }
+    }
+
+    private static ushort GetExploredChunks(byte[] explored, byte[] colors)
+    {
+        var mask = 0;
+        for (var pixelIndex = 0; pixelIndex < MapTile.PixelCount; pixelIndex++)
+        {
+            if (MapTile.TryGetPixelCore(explored, colors, pixelIndex, out _))
+            {
+                mask |= 1 << MapTile.GetChunkBit(pixelIndex % MapTile.Size, pixelIndex / MapTile.Size);
+            }
+        }
+
+        return (ushort)mask;
     }
 }

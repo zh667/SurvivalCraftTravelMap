@@ -27,7 +27,7 @@ public sealed class ExplorationTileStoreTests : IDisposable
             flushInterval: null,
             (path, tile, _) =>
             {
-                if (Path.GetFileName(path) == "1_0.v4.sctm")
+                if (Path.GetFileName(path) == "1_0.v5.sctm")
                 {
                     throw new IOException("disk full");
                 }
@@ -46,7 +46,7 @@ public sealed class ExplorationTileStoreTests : IDisposable
             () => store.FlushAsync(TestContext.Current.CancellationToken));
 
         // The failing tile stays dirty and is retried; the tiles queued behind it are already safe.
-        Assert.Equal(["0_0.v4.sctm", "2_0.v4.sctm"], written.Order().ToArray());
+        Assert.Equal(["0_0.v5.sctm", "2_0.v5.sctm"], written.Order().ToArray());
         Assert.Equal(1, store.Diagnostics.DirtyTileCount);
         Assert.Equal(2, store.Diagnostics.LastFlushTileCount);
     }
@@ -204,14 +204,14 @@ public sealed class ExplorationTileStoreTests : IDisposable
         await store.FlushAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(ExplorationRecordResult.Recorded, result);
-        var path = Path.Combine(_directory, "-1_1.v4.sctm");
+        var path = Path.Combine(_directory, "-1_1.v5.sctm");
         using (var source = File.OpenRead(path))
         using (var deflate = new DeflateStream(source, CompressionMode.Decompress))
         {
             Span<byte> header = stackalloc byte[5];
             deflate.ReadExactly(header);
             Assert.Equal("SCTM"u8.ToArray(), header[..4].ToArray());
-            Assert.Equal(4, header[4]);
+            Assert.Equal(5, header[4]);
         }
 
         var reloaded = new ExplorationTileStore(_directory).GetOrLoad(-1, 1);
@@ -237,7 +237,7 @@ public sealed class ExplorationTileStoreTests : IDisposable
         Assert.True(store.GetTileMutationVersion(-7, 11) > versionBeforeMutation);
         await store.FlushAsync(TestContext.Current.CancellationToken);
 
-        var path = Path.Combine(_directory, "-7_11.v4.sctm");
+        var path = Path.Combine(_directory, "-7_11.v5.sctm");
         Assert.True(File.Exists(path));
         Assert.False(File.Exists(path + ".tmp"));
         var reloaded = new ExplorationTileStore(_directory, capacity: 2).GetOrLoad(-7, 11);
@@ -337,7 +337,7 @@ public sealed class ExplorationTileStoreTests : IDisposable
         await Task.WhenAll(first, second);
 
         Assert.Empty(Directory.EnumerateFiles(_directory, "*.tmp"));
-        Assert.True(File.Exists(Path.Combine(_directory, "0_0.v4.sctm")));
+        Assert.True(File.Exists(Path.Combine(_directory, "0_0.v5.sctm")));
     }
 
     [Fact]

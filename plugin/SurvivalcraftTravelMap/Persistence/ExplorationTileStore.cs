@@ -19,6 +19,7 @@ public sealed class ExplorationTileStore
     private readonly Dictionary<SuperCellKey, HashSet<TileKey>> _knownTileGrid = [];
     private readonly Dictionary<TileKey, long> _tileMutationVersions = [];
     private readonly Func<string, MapTile, CancellationToken, Task> _writeTile;
+    private readonly bool _mirrorLegacyHeightShades;
     private long _tileMaterializations;
     private long _fileProbeCount;
     private long _diskReadAttempts;
@@ -27,11 +28,16 @@ public sealed class ExplorationTileStore
     private int _lastFlushTileCount;
     private long _lastFlushMilliseconds;
 
+    /// <param name="mirrorLegacyHeightShades">
+    /// True for the surface map, whose pre-2.9.0 tiles were lit from the other side (see
+    /// <see cref="TileCodec.Read"/>); cave layers pass false.
+    /// </param>
     public ExplorationTileStore(
         string directory,
         int capacity = 128,
-        TimeSpan? flushInterval = null)
-        : this(directory, capacity, flushInterval, WriteTileAsync)
+        TimeSpan? flushInterval = null,
+        bool mirrorLegacyHeightShades = true)
+        : this(directory, capacity, flushInterval, WriteTileAsync, mirrorLegacyHeightShades)
     {
     }
 
@@ -39,7 +45,8 @@ public sealed class ExplorationTileStore
         string directory,
         int capacity,
         TimeSpan? flushInterval,
-        Func<string, MapTile, CancellationToken, Task> writeTile)
+        Func<string, MapTile, CancellationToken, Task> writeTile,
+        bool mirrorLegacyHeightShades = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         if (capacity <= 0)
@@ -55,6 +62,7 @@ public sealed class ExplorationTileStore
 
         _directory = Path.GetFullPath(directory);
         _writeTile = writeTile ?? throw new ArgumentNullException(nameof(writeTile));
+        _mirrorLegacyHeightShades = mirrorLegacyHeightShades;
         Directory.CreateDirectory(_directory);
         LoadKnownTileCatalog();
         Capacity = capacity;
@@ -382,6 +390,47 @@ public sealed class ExplorationTileStore
         return tile.IsRegionFullySeasonTracked(x, z, width, height);
     }
 
+    /// <summary>
+    /// False while the chunk at local pixel (<paramref name="x"/>, <paramref name="z"/>) of a known
+    /// tile still shows mirrored pre-2.9.0 height shades. Unknown tiles count as current (there is
+    /// nothing to redo there); the exploration checks already treat them as unexplored.
+    /// </summary>
+    public bool IsChunkShadeCurrent(int tileX, int tileZ, int x, int z)
+    {
+        MapTile.ValidateRegion(x, z, 1, 1);
+        var key = new TileKey(tileX, tileZ);
+        MapTile tile;
+        lock (_sync)
+        {
+            if (!_knownTiles.Contains(key))
+            {
+                return true;
+            }
+
+            if (_cache.TryGetValue(key, out var cached))
+            {
+                Touch(cached);
+                tile = cached.Tile;
+            }
+            else
+            {
+                if (!MakeRoomForNewEntry())
+                {
+                    // Cannot look now; the caller asks again later. Reporting "not current" would
+                    // only queue a re-record the store cannot admit either.
+                    return true;
+                }
+
+                tile = Load(key);
+                var node = _lru.AddFirst(key);
+                _cache.Add(key, new CacheEntry(tile, node));
+                TrimCleanEntries();
+            }
+        }
+
+        return tile.IsChunkShadeCurrent(x, z);
+    }
+
     public MapTile GetOrLoad(int tileX, int tileZ)
     {
         var key = new TileKey(tileX, tileZ);
@@ -589,12 +638,16 @@ public sealed class ExplorationTileStore
         var path = GetPath(key);
         if (!File.Exists(path))
         {
-            // Not rewritten since the season-aware format: fall back to the pre-2.8 file, which
-            // stays on disk untouched so a downgrade still finds the map it had.
-            path = GetLegacyPath(key);
+            // Not rewritten since 2.9.0: fall back to the 2.8.x file, then to the pre-2.8 one.
+            // Both stay on disk untouched so a downgrade still finds the map it had.
+            path = GetSeasonFormatPath(key);
             if (!File.Exists(path))
             {
-                return new MapTile(key.X, key.Z);
+                path = GetLegacyPath(key);
+                if (!File.Exists(path))
+                {
+                    return new MapTile(key.X, key.Z);
+                }
             }
         }
 
@@ -602,7 +655,7 @@ public sealed class ExplorationTileStore
         {
             _diskReadAttempts++;
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var tile = TileCodec.Read(stream);
+            var tile = TileCodec.Read(stream, _mirrorLegacyHeightShades);
             if (tile.TileX != key.X || tile.TileZ != key.Z)
             {
                 throw new InvalidDataException("Tile coordinates do not match its file name.");
@@ -627,6 +680,10 @@ public sealed class ExplorationTileStore
             {
                 name = name[..^CurrentFormatSuffix.Length];
             }
+            else if (name.EndsWith(SeasonFormatSuffix, StringComparison.Ordinal))
+            {
+                name = name[..^SeasonFormatSuffix.Length];
+            }
 
             var separator = name.IndexOf('_');
             if (separator <= 0 || separator == name.Length - 1 || name.IndexOf('_', separator + 1) >= 0)
@@ -643,15 +700,21 @@ public sealed class ExplorationTileStore
     }
 
     /// <summary>
-    /// Tiles carrying season data (codec version 4) are written as <c>x_z.v4.sctm</c>. Versions up
-    /// to 2.7.x read only <c>x_z.sctm</c> and would quarantine a version they do not know as
-    /// corrupt, so the new format never replaces that file: an older build simply does not see
-    /// the newer files (their name does not parse as tile coordinates there).
+    /// Tiles are written as <c>x_z.v5.sctm</c> (codec version 5, 2.9.0: relief lit from the
+    /// screen's top-left plus the re-record mask). 2.8.x wrote <c>x_z.v4.sctm</c> and versions up
+    /// to 2.7.x <c>x_z.sctm</c>; each reads only its own name and would quarantine a codec
+    /// version it does not know as corrupt, so a newer format never replaces an older file: an
+    /// older build simply does not see the newer files (their name does not parse as tile
+    /// coordinates there) and keeps the map it had.
     /// </summary>
-    private const string CurrentFormatSuffix = ".v4";
+    private const string CurrentFormatSuffix = ".v5";
+    private const string SeasonFormatSuffix = ".v4";
 
     private string GetPath(TileKey key) =>
         Path.Combine(_directory, $"{key.X}_{key.Z}{CurrentFormatSuffix}.sctm");
+
+    private string GetSeasonFormatPath(TileKey key) =>
+        Path.Combine(_directory, $"{key.X}_{key.Z}{SeasonFormatSuffix}.sctm");
 
     private string GetLegacyPath(TileKey key) => Path.Combine(_directory, $"{key.X}_{key.Z}.sctm");
 
