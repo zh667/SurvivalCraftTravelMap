@@ -273,20 +273,21 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Theory]
-    [InlineData(CreatureMapMarkerKind.Hostile, 255, 60, 60)]
-    [InlineData(CreatureMapMarkerKind.Ally, 70, 140, 255)]
-    [InlineData(CreatureMapMarkerKind.Animal, 60, 220, 80)]
-    [InlineData(CreatureMapMarkerKind.Bird, 255, 220, 60)]
-    [InlineData(CreatureMapMarkerKind.Fish, 60, 210, 230)]
-    public void Creature_marker_palette_matches_the_reference_categories(
-        CreatureMapMarkerKind kind,
+    [InlineData(CreatureMarkerAttitude.Chasing, 255, 60, 60)]
+    [InlineData(CreatureMarkerAttitude.Provokable, 255, 220, 60)]
+    [InlineData(CreatureMarkerAttitude.Passive, 60, 220, 80)]
+    [InlineData(CreatureMarkerAttitude.Friendly, 70, 140, 255)]
+    public void Creature_marker_colour_shows_only_the_attitude(
+        CreatureMarkerAttitude attitude,
         byte red,
         byte green,
         byte blue)
     {
-        Assert.Equal(
-            new Rgba32(red, green, blue, byte.MaxValue),
-            CreatureMapMarkerStyle.ColorFor(kind));
+        var expected = new Rgba32(red, green, blue, byte.MaxValue);
+        foreach (var body in Enum.GetValues<CreatureMarkerBody>())
+        {
+            Assert.Equal(expected, CreatureMapMarkerStyle.ColorFor(new CreatureMapMarkerKind(attitude, body)));
+        }
     }
 
     [Fact]
@@ -294,7 +295,7 @@ public sealed class MiniMapTextRendererTests
     {
         using var widget = CreateSurface(
         [
-            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Animal),
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), PassiveLand),
         ]);
         var queue = new RecordingMapSurfacePrimitiveQueue();
         widget.PlayerArrowSize = 18f;
@@ -313,7 +314,7 @@ public sealed class MiniMapTextRendererTests
             },
             fill =>
             {
-                Assert.Equal(CreatureMapMarkerStyle.AnimalColor, fill.Color);
+                Assert.Equal(CreatureMapMarkerStyle.PassiveColor, fill.Color);
                 Assert.Equal(5f, fill.Size);
             });
         Assert.True(
@@ -326,7 +327,7 @@ public sealed class MiniMapTextRendererTests
     {
         using var widget = CreateSurface(
         [
-            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Animal),
+            new CreatureMapMarker(new Vector3(8f, 64f, 0f), PassiveLand),
         ],
         showCreatures: false);
         var queue = new RecordingMapSurfacePrimitiveQueue();
@@ -387,13 +388,20 @@ public sealed class MiniMapTextRendererTests
     }
 
     [Theory]
-    [InlineData(CreatureMapMarkerKind.Hostile, 6.25f)]
-    [InlineData(CreatureMapMarkerKind.Animal, 5f)]
-    [InlineData(CreatureMapMarkerKind.Ally, 5f)]
-    [InlineData(CreatureMapMarkerKind.Bird, 3f)]
-    [InlineData(CreatureMapMarkerKind.Fish, 3f)]
-    public void Threats_draw_larger_and_birds_and_fish_smaller(CreatureMapMarkerKind kind, float fillSize)
+    [InlineData(CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Land, 6.25f)]
+    [InlineData(CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Fish, 6.25f)]
+    [InlineData(CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land, 5f)]
+    [InlineData(CreatureMarkerAttitude.Passive, CreatureMarkerBody.Land, 5f)]
+    [InlineData(CreatureMarkerAttitude.Friendly, CreatureMarkerBody.Land, 5f)]
+    [InlineData(CreatureMarkerAttitude.Passive, CreatureMarkerBody.Bird, 3f)]
+    [InlineData(CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Fish, 3f)]
+    [InlineData(CreatureMarkerAttitude.Friendly, CreatureMarkerBody.Bird, 3f)]
+    public void Red_threats_draw_larger_and_birds_and_fish_smaller(
+        CreatureMarkerAttitude attitude,
+        CreatureMarkerBody body,
+        float fillSize)
     {
+        var kind = new CreatureMapMarkerKind(attitude, body);
         using var widget = CreateSurface([new CreatureMapMarker(new Vector3(8f, 64f, 0f), kind)]);
         var queue = new RecordingMapSurfacePrimitiveQueue();
 
@@ -411,9 +419,15 @@ public sealed class MiniMapTextRendererTests
     {
         using var widget = CreateSurface(
         [
-            new CreatureMapMarker(new Vector3(8f, 64f, 0f), CreatureMapMarkerKind.Bird),
-            new CreatureMapMarker(new Vector3(-8f, 64f, 0f), CreatureMapMarkerKind.Fish),
-            new CreatureMapMarker(new Vector3(0f, 64f, 8f), CreatureMapMarkerKind.Hostile),
+            new CreatureMapMarker(
+                new Vector3(8f, 64f, 0f),
+                new CreatureMapMarkerKind(CreatureMarkerAttitude.Passive, CreatureMarkerBody.Bird)),
+            new CreatureMapMarker(
+                new Vector3(-8f, 64f, 0f),
+                new CreatureMapMarkerKind(CreatureMarkerAttitude.Friendly, CreatureMarkerBody.Fish)),
+            new CreatureMapMarker(
+                new Vector3(0f, 64f, 8f),
+                new CreatureMapMarkerKind(CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Land)),
         ],
         showBirds: showBirds,
         showFish: showFish);
@@ -425,47 +439,102 @@ public sealed class MiniMapTextRendererTests
             .Where(primitive => primitive.Kind == MapSurfacePrimitiveKind.Creature)
             .Select(primitive => primitive.Color)
             .ToArray();
-        Assert.Equal(showBirds, colors.Contains(CreatureMapMarkerStyle.BirdColor));
-        Assert.Equal(showFish, colors.Contains(CreatureMapMarkerStyle.FishColor));
-        Assert.Contains(CreatureMapMarkerStyle.HostileColor, colors);
+        Assert.Equal(showBirds, colors.Contains(CreatureMapMarkerStyle.PassiveColor));
+        Assert.Equal(showFish, colors.Contains(CreatureMapMarkerStyle.FriendlyColor));
+        Assert.Contains(CreatureMapMarkerStyle.ChasingColor, colors);
     }
 
-    public static TheoryData<string, CreatureMarkerTraits, CreatureMapMarkerKind> ModCreatures => new()
+    private static readonly CreatureMapMarkerKind PassiveLand =
+        new(CreatureMarkerAttitude.Passive, CreatureMarkerBody.Land);
+
+    // Chase values from the game databases (multiplayer ~/sc-src/Assets/Database.xml and the
+    // plugin edition 1.9.2.1 Content.zip, identical for these five, read along the inheritance
+    // chain on 2026-11-20): day / night chase range, chase on touch, chase when attacked.
+    private static readonly CreatureMarkerTraits Wolf = Chaser(4f, 10f, 1f, 1f, predator: true, template: "Wolf_Gray");
+    private static readonly CreatureMarkerTraits Rhino = Chaser(16f, 16f, 1f, 1f, template: "Rhino");
+    private static readonly CreatureMarkerTraits Bull = Chaser(1.5f, 1.5f, 0.5f, 1f, template: "Bull_Black");
+    private static readonly CreatureMarkerTraits Cow = Chaser(0f, 0f, 0f, 0.1f, template: "Cow_Brown");
+    private static readonly CreatureMarkerTraits Camel = Chaser(0f, 0f, 0f, 0.2f, template: "Camel");
+    private static readonly CreatureMarkerTraits SaddledHorse = Traits(template: "Horse_Bay_Saddled");
+    private static readonly CreatureMarkerTraits Shark =
+        Chaser(8f, 16f, 1f, 1f, predator: true, aquatic: true, template: "Shark_Bull");
+
+    public static TheoryData<string, CreatureMarkerTraits, bool, CreatureMarkerAttitude, CreatureMarkerBody> Creatures => new()
     {
-        // Categories as the mods declare them (scanned from the user's Mods folders, 2026-11-14).
-        { "wolf", Traits(predator: true, chases: true), CreatureMapMarkerKind.Hostile },
-        { "ghoul registered as a bird, chasing", Traits(chases: true), CreatureMapMarkerKind.Hostile },
-        { "ghoul corpse head registered as a bird", Traits(names: ["ComponentCorpsificeHead"], chases: true), CreatureMapMarkerKind.Hostile },
-        { "CS bandit (LandOther)", Traits(names: ["ComponentTacticalEnemy"]), CreatureMapMarkerKind.Hostile },
-        { "Mech Defense robot", Traits(predator: true, names: ["ComponentMDRobot"], flies: true), CreatureMapMarkerKind.Hostile },
-        { "CS teammate / hostage (LandOther)", Traits(names: ["ComponentTacticalCompanion"]), CreatureMapMarkerKind.Ally },
-        { "companion that fights with the chase behaviour", Traits(names: ["ComponentTacticalCompanion"], chases: true), CreatureMapMarkerKind.Ally },
-        { "shark", Traits(predator: true, aquatic: true, chases: true), CreatureMapMarkerKind.Hostile },
-        { "bass", Traits(aquatic: true), CreatureMapMarkerKind.Fish },
-        { "pigeon", Traits(flies: true), CreatureMapMarkerKind.Bird },
-        { "butterfly registered as a bird", Traits(flies: true), CreatureMapMarkerKind.Bird },
-        { "ghoul dog registered as a bird, not chasing, not flying", Traits(), CreatureMapMarkerKind.Animal },
-        { "cow", Traits(), CreatureMapMarkerKind.Animal },
+        { "wolf, not chasing", Wolf, false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land },
+        { "wolf chasing the player", Wolf, true, CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Land },
+        { "rhino", Rhino, false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land },
+        { "bull", Bull, false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land },
+        { "bull only charging on touch", Chaser(0f, 0f, 0.5f, 0f), false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land },
+        { "cow", Cow, false, CreatureMarkerAttitude.Passive, CreatureMarkerBody.Land },
+        { "camel", Camel, false, CreatureMarkerAttitude.Passive, CreatureMarkerBody.Land },
+        { "creature fighting back every other hit", Chaser(0f, 0f, 0f, 0.5f), false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land },
+        { "saddled horse", SaddledHorse, false, CreatureMarkerAttitude.Friendly, CreatureMarkerBody.Land },
+        { "saddled horse chasing the player", SaddledHorse, true, CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Land },
+        { "wild horse", Traits(template: "Horse_Bay"), false, CreatureMarkerAttitude.Passive, CreatureMarkerBody.Land },
+        { "saddled camel", Chaser(0f, 0f, 0f, 0.2f, template: "Camel_Saddled"), false, CreatureMarkerAttitude.Friendly, CreatureMarkerBody.Land },
+        { "CS bandit (LandOther)", Traits(names: ["ComponentTacticalEnemy"]), false, CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Land },
+        { "Mech Defense robot", Traits(predator: true, names: ["ComponentMDRobot"]), false, CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Land },
+        { "CS teammate / hostage (LandOther)", Traits(names: ["ComponentTacticalCompanion"]), false, CreatureMarkerAttitude.Friendly, CreatureMarkerBody.Land },
+        { "CS teammate that fights with the chase behaviour", Chaser(10f, 10f, 1f, 1f, names: ["ComponentTacticalCompanion"]), false, CreatureMarkerAttitude.Friendly, CreatureMarkerBody.Land },
+        { "CS teammate turned on the player", Traits(names: ["ComponentTacticalCompanion"]), true, CreatureMarkerAttitude.Chasing, CreatureMarkerBody.Land },
+        { "pigeon", Traits(flies: true, template: "Pigeon"), false, CreatureMarkerAttitude.Passive, CreatureMarkerBody.Bird },
+        { "shark", Shark, false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Fish },
+        { "bass", Traits(aquatic: true, template: "Bass_Sea"), false, CreatureMarkerAttitude.Passive, CreatureMarkerBody.Fish },
+        { "ghoul registered as a bird, chasing by range", Chaser(20f, 20f, 0f, 0f), false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land },
+        { "butterfly registered as a bird", Traits(flies: true), false, CreatureMarkerAttitude.Passive, CreatureMarkerBody.Bird },
+        // Plugin edition: a chase behaviour told never to attack players still fights back when
+        // hit (the game does not check AttacksPlayer there), but no longer chases by range or touch.
+        { "plugin: never attacks players, ignores hits", Chaser(10f, 10f, 1f, 0.1f, attacksPlayer: false), false, CreatureMarkerAttitude.Passive, CreatureMarkerBody.Land },
+        { "plugin: never attacks players, fights back", Chaser(10f, 10f, 1f, 1f, attacksPlayer: false), false, CreatureMarkerAttitude.Provokable, CreatureMarkerBody.Land },
     };
 
     [Theory]
-    [MemberData(nameof(ModCreatures))]
-    public void Creatures_are_classified_by_behaviour_not_only_category(
+    [MemberData(nameof(Creatures))]
+    public void Creatures_are_coloured_by_attitude_and_sized_by_body(
         string name,
         CreatureMarkerTraits traits,
-        CreatureMapMarkerKind expected)
+        bool chasingPlayerNow,
+        CreatureMarkerAttitude attitude,
+        CreatureMarkerBody body)
     {
         Assert.False(string.IsNullOrEmpty(name));
-        Assert.Equal(expected, CreatureMarkerClassifier.Classify(traits));
+        var kind = CreatureMarkerClassifier.ForFrame(CreatureMarkerClassifier.Classify(traits), chasingPlayerNow);
+
+        Assert.Equal(new CreatureMapMarkerKind(attitude, body), kind);
     }
+
+    [Fact]
+    public void Bird_without_chase_is_a_small_green_marker_and_shark_a_small_yellow_one()
+    {
+        var bird = CreatureMarkerClassifier.Classify(Traits(flies: true, template: "Pigeon"));
+        var shark = CreatureMarkerClassifier.Classify(Shark);
+
+        Assert.Equal(CreatureMapMarkerStyle.PassiveColor, CreatureMapMarkerStyle.ColorFor(bird));
+        Assert.Equal(0.6f, CreatureMapMarkerStyle.SizeFactorFor(bird));
+        Assert.Equal(CreatureMapMarkerStyle.ProvokableColor, CreatureMapMarkerStyle.ColorFor(shark));
+        Assert.Equal(0.6f, CreatureMapMarkerStyle.SizeFactorFor(shark));
+    }
+
+    private static CreatureMarkerTraits Chaser(
+        float day,
+        float night,
+        float onTouch,
+        float whenAttacked,
+        bool predator = false,
+        bool aquatic = false,
+        bool attacksPlayer = true,
+        string[]? names = null,
+        string template = "") =>
+        new(predator, aquatic, Flies: false, names ?? [], day, night, onTouch, whenAttacked, attacksPlayer, template);
 
     private static CreatureMarkerTraits Traits(
         bool predator = false,
         bool aquatic = false,
-        bool chases = false,
         bool flies = false,
-        string[]? names = null) =>
-        new(predator, aquatic, chases, flies, names ?? []);
+        string[]? names = null,
+        string template = "") =>
+        new(predator, aquatic, flies, names ?? [], TemplateName: template);
 
     [Fact]
     public void Native_player_death_history_selects_current_and_previous_records_for_the_map()

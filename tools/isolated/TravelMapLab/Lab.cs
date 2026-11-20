@@ -403,19 +403,25 @@ public class Lab : ModLoader
 
     // ---- markers ---------------------------------------------------------------------------
 
-    // Template, expected marker kind. Mod templates are only checked when their mod is installed.
+    // Template, expected marker kind (attitude/body; "a|b" = either, for creatures that may
+    // already be chasing the player when asked). Mod templates are only checked when their mod is
+    // installed.
     static readonly (string Template, string Expected)[] MarkerCases =
     [
-        ("Wolf_Gray", "Hostile"),
-        ("Cow_Brown", "Animal"),
-        ("Pigeon", "Bird"),
-        ("Bass_Freshwater", "Fish"),
-        ("Shark_Bull", "Hostile"),
-        ("SAGhoul_Weak_01", "Hostile"),        // Ghoul mod: registered as a bird
-        ("SAG_CorpsificeHead", "Hostile"),     // Ghoul mod: the shooting head, registered as a bird
-        ("ScTacticalEnemy", "Hostile"),        // CS weapons: bandit, registered as LandOther
-        ("ScTacticalCT", "Ally"),              // CS weapons: teammate, registered as LandOther
-        ("ScTacticalHostage", "Ally"),
+        ("Wolf_Gray", "Provokable/Land|Chasing/Land"),
+        ("Bull_Black", "Provokable/Land|Chasing/Land"),
+        ("Cow_Brown", "Passive/Land"),
+        ("Camel", "Passive/Land"),
+        ("Horse_Bay_Saddled", "Friendly/Land"),
+        ("Horse_Bay", "Passive/Land"),
+        ("Pigeon", "Passive/Bird"),
+        ("Bass_Freshwater", "Passive/Fish"),
+        ("Shark_Bull", "Provokable/Fish|Chasing/Fish"),
+        ("SAGhoul_Weak_01", "Provokable/Land|Chasing/Land"),        // Ghoul mod: registered as a bird
+        ("SAG_CorpsificeHead", "Provokable/Land|Chasing/Land"),     // Ghoul mod: the shooting head, registered as a bird
+        ("ScTacticalEnemy", "Chasing/Land"),        // CS weapons: bandit, registered as LandOther
+        ("ScTacticalCT", "Friendly/Land"),          // CS weapons: teammate, registered as LandOther
+        ("ScTacticalHostage", "Friendly/Land"),
     ];
 
     static IEnumerable<bool> Markers()
@@ -454,14 +460,16 @@ public class Lab : ModLoader
             var kind = kindOf.Invoke(Map, [creature])!.ToString()!;
             var traits = (CreatureMarkerTraits)traitsOf.Invoke(null, [creature, chase])!;
             results[template] = kind;
-            why[template] = $"predator={traits.IsPredator} aquatic={traits.IsAquatic} chases={traits.ChasesPlayer} flies={traits.Flies} "
+            why[template] = $"predator={traits.IsPredator} aquatic={traits.IsAquatic} flies={traits.Flies} "
+                + $"chase={traits.DayChaseRange}/{traits.NightChaseRange} touch={traits.ChaseOnTouchProbability} attacked={traits.ChaseWhenAttackedProbability} "
+                + $"attacksPlayer={traits.AttacksPlayer} template={traits.TemplateName} "
                 + $"target={(chase?.Target is { } t ? (ReferenceEquals(t, data.ComponentPlayer) ? "player" : "other creature") : "-")} "
                 + $"components={string.Join(",", traits.ComponentTypeNames.Where(n => n.Contains("Tactical") || n.Contains("Chase") || n.Contains("MD")))}";
         }
 
         metrics["why"] = why;
         foreach (var (template, expected, _) in spawned)
-            Check(results[template] == expected, $"{template} shows as {results[template]} (expected {expected})");
+            Check(expected.Split('|').Contains(results[template]), $"{template} shows as {results[template]} (expected {expected})");
         metrics["kinds"] = results;
         OpenLargeMap(new Vector2(origin.X + 18f, origin.Z));
         var dialog = Field<Dialog>(Map, "_largeMapDialog");

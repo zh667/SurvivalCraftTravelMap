@@ -2108,11 +2108,9 @@ public sealed class TravelMapComponent : Component, IUpdateable
 
         // Anything currently chasing the player is a threat whatever it normally is (a bull that
         // was hit, a tamed animal turned on its owner).
-        return entry.Kind != CreatureMapMarkerKind.Hostile
-            && entry.Chase is { Target: { } target }
-            && ReferenceEquals(target, Player)
-                ? CreatureMapMarkerKind.Hostile
-                : entry.Kind;
+        return CreatureMarkerClassifier.ForFrame(
+            entry.Kind,
+            entry.Chase is { Target: { } target } && ReferenceEquals(target, Player));
     }
 
     internal static CreatureMarkerTraits ReadCreatureMarkerTraits(
@@ -2125,17 +2123,33 @@ public sealed class TravelMapComponent : Component, IUpdateable
             names.Add(component.GetType().Name);
         }
 
-        // The game's chase behaviour comes after the player when it may attack players and has a
-        // chase range; mods' own chasers (ghouls, the horror mod's beasts) use it too.
-        var chasesPlayer = chase is not null
-            && MathF.Max(chase.m_dayChaseRange, chase.m_nightChaseRange) > 0f;
+        // The game's chase behaviour (mods' own chasers -- ghouls, the horror mod's beasts -- use
+        // it too). This edition's has no AttacksPlayer switch: every chaser may attack players.
         var category = creature.Category;
         return new CreatureMarkerTraits(
             IsPredator: (category & (CreatureCategory.LandPredator | CreatureCategory.WaterPredator)) != 0,
             IsAquatic: (category & (CreatureCategory.WaterPredator | CreatureCategory.WaterOther)) != 0,
-            ChasesPlayer: chasesPlayer,
             Flies: creature.Entity.FindComponent<ComponentLocomotion>() is { FlySpeed: > 0f },
-            ComponentTypeNames: names);
+            ComponentTypeNames: names,
+            DayChaseRange: chase?.m_dayChaseRange ?? 0f,
+            NightChaseRange: chase?.m_nightChaseRange ?? 0f,
+            ChaseOnTouchProbability: chase?.m_chaseOnTouchProbability ?? 0f,
+            ChaseWhenAttackedProbability: chase?.m_chaseWhenAttackedProbability ?? 0f,
+            AttacksPlayer: true,
+            TemplateName: ReadTemplateName(creature));
+    }
+
+    // The entity template name, e.g. Horse_Bay_Saddled: the game tells tamed mounts by it.
+    private static string ReadTemplateName(ComponentCreature creature)
+    {
+        try
+        {
+            return creature.Entity.ValuesDictionary?.DatabaseObject?.Name ?? string.Empty;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
     }
 
     private float GetTerrainBrightness() => _settings is { UseDayNightTint: true }
