@@ -21,5 +21,5 @@
 
 ## 校验
 
-- `NET.TravelMap2.9.0.netmod`：（打包后填写）
-- `API1.9.TravelMap2.9.0.scmod`：（打包后填写）
+- `NET.TravelMap2.9.0.netmod`：`39a8ee9b1fee0e0a6e75344f3a6822452fe845d638fcaf52bede0c7c2e9f5358`
+- `API1.9.TravelMap2.9.0.scmod`：`857cfdd071b80bb06a06b747fe7b47c8272d41ee679857550015b6a7e132d04e`

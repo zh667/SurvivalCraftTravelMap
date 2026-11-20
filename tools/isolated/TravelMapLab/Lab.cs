@@ -13,6 +13,7 @@ using SurvivalcraftTravelMap.Map;
 using SurvivalcraftTravelMap.Mod;
 using SurvivalcraftTravelMap.Persistence;
 using GameEntitySystem;
+using SurvivalcraftTravelMap.Settings;
 using SurvivalcraftTravelMap.UI;
 
 namespace TravelMapLab;
@@ -79,7 +80,15 @@ public class Lab : ModLoader
             if (frameLog is not null && lastFrame > 0) frameLog.Add((now - lastFrame) * 1000.0);
             lastFrame = now;
             if (now - began > 900) throw new TimeoutException("lab timed out");
-            script ??= (mode switch { "touch" => Touch(), "markers" => Markers(), _ => Season() }).GetEnumerator();
+            script ??= (mode switch
+            {
+                "touch" => Touch(),
+                "markers" => Markers(),
+                "shading" => Shading(),
+                "upgrade-old" => UpgradeOld(),
+                "upgrade-new" => UpgradeNew(),
+                _ => Season(),
+            }).GetEnumerator();
             if (!script.MoveNext())
             {
                 Finish(new { passed = true, mode, checks, metrics, notes });
@@ -124,7 +133,10 @@ public class Lab : ModLoader
         while (PendingTouches.Count > 0) PendingTouches.Dequeue()();
     }
 
-    static IEnumerable<bool> EnterWorld(float timeOfYear)
+    static IEnumerable<bool> EnterWorld(
+        float timeOfYear,
+        TerrainGenerationMode generation = TerrainGenerationMode.Continent,
+        bool existing = false)
     {
         while (ScreensManager.CurrentScreen is not MainMenuScreen) yield return true;
 #if TM_NET
@@ -135,18 +147,29 @@ public class Lab : ModLoader
         SettingsManager.VisibilityRange = 64;
         SettingsManager.SoundsVolume = 0;
         SettingsManager.MusicVolume = 0;
-        var world = WorldsManager.CreateWorld(new WorldSettings
+        WorldInfo world;
+        if (existing)
         {
-            Name = WorldName,
-            Seed = "20261114",
-            GameMode = GameMode.Creative,
-            TerrainGenerationMode = TerrainGenerationMode.Continent,
-            EnvironmentBehaviorMode = EnvironmentBehaviorMode.Living,
-            AreWeatherEffectsEnabled = true,
-            TimeOfDayMode = TimeOfDayMode.Day,
-            AreSeasonsChanging = false,
-            TimeOfYear = timeOfYear,
-        });
+            // Reopen the world an earlier run saved (upgrade test: recorded by 2.8.0, opened by 2.9.0).
+            WorldsManager.UpdateWorldsList();
+            world = WorldsManager.WorldInfos.FirstOrDefault(w => w.WorldSettings.Name == WorldName)
+                ?? throw new InvalidOperationException("no saved world " + WorldName);
+        }
+        else
+        {
+            world = WorldsManager.CreateWorld(new WorldSettings
+            {
+                Name = WorldName,
+                Seed = "20261114",
+                GameMode = GameMode.Creative,
+                TerrainGenerationMode = generation,
+                EnvironmentBehaviorMode = EnvironmentBehaviorMode.Living,
+                AreWeatherEffectsEnabled = true,
+                TimeOfDayMode = TimeOfDayMode.Day,
+                AreSeasonsChanging = false,
+                TimeOfYear = timeOfYear,
+            });
+        }
 #if TM_NET
         CommonLib.Net.StartLocal();   // normally done by the loading screen, which the lab skips
 #endif
@@ -155,11 +178,20 @@ public class Lab : ModLoader
             && loading.GetType().GetField("m_worldInfo", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) is { } worldField)
             worldField.SetValue(loading, world);
         GameManager.LoadProject(world, Games);
-        data = new PlayerData(GameManager.Project) { Name = "Lab", InputDevice = WidgetInputDevice.All };
+        var players = GameManager.Project.FindSubsystem<SubsystemPlayers>(true);
+        if (existing && players.PlayersData.Count > 0)
+        {
+            // The saved player, so the map opens the same per-player storage it wrote before.
+            data = players.PlayersData[0];
+        }
+        else
+        {
+            data = new PlayerData(GameManager.Project) { Name = "Lab", InputDevice = WidgetInputDevice.All };
 #if TM_NET
-        data.SetMain();
+            data.SetMain();
 #endif
-        GameManager.Project.FindSubsystem<SubsystemPlayers>(true).AddPlayerData(data);
+            players.AddPlayerData(data);
+        }
         ScreensManager.SwitchScreen("Game");
         var entered = Time.RealTime;
         while (!data.IsReadyForPlaying)
@@ -401,6 +433,301 @@ public class Lab : ModLoader
         return total == 0 ? 0 : agree / (double)total;
     }
 
+    // ---- shading ---------------------------------------------------------------------------
+    //   "shading":     flat world, a 5x5 platform 3 high and a 5x5 pit 3 deep; on the north-up large map the platform's
+    //                  screen top-left neighbours must be brighter than its bottom-right ones and the pit's top-left inner
+    //                  walls darker than its bottom-right ones, in the map data and (checked by run_isolated.py) in the
+    //                  screenshot pixels.
+    //   "upgrade-old": the same site recorded and saved by an older package (2.8.0); uses nothing newer than 2.8.0.
+    //   "upgrade-new": 2.9.0 reopens that world: the old area must show mirrored shading and be flagged for re-recording
+    //                  until the player comes near, then carry freshly computed shades; the 2.8.0 files stay untouched.
+
+    const int Dirt = 2, Grass = 8, Air = 0;
+    static Point2 platform, pit;
+    static readonly List<object> pixelChecks = [];
+
+    static string SiteFile => Path.Combine(AppContext.BaseDirectory, "lab-site.json");
+
+    // The eight cells compared: the platform's outside neighbours (distance 3 from its centre) and the pit's inner edge
+    // cells (distance 2), each on the four sides. Which one is screen-left etc. is decided through the map transform.
+    static IEnumerable<(string Name, Point2 Cell)> SampleCells()
+    {
+        foreach (var (site, name, d) in new[] { (platform, "platform", 3), (pit, "pit", 2) })
+        {
+            yield return (name + "+x", new Point2(site.X + d, site.Y));
+            yield return (name + "-x", new Point2(site.X - d, site.Y));
+            yield return (name + "+z", new Point2(site.X, site.Y + d));
+            yield return (name + "-z", new Point2(site.X, site.Y - d));
+        }
+    }
+
+    static IEnumerable<bool> BuildSite(SubsystemTerrain terrain, Point2 home)
+    {
+        // Two chunks east of the player's, side by side, well inside the 64-block visibility range.
+        var chunkX = (int)MathF.Floor(home.X / 16f) + 2;
+        var chunkZ = (int)MathF.Floor(home.Y / 16f);
+        platform = new Point2((chunkX * 16) + 8, (chunkZ * 16) + 8);
+        pit = new Point2((chunkX * 16) + 8, ((chunkZ + 1) * 16) + 8);
+        foreach (var x in Until(() => ColumnsReady(terrain, platform, 8) && ColumnsReady(terrain, pit, 8), 120, "site chunks loaded")) yield return x;
+
+        foreach (var (site, delta) in new[] { (platform, 3), (pit, -3) })
+        {
+            // Level a 9x9 patch of grass first (flat worlds may still carry plants or snow), then raise or dig 5x5.
+            var heights = new List<int>();
+            for (var dz = -4; dz <= 4; dz++)
+            for (var dx = -4; dx <= 4; dx++)
+                heights.Add(terrain.Terrain.GetTopHeight(site.X + dx, site.Y + dz));
+            var ground = heights.GroupBy(h => h).OrderByDescending(g => g.Count()).First().Key;
+            for (var dz = -4; dz <= 4; dz++)
+            for (var dx = -4; dx <= 4; dx++)
+            {
+                for (var y = ground + 1; y <= ground + 8; y++) terrain.ChangeCell(site.X + dx, y, site.Y + dz, Air);
+                terrain.ChangeCell(site.X + dx, ground, site.Y + dz, Grass);
+            }
+
+            for (var dz = -2; dz <= 2; dz++)
+            for (var dx = -2; dx <= 2; dx++)
+            {
+                if (delta > 0)
+                    for (var y = ground + 1; y <= ground + delta; y++) terrain.ChangeCell(site.X + dx, y, site.Y + dz, Dirt);
+                else
+                    for (var y = ground + delta + 1; y <= ground; y++) terrain.ChangeCell(site.X + dx, y, site.Y + dz, Air);
+            }
+
+            notes.Add($"site {site.X},{site.Y}: ground {ground}, {(delta > 0 ? "platform" : "pit")} {Math.Abs(delta)}");
+        }
+
+        foreach (var x in Seconds(2)) yield return x;
+    }
+
+    // The mini map records every chunk it shows as soon as the chunk loads, so both site chunks were recorded before the
+    // site was built. Mark them unexplored again (public store API, present in 2.8.0 too) and let the map record them.
+    static IEnumerable<bool> VisitSite(SubsystemTerrain terrain, Point2 home)
+    {
+        foreach (var site in new[] { platform, pit })
+        {
+            var c = TileCoordinate.FromWorld(site.X - 8, site.Y - 8);
+            using var lease = Store.AcquireMutation(c.TileX, c.TileZ);
+            lease.Tile.SetRegion(c.LocalX, c.LocalZ, 16, 16, new Rgba32[256]);
+        }
+
+        foreach (var site in new[] { platform, pit })
+        {
+            Teleport(new Vector3(site.X + 0.5f, terrain.Terrain.GetTopHeight(site.X, site.Y) + 25, site.Y + 0.5f));
+            foreach (var x in Until(() => RecordedCount(site, 4) == 81, 90, $"site {site.X},{site.Y} recorded")) yield return x;
+        }
+
+        Teleport(new Vector3(home.X + 0.5f, terrain.Terrain.GetTopHeight(home.X, home.Y) + 20, home.Y + 0.5f));
+        foreach (var x in Seconds(2)) yield return x;
+    }
+
+    static Dictionary<string, MapTerrainPixel> ReadSamples()
+    {
+        var result = new Dictionary<string, MapTerrainPixel>();
+        foreach (var (name, cell) in SampleCells())
+        {
+            var c = TileCoordinate.FromWorld(cell.X, cell.Y);
+            Check(Store.GetOrLoad(c.TileX, c.TileZ).TryGetTerrainPixel(c.LocalX, c.LocalZ, out var p), $"{name} cell {cell.X},{cell.Y} is on the map");
+            result[name] = p;
+        }
+
+        return result;
+    }
+
+    // What the current shading code makes of the terrain as it stands (the sites are level grass around them).
+    static byte FreshShade(SubsystemTerrain terrain, Point2 cell)
+    {
+        int H(int x, int z) => terrain.Terrain.GetTopHeight(x, z);
+        return TerrainHeightShading.Calculate(H(cell.X - 1, cell.Y), H(cell.X, cell.Y - 1), H(cell.X + 1, cell.Y), H(cell.X, cell.Y + 1), H(cell.X, cell.Y));
+    }
+
+    /// <summary>
+    /// Opens the north-up large map over the site, takes a screenshot at window size and returns, per sample cell, its
+    /// screen side ("platform left" ...), map shade and screenshot pixel position. Checks the light direction in the map
+    /// data; run_isolated.py checks it again in the screenshot's pixels.
+    /// </summary>
+    static IEnumerable<bool> LookAtSite(string shot, bool expectTopLeftLight, string label)
+    {
+        Field<TravelMapSettings>(Map, "_settings").ShowCreatureMarkers = false;
+        var center = new Vector2(platform.X, (platform.Y + pit.Y) / 2f);
+        var dialog = OpenLargeMap(center);
+        var settings = FieldOrNull(dialog, "_settings")!;
+        settings.GetType().GetProperty("LargeMapBlocksPerPixel")!.SetValue(settings, 0.25f);
+        foreach (var x in Seconds(3)) yield return x;
+        dialog.GetType().GetMethod("ResetToWorld")!.Invoke(dialog, [new System.Numerics.Vector2(center.X, center.Y)]);
+        foreach (var x in Seconds(3)) yield return x;
+
+        var surface = Field<MapSurfaceWidget>(dialog, "_surface");
+        var transform = surface.Transform;
+        Check(transform.RotationRadians == 0f, "large map is north-up");
+        var samples = ReadSamples();
+        var screen = new Dictionary<string, Vector2>();
+        foreach (var (name, cell) in SampleCells())
+        {
+            var local = transform.WorldToScreen(new System.Numerics.Vector2(cell.X + 0.5f, cell.Y + 0.5f));
+            screen[name] = surface.WidgetToScreen(new Vector2(local.X, local.Y));
+        }
+
+        var size = Window.Size;
+        var width = size.X > 0 ? size.X : 1280;
+        var height = size.Y > 0 ? size.Y : 720;
+        SettingsManager.ShowGuiInScreenshots = true;
+        SettingsManager.ShowLogoInScreenshots = false;
+        ScreenCaptureManager.Capture(width, height, shot + ".png");
+        yield return true;
+
+        // Name the four cells of each site by where they land on screen.
+        var sides = new Dictionary<string, object>();
+        foreach (var site in new[] { "platform", "pit" })
+        {
+            var names = new[] { "+x", "-x", "+z", "-z" }.Select(n => site + n).ToArray();
+            string Pick(Func<string, float> key, bool max) => (max ? names.OrderByDescending(key) : names.OrderBy(key)).First();
+            var left = Pick(n => screen[n].X, false);
+            var right = Pick(n => screen[n].X, true);
+            var top = Pick(n => screen[n].Y, false);
+            var bottom = Pick(n => screen[n].Y, true);
+            object Point(string n) => new
+            {
+                cell = n,
+                x = (int)MathF.Round(screen[n].X),
+                y = (int)MathF.Round(screen[n].Y),
+                shade = (int)samples[n].HeightShade,
+                color = new[] { (int)samples[n].Color.R, samples[n].Color.G, samples[n].Color.B },
+            };
+            sides[site] = new { left = Point(left), right = Point(right), top = Point(top), bottom = Point(bottom) };
+
+            var lighter = site == "platform" == expectTopLeftLight;   // platform: top-left brighter; pit: darker
+            byte S(string n) => samples[n].HeightShade;
+            var horizontal = lighter ? S(left) > S(right) : S(left) < S(right);
+            var vertical = lighter ? S(top) > S(bottom) : S(top) < S(bottom);
+            Check(horizontal && vertical,
+                $"{label}: map data, {site} screen-left {S(left)} vs right {S(right)}, top {S(top)} vs bottom {S(bottom)} "
+                + (lighter ? "(top-left brighter)" : "(top-left darker)"));
+        }
+
+        pixelChecks.Add(new { shot = shot + ".png", width, height, topLeftLight = expectTopLeftLight, label, sides });
+        metrics["pixelChecks"] = pixelChecks;
+        metrics["window"] = $"{size.X}x{size.Y}";
+        CloseLargeMap();
+    }
+
+    static void NoteDataRoot() => notes.Add("map data under " + Field<string>(Store, "_directory"));
+
+    static IEnumerable<bool> Shading()
+    {
+        foreach (var x in EnterWorld(Summer, TerrainGenerationMode.FlatContinent)) yield return x;
+        NoteDataRoot();
+        var terrain = GameManager.Project.FindSubsystem<SubsystemTerrain>(true);
+        var spawn = data.ComponentPlayer.ComponentBody.Position;
+        var home = new Point2((int)MathF.Floor(spawn.X), (int)MathF.Floor(spawn.Z));
+        foreach (var x in BuildSite(terrain, home)) yield return x;
+        foreach (var x in VisitSite(terrain, home)) yield return x;
+        foreach (var (name, cell) in SampleCells())
+        {
+            var mapShade = ReadSamples()[name].HeightShade;
+            Check(mapShade == FreshShade(terrain, cell), $"{name}: map shade {mapShade} equals the shade of the terrain as built");
+        }
+
+        foreach (var x in LookAtSite("shading_large_map", expectTopLeftLight: true, "2.9.0")) yield return x;
+    }
+
+    static IEnumerable<bool> UpgradeOld()
+    {
+        foreach (var x in EnterWorld(Summer, TerrainGenerationMode.FlatContinent)) yield return x;
+        NoteDataRoot();
+        var terrain = GameManager.Project.FindSubsystem<SubsystemTerrain>(true);
+        var spawn = data.ComponentPlayer.ComponentBody.Position;
+        var home = new Point2((int)MathF.Floor(spawn.X), (int)MathF.Floor(spawn.Z));
+        foreach (var x in BuildSite(terrain, home)) yield return x;
+        foreach (var x in VisitSite(terrain, home)) yield return x;
+
+        // The bug being fixed: the older package lights relief from the screen's bottom-right.
+        foreach (var x in LookAtSite("upgrade_old_large_map", expectTopLeftLight: false, "older package")) yield return x;
+
+        // Save with the player far away, so the site is neither loaded nor on the mini map when the world reopens.
+        Teleport(new Vector3(home.X + 400.5f, 150, home.Y + 0.5f));
+        foreach (var x in Seconds(8)) yield return x;   // the tile store flushes every 5 s
+        GameManager.SaveProject(true, false);
+        foreach (var x in Seconds(2)) yield return x;
+
+        var directory = Field<string>(Store, "_directory");
+        File.WriteAllText(SiteFile, JsonSerializer.Serialize(new
+        {
+            platform = new[] { platform.X, platform.Y },
+            pit = new[] { pit.X, pit.Y },
+            home = new[] { home.X, home.Y },
+            shades = ReadSamples().ToDictionary(kv => kv.Key, kv => (int)kv.Value.HeightShade),
+            files = Directory.GetFiles(directory, "*.sctm").ToDictionary(Path.GetFileName, f => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(f)))),
+        }));
+        metrics["tileFiles"] = Directory.GetFiles(directory, "*.sctm").Select(Path.GetFileName).ToArray();
+    }
+
+    static IEnumerable<bool> UpgradeNew()
+    {
+        var site = JsonDocument.Parse(File.ReadAllText(SiteFile)).RootElement;
+        platform = new Point2(site.GetProperty("platform")[0].GetInt32(), site.GetProperty("platform")[1].GetInt32());
+        pit = new Point2(site.GetProperty("pit")[0].GetInt32(), site.GetProperty("pit")[1].GetInt32());
+        var oldShades = site.GetProperty("shades").EnumerateObject().ToDictionary(p => p.Name, p => (byte)p.Value.GetInt32());
+        var oldFiles = site.GetProperty("files").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString());
+
+        foreach (var x in EnterWorld(Summer, existing: true)) yield return x;
+        NoteDataRoot();
+        var terrain = GameManager.Project.FindSubsystem<SubsystemTerrain>(true);
+        foreach (var x in Seconds(3)) yield return x;
+        notes.Add($"player at {data.ComponentPlayer.ComponentBody.Position}");
+
+        // Before the player comes near: mirrored old shades, chunks flagged.
+        var before = ReadSamples();
+        foreach (var (name, _) in SampleCells())
+            Check(before[name].HeightShade == Mirror(oldShades[name]),
+                $"{name}: old shade {oldShades[name]} shows mirrored as {before[name].HeightShade}");
+        Check(!ShadeCurrent(platform) && !ShadeCurrent(pit), "the old site's chunks are flagged for re-recording");
+        foreach (var x in LookAtSite("upgrade_before_rerecord", expectTopLeftLight: true, "2.9.0 on 2.8.0 data, before re-recording")) yield return x;
+
+        // The player comes near: the chunks are recorded again with the new light.
+        foreach (var s in new[] { platform, pit })
+        {
+            Teleport(new Vector3(s.X + 0.5f, 90, s.Y + 0.5f));   // the site may not be loaded yet; flat ground is at 64
+            foreach (var x in Until(() => ShadeCurrent(s), 90, $"site {s.X},{s.Y} re-recorded")) yield return x;
+        }
+
+        var home = site.GetProperty("home");
+        Teleport(new Vector3(home[0].GetInt32() + 0.5f, 85, home[1].GetInt32() + 0.5f));
+        foreach (var x in Seconds(2)) yield return x;
+        var after = ReadSamples();
+        foreach (var (name, cell) in SampleCells())
+            Check(after[name].HeightShade == FreshShade(terrain, cell),
+                $"{name}: re-recorded shade {after[name].HeightShade} equals the new shade of the terrain (was {before[name].HeightShade} mirrored)");
+        metrics["shades"] = SampleCells().ToDictionary(c => c.Name, c => $"2.8.0 {oldShades[c.Name]} -> mirrored {before[c.Name].HeightShade} -> re-recorded {after[c.Name].HeightShade}");
+        foreach (var x in LookAtSite("upgrade_after_rerecord", expectTopLeftLight: true, "2.9.0 after re-recording")) yield return x;
+
+        foreach (var x in Seconds(8)) yield return x;
+        var directory = Field<string>(Store, "_directory");
+        foreach (var (file, hash) in oldFiles)
+        {
+            var path = Path.Combine(directory, file);
+            Check(File.Exists(path) && Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))) == hash,
+                $"2.8.0 file {file} is still there, unchanged");
+        }
+
+        var v5 = Directory.GetFiles(directory, "*.v5.sctm").Select(Path.GetFileName).ToArray();
+        metrics["v5Files"] = v5;
+        foreach (var s in new[] { platform, pit })
+        {
+            var c = TileCoordinate.FromWorld(s.X, s.Y);
+            Check(v5.Contains($"{c.TileX}_{c.TileZ}.v5.sctm"), $"re-recorded tile {c.TileX}_{c.TileZ} is written as .v5");
+        }
+    }
+
+    static byte Mirror(byte shade) => shade == 0 ? (byte)0 : (byte)Math.Clamp(256 - shade, 1, 255);
+
+    // 2.9.0-only API, kept out of the methods the older package runs.
+    static bool ShadeCurrent(Point2 site)
+    {
+        var c = TileCoordinate.FromWorld(site.X, site.Y);
+        return Store.IsChunkShadeCurrent(c.TileX, c.TileZ, c.LocalX, c.LocalZ);
+    }
+
     // ---- markers ---------------------------------------------------------------------------
 
     // Template, expected marker kind (attitude/body; "a|b" = either, for creatures that may
@@ -418,7 +745,9 @@ public class Lab : ModLoader
         ("Bass_Freshwater", "Passive/Fish"),
         ("Shark_Bull", "Provokable/Fish|Chasing/Fish"),
         ("SAGhoul_Weak_01", "Provokable/Land|Chasing/Land"),        // Ghoul mod: registered as a bird
-        ("SAG_CorpsificeHead", "Provokable/Land|Chasing/Land"),     // Ghoul mod: the shooting head, registered as a bird
+        // Ghoul mod: the shooting head, registered as a bird. It has no chase behaviour and no component the map knows
+        // (only ComponentCorpsificeHead), so the 2.9.0 rules make it green; see the plan's execution record.
+        ("SAG_CorpsificeHead", "Passive/Land"),
         ("ScTacticalEnemy", "Chasing/Land"),        // CS weapons: bandit, registered as LandOther
         ("ScTacticalCT", "Friendly/Land"),          // CS weapons: teammate, registered as LandOther
         ("ScTacticalHostage", "Friendly/Land"),
@@ -618,6 +947,20 @@ public static class InjectTouchesAtFrameStart
     public static void Prefix()
     {
         while (Lab.PendingTouches.Count > 0) Lab.PendingTouches.Dequeue()();
+    }
+}
+
+// data:/ is %LOCALAPPDATA%/Survivalcraft, shared with the user's own games: the travel map keeps its settings and every
+// world's map there. Point it at a folder inside the isolated runtime instead (run_isolated.py clears it per run, except
+// for upgrade-new, which reopens what upgrade-old left). Not available on the multiplayer edition (no Harmony there).
+[HarmonyPatch(typeof(Engine.Storage), "GetDataDirectory")]
+public static class IsolatedDataDirectory
+{
+    public static bool Prefix(ref string __result)
+    {
+        __result = Path.Combine(AppContext.BaseDirectory, "isolated-data");
+        Directory.CreateDirectory(__result);
+        return false;
     }
 }
 
