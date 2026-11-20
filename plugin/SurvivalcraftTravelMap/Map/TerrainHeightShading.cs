@@ -15,9 +15,15 @@ public static class TerrainHeightShading
         var gradientX = (eastHeight - westHeight) * 0.5f;
         var gradientZ = (southHeight - northHeight) * 0.5f;
         var normalLength = MathF.Sqrt((gradientX * gradientX) + (gradientZ * gradientZ) + 4f);
+        // Light comes from world +X / +Z. The map plane is drawn rotated 180 degrees from raw
+        // world (X, Z) -- MapTransform.WorldToScreen is (Center - world), so +X is screen-left
+        // and +Z is screen-up -- which puts this light at the screen's top-left in north-up
+        // view, the direction people assume when reading relief. Until 2.8.0 this term was
+        // (gradientX + gradientZ + 2): it was written before the plane was rotated, so on screen
+        // the light came from the bottom-right and pits looked like mounds.
         var light = MathF.Max(
             0f,
-            ((gradientX + gradientZ + 2f) * 0.5773503f) / normalLength);
+            ((-gradientX - gradientZ + 2f) * 0.5773503f) / normalLength);
         var brightness = 0.52f + (light * 0.83f);
 
         if (westHeight > centerHeight
