@@ -15,9 +15,18 @@ public sealed record TravelMapStorageIdentityInput(
     string? ServerHost,
     int? ServerPort,
     string? ServerWorldIdentifier,
-    Guid PlayerGuid);
+    Guid PlayerGuid,
+    string? LocalWorldSystemPath = null);
 
-public sealed record TravelMapStorageLocation(string Directory, string WorldKey, Guid PlayerGuid);
+/// <param name="LegacyDirectory">
+/// For a local world keyed by its system path: where versions up to 2.9.0's first build kept its
+/// cache (keyed by the game's world directory name only), to copy from once.
+/// </param>
+public sealed record TravelMapStorageLocation(
+    string Directory,
+    string WorldKey,
+    Guid PlayerGuid,
+    string? LegacyDirectory = null);
 
 public static class TravelMapStorageIdentity
 {
@@ -35,6 +44,7 @@ public static class TravelMapStorageIdentity
         }
 
         string worldKey;
+        string? legacyKey = null;
         try
         {
             if (input.Scope == TravelMapStorageScope.LocalWorld)
@@ -46,6 +56,20 @@ public static class TravelMapStorageIdentity
                 }
 
                 worldKey = WorldKey.ForLocal(input.LocalWorldDirectory);
+                if (!string.IsNullOrWhiteSpace(input.LocalWorldSystemPath))
+                {
+                    try
+                    {
+                        legacyKey = worldKey;
+                        worldKey = WorldKey.ForLocalPath(input.LocalWorldSystemPath);
+                    }
+                    catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+                    {
+                        // An unusable system path: keep the directory-name key as before.
+                        worldKey = legacyKey;
+                        legacyKey = null;
+                    }
+                }
             }
             else
             {
@@ -69,12 +93,17 @@ public static class TravelMapStorageIdentity
             return false;
         }
 
-        var directory = Path.GetFullPath(Path.Combine(
+        string PlayerDirectory(string key) => Path.GetFullPath(Path.Combine(
             input.ApplicationRoot,
             "maps",
-            worldKey,
+            key,
             input.PlayerGuid.ToString("N")));
-        location = new TravelMapStorageLocation(directory, worldKey, input.PlayerGuid);
+        var directory = PlayerDirectory(worldKey);
+        location = new TravelMapStorageLocation(
+            directory,
+            worldKey,
+            input.PlayerGuid,
+            legacyKey is null ? null : PlayerDirectory(legacyKey));
         failureReason = string.Empty;
         return true;
     }

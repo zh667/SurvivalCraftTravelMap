@@ -27,6 +27,13 @@ public static class WorldCacheSeedGuard
     /// <paramref name="worldSeed"/>. When a mismatching stamp is found the directory is deleted and
     /// recreated. A fresh, correct stamp is always written on return.
     /// </summary>
+    /// <summary>The seed stamped into a cache directory, or null when it has none.</summary>
+    public static string? ReadStamp(string storageDirectory)
+    {
+        var stampPath = Path.Combine(storageDirectory, StampFileName);
+        return File.Exists(stampPath) ? File.ReadAllText(stampPath).Trim() : null;
+    }
+
     public static GuardOutcome Ensure(string storageDirectory, int worldSeed)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageDirectory);

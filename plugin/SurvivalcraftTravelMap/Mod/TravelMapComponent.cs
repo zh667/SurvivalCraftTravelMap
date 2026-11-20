@@ -478,7 +478,8 @@ public sealed class TravelMapComponent : Component, IUpdateable
             null,
             null,
             gameInfo.DirectoryName,
-            DeterministicPlayerGuid(Player.PlayerData.PlayerIndex));
+            DeterministicPlayerGuid(Player.PlayerData.PlayerIndex),
+            ResolveWorldSystemPath(gameInfo.DirectoryName));
         if (!TravelMapStorageIdentity.TryResolve(identity, out var storage, out var identityError))
         {
             Engine.Log.Warning($"[TravelMap] Persistence disabled: {identityError}");
@@ -494,6 +495,7 @@ public sealed class TravelMapComponent : Component, IUpdateable
             // The game recycles world folder names after a deletion, so a new world can inherit a
             // deleted world's cache directory. Discard it when the stamped seed no longer matches so
             // the previous save's terrain doesn't bleed into this one.
+            MigrateLegacyWorldCache(storage!, gameInfo.WorldSeed);
             if (WorldCacheSeedGuard.Ensure(storage!.Directory, gameInfo.WorldSeed)
                 == WorldCacheSeedGuard.GuardOutcome.Reset)
             {
@@ -543,6 +545,40 @@ public sealed class TravelMapComponent : Component, IUpdateable
                 "地图与坐标点持久化不可用：{0}",
                 exception.Message));
             throw;
+        }
+    }
+
+    // The world folder's full path, so same-named worlds of different installs get their own map
+    // cache. Null when the game cannot say (the old directory-name key is used then).
+    private static string? ResolveWorldSystemPath(string? worldDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(worldDirectory))
+        {
+            return null;
+        }
+
+        try
+        {
+            var path = Engine.Storage.GetSystemPath(worldDirectory);
+            return string.IsNullOrWhiteSpace(path) ? null : path;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static void MigrateLegacyWorldCache(TravelMapStorageLocation storage, int worldSeed)
+    {
+        var outcome = WorldCacheMigration.Migrate(storage.Directory, storage.LegacyDirectory, worldSeed);
+        if (outcome == WorldCacheMigration.Outcome.Copied)
+        {
+            Engine.Log.Information("[TravelMap] Copied this world's map cache to its per-install location.");
+        }
+        else if (outcome == WorldCacheMigration.Outcome.LegacyBelongsToAnotherWorld)
+        {
+            Engine.Log.Information(
+                "[TravelMap] The old shared map cache belongs to another world with this folder name; left it as it is.");
         }
     }
 
